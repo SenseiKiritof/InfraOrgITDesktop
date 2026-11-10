@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using InfraOrgIt.Desktop.Auth;
 using InfraOrgIt.Desktop.Instances;
 using InfraOrgIt.Desktop.Tunnels;
 using Photino.NET;
@@ -39,7 +40,10 @@ internal static class Program
 
         _tunnels = new TunnelManager(
             CreateHttpClient(),
-            payload => _manager?.Invoke(() => Send(_manager, payload)));
+            payload => _manager?.Invoke(() => Send(_manager, payload)),
+            tokenStore: TokenStoreFactory.Create(message =>
+                _manager?.Invoke(() => Send(
+                    _manager, new { type = "tunnels.warning", message }))));
 
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
@@ -74,7 +78,8 @@ internal static class Program
                 ? typeElement.GetString()
                 : null;
 
-            if (type is "tunnels.list" or "tunnels.start" or "tunnels.login")
+            if (type is "tunnels.list" or "tunnels.start" or "tunnels.login" or
+                "tunnels.restore" or "tunnels.logout")
             {
                 var tunnelUrl = root.GetProperty("url").GetString();
                 if (!SafeLoad(store).Any(x => x.Url == tunnelUrl))
