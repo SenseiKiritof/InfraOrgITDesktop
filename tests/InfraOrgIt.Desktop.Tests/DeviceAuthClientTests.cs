@@ -74,7 +74,7 @@ public sealed class DeviceAuthClientTests
         Assert.Equal("infraorgit-mcp-desktop", form["client_id"]);
         Assert.Equal(DeviceAuthClient.Scope, form["scope"]);
         Assert.Equal(
-            "openid profile email offline_access mcp:read tunnels:operate",
+            "openid profile email mcp:read tunnels:operate",
             form["scope"]);
         Assert.Equal("S256", form["code_challenge_method"]);
         var expectedChallenge = Base64Url.EncodeToString(
