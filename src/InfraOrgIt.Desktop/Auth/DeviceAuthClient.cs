@@ -15,7 +15,7 @@ public sealed class DeviceAuthClient
 {
     public const string ClientId = "infraorgit-mcp-desktop";
     public const string Scope =
-        "openid profile email offline_access mcp:read tunnels:operate";
+        "openid profile email mcp:read tunnels:operate";
 
     private const string DiscoveryPath = "/.well-known/oauth-protected-resource";
     private const string DevicePath = "/protocol/openid-connect/auth/device";
