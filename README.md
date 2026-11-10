@@ -18,7 +18,8 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   user's SSH agent. The refresh token stays in the OS secret store and is used
   to restore the session and to renew an expired access token; access tokens
   live only in memory. `Esci` forgets the stored session. The app shows active
-  tunnels and closes them on request or on exit.
+  tunnels, publishes their live session projection to the instance while they
+  run, and closes them on request or on exit.
 - Still to do: auto-update.
 
 ## Run
