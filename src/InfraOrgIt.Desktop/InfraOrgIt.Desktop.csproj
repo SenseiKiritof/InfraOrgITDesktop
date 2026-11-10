@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>InfraOrgIt.Desktop</AssemblyName>
     <RootNamespace>InfraOrgIt.Desktop</RootNamespace>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
