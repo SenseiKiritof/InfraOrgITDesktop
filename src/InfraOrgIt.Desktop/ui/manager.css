@@ -228,6 +228,45 @@ button:disabled {
   grid-template-columns: 1fr auto;
 }
 
+.token-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.token-row #token-form {
+  flex: 1 1 380px;
+}
+
+.device-login {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.device-instruction {
+  margin: 0;
+  font-size: 14px;
+}
+
+.device-code {
+  font-size: 20px;
+  letter-spacing: 0.12em;
+}
+
+.device-login .hint {
+  margin: 6px 0 0;
+}
+
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .targets {
   display: grid;
   gap: 12px;
@@ -289,6 +328,11 @@ h3 {
 @media (max-width: 640px) {
   form {
     grid-template-columns: 1fr;
+  }
+
+  .token-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .instance {

@@ -18,8 +18,8 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
   (Conventional Commits).
 - The app never stores passwords or private keys. Tunnels use the user's
   `ssh`/agent and only allowlisted targets returned by the instance API.
-- Personal tokens live only in `TunnelManager` memory; never write them to
-  `instances.json` or logs.
+- Personal and device-flow tokens live only in memory (`TunnelManager`);
+  never write them to `instances.json` or logs.
 - `Instances/InstanceStore` is the only persistence: keep saves atomic and
   validate URLs (`http`/`https` only).
 - `Tunnels/SshTunnel` builds `ArgumentList`, never a shell string; keep

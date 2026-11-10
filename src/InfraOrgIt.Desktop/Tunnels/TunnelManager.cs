@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using InfraOrgIt.Desktop.Auth;
 
 namespace InfraOrgIt.Desktop.Tunnels;
 
@@ -11,16 +12,25 @@ namespace InfraOrgIt.Desktop.Tunnels;
 /// memory; the allowlist comes from the instance API, and each ssh process is
 /// tracked until it exits. UI messages are delivered through <c>notify</c>.
 /// </summary>
-public sealed class TunnelManager(HttpClient http, Action<object> notify)
+public sealed class TunnelManager(
+    HttpClient http,
+    Action<object> notify,
+    DeviceAuthClient? auth = null)
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
+    private readonly DeviceAuthClient _auth = auth ?? new DeviceAuthClient(http);
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Session> _sessions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TunnelProcess> _active =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _refreshTokens =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _verificationUrls =
+        new(StringComparer.Ordinal);
+    private CancellationTokenSource? _loginCancellation;
 
     public void Handle(string message) => _ = HandleAsync(message);
 
@@ -41,6 +51,16 @@ public sealed class TunnelManager(HttpClient http, Action<object> notify)
                         RequiredString(root, "url"),
                         RequiredString(root, "name"),
                         RequiredString(root, "token"));
+                    break;
+
+                case "tunnels.login":
+                    await LoginWithDeviceCodeAsync(
+                        RequiredString(root, "url"),
+                        RequiredString(root, "name"));
+                    break;
+
+                case "tunnels.login.cancel":
+                    CancelLogin();
                     break;
 
                 case "tunnels.start":
@@ -71,6 +91,163 @@ public sealed class TunnelManager(HttpClient http, Action<object> notify)
             Send(new { type = "tunnels.error", message = exception.Message });
         }
     }
+
+    /// <summary>
+    /// Starts the Keycloak device flow for the instance, reports the user code
+    /// to the UI and, once the token arrives, loads the tunnel allowlist. The
+    /// previous poll is cancelled when a new login starts.
+    /// </summary>
+    public async Task LoginWithDeviceCodeAsync(string url, string name)
+    {
+        CancelLogin();
+        var cancellation = new CancellationTokenSource();
+        lock (_gate)
+        {
+            _loginCancellation = cancellation;
+            _verificationUrls.Clear();
+        }
+
+        try
+        {
+            var authorization = await _auth.StartAsync(url, cancellation.Token);
+            StoreVerificationUrls(authorization);
+
+            Send(new
+            {
+                type = "tunnels.auth",
+                status = "pending",
+                url,
+                userCode = authorization.UserCode,
+                verificationUri = authorization.VerificationUri,
+                verificationUriComplete = authorization.VerificationUriComplete,
+                expiresIn = authorization.ExpiresInSeconds
+            });
+
+            var tokens = await _auth.PollAsync(authorization, cancellation.Token);
+            cancellation.Token.ThrowIfCancellationRequested();
+
+            lock (_gate)
+            {
+                if (tokens.RefreshToken is { Length: > 0 } refreshToken)
+                    _refreshTokens[url] = refreshToken;
+                _verificationUrls.Clear();
+            }
+
+            Send(new
+            {
+                type = "tunnels.auth",
+                status = "success",
+                url,
+                message = "Accesso riuscito. Caricamento target…"
+            });
+
+            await LoadTargetsAsync(url, name, tokens.AccessToken);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // The panel closed or another instance opened: nothing to show.
+        }
+        catch (DeviceAuthException exception)
+        {
+            SendAuthError(url, exception.Message);
+        }
+        catch (TaskCanceledException)
+        {
+            SendAuthError(url, "Il server di autenticazione non ha risposto in tempo.");
+        }
+        catch (HttpRequestException exception)
+        {
+            SendAuthError(url, "Accesso non riuscito: " + exception.Message);
+        }
+        catch (JsonException)
+        {
+            SendAuthError(url, "Risposta dell'istanza non valida.");
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (ReferenceEquals(_loginCancellation, cancellation))
+                {
+                    _loginCancellation = null;
+                    _verificationUrls.Clear();
+                }
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Cancels a running device poll. Called when the tunnel panel closes,
+    /// another instance opens or the app exits.
+    /// </summary>
+    public void CancelLogin()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_gate)
+        {
+            cancellation = _loginCancellation;
+            _loginCancellation = null;
+            _verificationUrls.Clear();
+        }
+        cancellation?.Cancel();
+    }
+
+    /// <summary>
+    /// Only the verification page returned by the current device flow may be
+    /// opened in the system browser.
+    /// </summary>
+    public bool IsVerificationUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+        lock (_gate)
+        {
+            return _verificationUrls.Contains(uri.AbsoluteUri);
+        }
+    }
+
+    /// <summary>
+    /// Refresh token kept in memory for the next iteration that wires
+    /// automatic refresh. It is never persisted.
+    /// </summary>
+    public string? GetRefreshToken(string url)
+    {
+        lock (_gate)
+        {
+            return _refreshTokens.GetValueOrDefault(url);
+        }
+    }
+
+    private void StoreVerificationUrls(DeviceAuthorization authorization)
+    {
+        lock (_gate)
+        {
+            _verificationUrls.Clear();
+            AddVerificationUrl(authorization.VerificationUri);
+            if (authorization.VerificationUriComplete is { Length: > 0 } complete)
+                AddVerificationUrl(complete);
+        }
+    }
+
+    private void AddVerificationUrl(string value)
+    {
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp ||
+             uri.Scheme == Uri.UriSchemeHttps))
+        {
+            _verificationUrls.Add(uri.AbsoluteUri);
+        }
+    }
+
+    private void SendAuthError(string url, string message) =>
+        Send(new
+        {
+            type = "tunnels.auth",
+            status = "error",
+            url,
+            message
+        });
 
     public async Task LoadTargetsAsync(string url, string name, string token)
     {
@@ -256,6 +433,7 @@ public sealed class TunnelManager(HttpClient http, Action<object> notify)
 
     public void StopAll()
     {
+        CancelLogin();
         TunnelProcess[] tunnels;
         lock (_gate)
         {
