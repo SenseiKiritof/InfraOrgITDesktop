@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Publish a self-contained desktop build and package it under dist/.
-# Signing is opt-in and local only:
+# macOS signing is opt-in:
 #   CODESIGN_IDENTITY="Developer ID Application: ..." scripts/publish.sh osx-arm64
-# The publish workflow runs this unsigned; signing, notarization and
-# auto-update are still manual.
+# The publish workflow sets CODESIGN_IDENTITY after importing the Developer ID
+# certificate, then notarizes and staples the .app. Without the variable the
+# build stays unsigned, which is what local runs and forks get.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,7 +54,7 @@ if [ "$(uname -s)" = "Darwin" ] && [[ "$RID" == osx-* ]]; then
 PLIST
 
   if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-    codesign --force --deep --options runtime \
+    codesign --force --deep --options runtime --timestamp \
       --sign "$CODESIGN_IDENTITY" "$APP"
   fi
 

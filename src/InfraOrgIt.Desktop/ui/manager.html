@@ -69,8 +69,10 @@
         <p class="hint">
           Accedi con Keycloak per ottenere un token con gli scope
           <code>mcp:read</code> e <code>tunnels:operate</code>, oppure incolla
-          un token personale. I token restano solo in memoria e i target
-          arrivano dall'allowlist dell'istanza.
+          un token personale. Il token di accesso resta solo in memoria; il
+          token di rinnovo va nell'archivio sicuro del sistema, mai in
+          <code>instances.json</code> o nei log. I target arrivano
+          dall'allowlist dell'istanza.
         </p>
         <div class="token-row">
           <form id="token-form">
@@ -87,7 +89,11 @@
             <button type="submit">Carica target</button>
           </form>
           <button type="button" id="keycloak-login">Accedi con Keycloak</button>
+          <button type="button" id="keycloak-logout" class="secondary" hidden>
+            Esci
+          </button>
         </div>
+        <p id="session-state" class="session-state" hidden></p>
         <div id="device-login" class="device-login" hidden>
           <p class="device-instruction">
             Codice: <strong id="device-code" class="device-code"></strong>
