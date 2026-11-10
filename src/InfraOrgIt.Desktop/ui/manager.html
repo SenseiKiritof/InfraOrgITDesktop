@@ -59,12 +59,36 @@
         <ul id="instances" class="instances"></ul>
       </section>
 
-      <section class="card muted" aria-labelledby="tunnels-title">
-        <h2 id="tunnels-title">Tunnel SSH</h2>
-        <p>
-          Il gestore dei tunnel userà l'agente SSH del sistema e l'allowlist
-          dell'istanza. Sarà disponibile nella prossima iterazione.
+      <section id="tunnel-panel" class="card" hidden aria-labelledby="tunnel-title">
+        <div class="section-header">
+          <h2 id="tunnel-title">Tunnel</h2>
+          <button type="button" id="tunnel-close" class="secondary">
+            Chiudi pannello
+          </button>
+        </div>
+        <p class="hint">
+          Serve un token personale con scope <code>tunnels:operate</code>. Il
+          token resta solo in memoria e i target arrivano dall'allowlist
+          dell'istanza.
         </p>
+        <form id="token-form">
+          <label>
+            Token personale
+            <input
+              id="token"
+              type="password"
+              autocomplete="off"
+              placeholder="itk_…"
+              required
+            />
+          </label>
+          <button type="submit">Carica target</button>
+        </form>
+        <p id="tunnel-status" class="status" role="status" aria-live="polite"></p>
+        <div id="tunnel-targets" class="targets"></div>
+        <h3>Tunnel attivi</h3>
+        <p id="no-tunnels" class="empty">Nessun tunnel attivo.</p>
+        <ul id="active-tunnels" class="instances"></ul>
       </section>
     </main>
 
