@@ -28,8 +28,8 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
   and validate URLs (`http`/`https` only).
 - `Tunnels/SshTunnel` builds `ArgumentList`, never a shell string; keep
   `BatchMode` and host-key verification on.
-- `Tunnels/TunnelManager` owns tokens, targets and processes; UI messages are
-  JSON through the manager bridge.
+- `Tunnels/TunnelManager` owns tokens, targets, processes and the live tunnel
+  session projection; UI messages are JSON through the manager bridge.
 - Photino has a single native message loop: create child windows from the
   manager's web-message handler (the existing pattern), never from a
   background thread.
