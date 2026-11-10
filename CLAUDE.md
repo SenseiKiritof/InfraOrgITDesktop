@@ -9,8 +9,8 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
 - `dotnet run --project src/InfraOrgIt.Desktop`: start the manager window.
 - `dotnet test InfraOrgITDesktop.slnx`: unit tests.
 - `dotnet build InfraOrgITDesktop.slnx -warnaserror`: the build gate.
-- `scripts/publish.sh [RID]`: self-contained publish; macOS also builds the
-  `.app` and zip (optional `CODESIGN_IDENTITY`).
+- `scripts/publish.sh [RID]`: self-contained publish plus a zip/tar.gz in
+  `dist/`; macOS also builds the `.app` (optional `CODESIGN_IDENTITY`).
 
 ## Rules
 
