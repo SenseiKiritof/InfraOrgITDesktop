@@ -24,6 +24,13 @@
   const activeTunnels = document.querySelector("#active-tunnels");
   const noTunnels = document.querySelector("#no-tunnels");
 
+  const updateCurrent = document.querySelector("#update-current");
+  const updateCheck = document.querySelector("#update-check");
+  const updateOpen = document.querySelector("#update-open");
+  const updateStatus = document.querySelector("#update-status");
+  const updateRelease = document.querySelector("#update-release");
+  const updateNotes = document.querySelector("#update-notes");
+
   let instances = [];
   let busy = false;
   let adding = false;
@@ -31,6 +38,7 @@
   let targets = [];
   let loginActive = false;
   let deviceAuth = null;
+  let releaseUrl = null;
 
   const send = (payload) => {
     window.external.sendMessage(JSON.stringify(payload));
@@ -44,6 +52,11 @@
   const setTunnelStatus = (message, isError = false) => {
     tunnelStatus.textContent = message;
     tunnelStatus.classList.toggle("error", isError);
+  };
+
+  const setUpdateStatus = (message, isError = false) => {
+    updateStatus.textContent = message;
+    updateStatus.classList.toggle("error", isError);
   };
 
   const setSessionState = (label) => {
@@ -300,6 +313,9 @@
     switch (message.type) {
       case "instances":
         instances = message.instances ?? [];
+        if (message.version) {
+          updateCurrent.textContent = `Versione ${message.version}`;
+        }
         render();
         setStatus("");
         if (adding) {
@@ -318,7 +334,51 @@
         break;
       case "error":
         adding = false;
+        updateCheck.disabled = false;
         setStatus(message.message ?? "Errore sconosciuto.", true);
+        break;
+      case "update.status": {
+        updateCheck.disabled = false;
+        if (message.currentVersion) {
+          updateCurrent.textContent = `Versione ${message.currentVersion}`;
+        }
+        if (message.failed) {
+          releaseUrl = null;
+          updateOpen.hidden = true;
+          updateRelease.hidden = true;
+          updateNotes.hidden = true;
+          setUpdateStatus(
+            message.message ?? "Controllo aggiornamenti non riuscito.",
+            true,
+          );
+          break;
+        }
+        if (!message.isNewer) {
+          releaseUrl = null;
+          updateOpen.hidden = true;
+          updateRelease.hidden = true;
+          updateNotes.hidden = true;
+          setUpdateStatus(message.message ?? "Hai già l'ultima versione.");
+          break;
+        }
+        releaseUrl = message.releaseUrl ?? null;
+        updateOpen.hidden = !releaseUrl;
+        updateRelease.textContent =
+          message.releaseName ?? `Versione ${message.latestVersion}`;
+        updateRelease.hidden = false;
+        updateNotes.textContent = message.releaseNotes ?? "";
+        updateNotes.hidden = !message.releaseNotes;
+        setUpdateStatus(
+          message.message ??
+            `Nuova versione disponibile: ${message.latestVersion}.`,
+        );
+        break;
+      }
+      case "external.error":
+        setUpdateStatus(
+          message.message ?? "Apertura del browser non riuscita.",
+          true,
+        );
         break;
       case "tunnels.auth":
         if (!tunnelInstance || message.url !== tunnelInstance.url) {
@@ -505,6 +565,23 @@
   deviceCancel.addEventListener("click", () => {
     cancelDeviceLogin();
     setTunnelStatus("Accesso annullato.");
+  });
+
+  updateCheck.addEventListener("click", () => {
+    updateCheck.disabled = true;
+    releaseUrl = null;
+    updateOpen.hidden = true;
+    updateRelease.hidden = true;
+    updateNotes.hidden = true;
+    setUpdateStatus("Controllo aggiornamenti…");
+    send({ type: "update.check" });
+  });
+
+  updateOpen.addEventListener("click", () => {
+    if (!releaseUrl) {
+      return;
+    }
+    send({ type: "open-external", url: releaseUrl });
   });
 
   tunnelClose.addEventListener("click", closeTunnelPanel);

@@ -59,6 +59,33 @@
         <ul id="instances" class="instances"></ul>
       </section>
 
+      <section class="card" aria-labelledby="update-title">
+        <div class="section-header">
+          <h2 id="update-title">Aggiornamenti</h2>
+          <span id="update-current" class="count">Versione —</span>
+        </div>
+        <p class="hint">
+          Il controllo legge l'ultima release GitHub. Download e installazione
+          restano manuali.
+        </p>
+        <div class="update-actions">
+          <button type="button" id="update-check">
+            Controlla aggiornamenti
+          </button>
+          <button type="button" id="update-open" class="secondary" hidden>
+            Apri release
+          </button>
+        </div>
+        <p
+          id="update-status"
+          class="status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <p id="update-release" class="update-release" hidden></p>
+        <p id="update-notes" class="update-notes" hidden></p>
+      </section>
+
       <section id="tunnel-panel" class="card" hidden aria-labelledby="tunnel-title">
         <div class="section-header">
           <h2 id="tunnel-title">Tunnel</h2>
