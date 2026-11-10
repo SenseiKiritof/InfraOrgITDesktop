@@ -9,6 +9,8 @@ namespace InfraOrgIt.Desktop.Tests;
 
 public sealed class TunnelManagerTests
 {
+    private const string InstanceUrl = "https://infra.example.com";
+    private const string Issuer = "https://auth.example.com/realms/infraorgit";
     private const string TargetsJson = """
         {
           "items": [
@@ -128,13 +130,16 @@ public sealed class TunnelManagerTests
             new HttpClient(authHandler), (_, _) => Task.CompletedTask);
         var apiHandler = new FakeHandler(_ => Json(HttpStatusCode.OK, TargetsJson));
         var messages = new ConcurrentQueue<object>();
+        var store = new MemoryTokenStore();
         var manager = new TunnelManager(
-            new HttpClient(apiHandler), messages.Enqueue, auth);
+            new HttpClient(apiHandler), messages.Enqueue, auth, store);
 
         await manager.LoginWithDeviceCodeAsync(
             "https://infra.example.com", "Prod");
 
         Assert.Equal("refresh-token", manager.GetRefreshToken("https://infra.example.com"));
+        Assert.Equal("refresh-token",
+            await store.LoadAsync("https://infra.example.com"));
         var request = Assert.Single(apiHandler.Requests);
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
         Assert.Equal("access-token", request.Headers.Authorization.Parameter);
@@ -150,6 +155,332 @@ public sealed class TunnelManagerTests
         Assert.Contains(payload, x =>
             x.GetProperty("type").GetString() == "tunnels.targets");
     }
+
+    [Fact]
+    public async Task Restore_refreshes_the_saved_token_then_loads_targets()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    Json(HttpStatusCode.OK,
+                        TokenJson("restored-access", "rotated-refresh")),
+                "/api/tunnels/targets" => Json(HttpStatusCode.OK, TargetsJson),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Equal(
+            [
+                "/.well-known/oauth-protected-resource",
+                "/realms/infraorgit/protocol/openid-connect/token",
+                "/api/tunnels/targets"
+            ],
+            handler.Requests.Select(x => x.RequestUri!.AbsolutePath));
+
+        var targets = handler.Requests.Single(
+            x => x.RequestUri!.AbsolutePath == "/api/tunnels/targets");
+        Assert.Equal("restored-access", targets.Headers.Authorization!.Parameter);
+        Assert.Equal("rotated-refresh", await store.LoadAsync(InstanceUrl));
+
+        var payload = Messages(messages);
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "restored");
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.targets");
+    }
+
+    [Fact]
+    public async Task Restore_without_a_saved_token_sends_none()
+    {
+        var handler = new FakeHandler(
+            _ => throw new InvalidOperationException("no request expected"));
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, new MemoryTokenStore());
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Empty(handler.Requests);
+        var payload = Messages(messages);
+        var auth = Assert.Single(payload);
+        Assert.Equal("tunnels.auth", auth.GetProperty("type").GetString());
+        Assert.Equal("none", auth.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Rejected_refresh_clears_the_saved_token()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    Json(HttpStatusCode.BadRequest,
+                        """{"error":"invalid_grant"}"""),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Null(await store.LoadAsync(InstanceUrl));
+        Assert.Null(manager.GetRefreshToken(InstanceUrl));
+        Assert.DoesNotContain(handler.Requests, x =>
+            x.RequestUri!.AbsolutePath == "/api/tunnels/targets");
+
+        var payload = Messages(messages);
+        var error = payload.Single(x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "error");
+        Assert.Contains("Accedi di nuovo", error.GetProperty("message").GetString());
+        Assert.True(error.GetProperty("requiresLogin").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Restore_refreshes_again_when_the_token_is_almost_expired()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var tokenResponses = new Queue<string>(
+            [
+                TokenJson("first-access", "refresh-1", expiresIn: 30),
+                TokenJson("second-access", "refresh-2")
+            ]);
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    Json(HttpStatusCode.OK, tokenResponses.Dequeue()),
+                "/api/tunnels/targets" => Json(HttpStatusCode.OK, TargetsJson),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Equal(2, handler.Requests.Count(x =>
+            x.RequestUri!.AbsolutePath ==
+            "/realms/infraorgit/protocol/openid-connect/token"));
+        var targets = handler.Requests.Single(
+            x => x.RequestUri!.AbsolutePath == "/api/tunnels/targets");
+        Assert.Equal("second-access", targets.Headers.Authorization!.Parameter);
+        Assert.Equal("refresh-2", await store.LoadAsync(InstanceUrl));
+
+        var payload = Messages(messages);
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.targets");
+    }
+
+    [Fact]
+    public async Task Unauthorized_targets_refreshes_once_and_retries()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var tokenResponses = new Queue<string>(
+            [
+                TokenJson("stale-access", "refresh-1"),
+                TokenJson("fresh-access", "refresh-2")
+            ]);
+        var targetsRequests = 0;
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/tunnels/targets")
+            {
+                targetsRequests++;
+                return request.Headers.Authorization!.Parameter == "stale-access"
+                    ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                    : Json(HttpStatusCode.OK, TargetsJson);
+            }
+
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    Json(HttpStatusCode.OK, tokenResponses.Dequeue()),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Equal(2, targetsRequests);
+        var targets = handler.Requests
+            .Where(x => x.RequestUri!.AbsolutePath == "/api/tunnels/targets")
+            .Select(x => x.Headers.Authorization!.Parameter)
+            .ToArray();
+        Assert.Equal(2, targets.Length);
+        Assert.Equal("stale-access", targets[0]);
+        Assert.Equal("fresh-access", targets[1]);
+        Assert.Equal("refresh-2", await store.LoadAsync(InstanceUrl));
+
+        var payload = Messages(messages);
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.targets");
+    }
+
+    [Fact]
+    public async Task Unauthorized_targets_clears_the_token_when_refresh_fails()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var tokenResponses = new Queue<HttpResponseMessage>(
+            [
+                Json(HttpStatusCode.OK, TokenJson("stale-access", "refresh-1")),
+                Json(HttpStatusCode.BadRequest, """{"error":"invalid_grant"}""")
+            ]);
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/tunnels/targets")
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    tokenResponses.Dequeue(),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+
+        Assert.Null(await store.LoadAsync(InstanceUrl));
+        Assert.Null(manager.GetRefreshToken(InstanceUrl));
+        Assert.Single(handler.Requests, x =>
+            x.RequestUri!.AbsolutePath == "/api/tunnels/targets");
+
+        var payload = Messages(messages);
+        var error = payload.Single(x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "error");
+        Assert.Contains("Accedi di nuovo", error.GetProperty("message").GetString());
+        Assert.True(error.GetProperty("requiresLogin").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Logout_clears_the_session_and_the_saved_token()
+    {
+        var store = new MemoryTokenStore();
+        await store.SaveAsync(InstanceUrl, "stored-refresh");
+        var handler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Discovery(),
+                "/realms/infraorgit/protocol/openid-connect/token" =>
+                    Json(HttpStatusCode.OK, TokenJson("access-token", "refresh")),
+                "/api/tunnels/targets" => Json(HttpStatusCode.OK, TargetsJson),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var messages = new ConcurrentQueue<object>();
+        var manager = CreateManager(handler, messages, store);
+
+        await manager.RestoreSessionAsync(InstanceUrl, "Prod");
+        await manager.LogoutAsync(InstanceUrl);
+
+        Assert.Null(await store.LoadAsync(InstanceUrl));
+        Assert.Null(manager.GetRefreshToken(InstanceUrl));
+        Assert.Contains(Messages(messages), x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "logout");
+
+        await manager.StartAsync(InstanceUrl, 1, 2, null);
+        Assert.Contains(Messages(messages), x =>
+            x.GetProperty("type").GetString() == "tunnels.error" &&
+            x.GetProperty("message").GetString()!.Contains("Carica prima"));
+    }
+
+    [Fact]
+    public async Task List_without_a_token_tries_the_saved_session()
+    {
+        var handler = new FakeHandler(
+            _ => throw new InvalidOperationException("no request expected"));
+        var messages = new ConcurrentQueue<object>();
+        var none = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var manager = new TunnelManager(
+            new HttpClient(handler),
+            payload =>
+            {
+                messages.Enqueue(payload);
+                var element = JsonSerializer.SerializeToElement(
+                    payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (element.TryGetProperty("status", out var status) &&
+                    status.GetString() == "none")
+                {
+                    none.TrySetResult();
+                }
+            },
+            new DeviceAuthClient(new HttpClient(handler)),
+            new MemoryTokenStore());
+
+        manager.Handle(JsonSerializer.Serialize(new
+        {
+            type = "tunnels.list",
+            url = InstanceUrl,
+            name = "Prod"
+        }));
+
+        await none.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(handler.Requests);
+        Assert.Contains(Messages(messages), x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "none");
+    }
+
+    private static TunnelManager CreateManager(
+        FakeHandler handler,
+        ConcurrentQueue<object> messages,
+        ITokenStore store) =>
+        new(
+            new HttpClient(handler),
+            messages.Enqueue,
+            new DeviceAuthClient(new HttpClient(handler)),
+            store);
+
+    private static HttpResponseMessage Discovery() =>
+        Json(HttpStatusCode.OK,
+            $$"""{"authorization_servers":["{{Issuer}}"]}""");
+
+    private static string TokenJson(
+        string accessToken, string refreshToken, int expiresIn = 300) =>
+        $$"""
+        {
+          "access_token": "{{accessToken}}",
+          "refresh_token": "{{refreshToken}}",
+          "token_type": "Bearer",
+          "expires_in": {{expiresIn}}
+        }
+        """;
 
     private static HttpResponseMessage Json(HttpStatusCode status, string json) =>
         new(status)

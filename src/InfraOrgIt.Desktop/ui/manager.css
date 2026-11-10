@@ -246,6 +246,22 @@ button:disabled {
   border-radius: 10px;
 }
 
+.session-state {
+  display: inline-flex;
+  align-items: center;
+  margin: 12px 0 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+[hidden] {
+  display: none !important;
+}
+
 .device-instruction {
   margin: 0;
   font-size: 14px;
