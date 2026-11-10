@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Publish a self-contained desktop build. Signing is opt-in:
+# Publish a self-contained desktop build and package it under dist/.
+# Signing is opt-in and local only:
 #   CODESIGN_IDENTITY="Developer ID Application: ..." scripts/publish.sh osx-arm64
+# The publish workflow runs this unsigned; signing, notarization and
+# auto-update are still manual.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,7 +20,8 @@ fi
 
 VERSION="${VERSION:-0.1.0}"
 OUT="$ROOT/dist/$RID"
-rm -rf "$OUT"
+ARCHIVE_BASE="$ROOT/dist/InfraOrgIT-Desktop-$VERSION-$RID"
+rm -rf "$OUT" "$ARCHIVE_BASE" "$ARCHIVE_BASE.zip" "$ARCHIVE_BASE.tar.gz"
 
 dotnet publish "$ROOT/src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" \
   -c Release -r "$RID" --self-contained true \
@@ -53,10 +57,30 @@ PLIST
       --sign "$CODESIGN_IDENTITY" "$APP"
   fi
 
-  ditto -c -k --keepParent "$APP" \
-    "$ROOT/dist/InfraOrgIT-Desktop-$VERSION-$RID.zip"
+  ditto -c -k --keepParent "$APP" "$ARCHIVE_BASE.zip"
   echo "Bundle: $APP"
-  echo "Archivio: $ROOT/dist/InfraOrgIT-Desktop-$VERSION-$RID.zip"
+  echo "Archivio: $ARCHIVE_BASE.zip"
 else
+  cp -R "$OUT" "$ARCHIVE_BASE"
+  case "$RID" in
+    win-*)
+      if command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -NoProfile -Command \
+          "Compress-Archive -LiteralPath '$(cygpath -w "$ARCHIVE_BASE")' -DestinationPath '$(cygpath -w "$ARCHIVE_BASE.zip")' -Force"
+        echo "Archivio: $ARCHIVE_BASE.zip"
+      elif command -v zip >/dev/null 2>&1; then
+        (cd "$ROOT/dist" && zip -qr "$(basename "$ARCHIVE_BASE").zip" "$(basename "$ARCHIVE_BASE")")
+        echo "Archivio: $ARCHIVE_BASE.zip"
+      else
+        echo "Serve powershell.exe o zip per creare l'archivio Windows." >&2
+        exit 2
+      fi
+      ;;
+    *)
+      tar -czf "$ARCHIVE_BASE.tar.gz" -C "$ROOT/dist" "$(basename "$ARCHIVE_BASE")"
+      echo "Archivio: $ARCHIVE_BASE.tar.gz"
+      ;;
+  esac
+  rm -rf "$ARCHIVE_BASE"
   echo "Pubblicato: $OUT"
 fi
