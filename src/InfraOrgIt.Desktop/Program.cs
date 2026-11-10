@@ -1,5 +1,6 @@
 using System.Text.Json;
 using InfraOrgIt.Desktop.Instances;
+using InfraOrgIt.Desktop.Tunnels;
 using Photino.NET;
 
 namespace InfraOrgIt.Desktop;
@@ -9,13 +10,16 @@ internal static class Program
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
+    private static PhotinoWindow? _manager;
+    private static TunnelManager? _tunnels;
+
     [STAThread]
     private static void Main()
     {
         var store = new InstanceStore(InstanceStore.DefaultPath());
         var children = new List<PhotinoWindow>();
 
-        var manager = new PhotinoWindow()
+        _manager = new PhotinoWindow()
             .SetTitle("InfraOrgIT Desktop")
             .SetUseOsDefaultSize(false)
             .SetSize(980, 720)
@@ -25,17 +29,34 @@ internal static class Program
                     (PhotinoWindow)sender!, message, store, children))
             .RegisterWindowClosingHandler((_, _) =>
             {
+                _tunnels?.StopAll();
                 foreach (var child in children.ToArray())
                     child.Close();
                 return false;
             })
             .Load(Path.Combine(AppContext.BaseDirectory, "ui", "manager.html"));
 
+        _tunnels = new TunnelManager(
+            CreateHttpClient(),
+            payload => _manager?.Invoke(() => Send(_manager, payload)));
+
 #if DEBUG
-        manager.SetDevToolsEnabled(true);
+        _manager.SetDevToolsEnabled(true);
 #endif
 
-        manager.WaitForClose();
+        _manager.WaitForClose();
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        var handler = new HttpClientHandler();
+        if (Environment.GetEnvironmentVariable("INFRAORGIT_INSECURE_TLS") == "1")
+        {
+            handler.ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
     }
 
     private static void HandleMessage(
@@ -51,6 +72,29 @@ internal static class Program
             var type = root.TryGetProperty("type", out var typeElement)
                 ? typeElement.GetString()
                 : null;
+
+            if (type is "tunnels.list" or "tunnels.start")
+            {
+                var tunnelUrl = root.GetProperty("url").GetString();
+                if (!SafeLoad(store).Any(x => x.Url == tunnelUrl))
+                {
+                    Send(window, new
+                    {
+                        type = "tunnels.error",
+                        message = "Istanza non trovata. Salva di nuovo la lista."
+                    });
+                    return;
+                }
+
+                _tunnels?.Handle(message);
+                return;
+            }
+
+            if (type == "tunnels.stop")
+            {
+                _tunnels?.Handle(message);
+                return;
+            }
 
             switch (type)
             {
@@ -135,6 +179,10 @@ internal static class Program
         }
     }
 
-    private static void Send(PhotinoWindow window, object payload) =>
+    private static void Send(PhotinoWindow? window, object payload)
+    {
+        if (window is null)
+            return;
         window.SendWebMessage(JsonSerializer.Serialize(payload, JsonOptions));
+    }
 }
