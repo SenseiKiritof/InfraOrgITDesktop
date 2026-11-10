@@ -208,6 +208,84 @@ button:disabled {
   font-size: 14px;
 }
 
+.hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+#tunnel-panel {
+  scroll-margin-top: 24px;
+}
+
+#token-form {
+  grid-template-columns: 1fr auto;
+}
+
+.targets {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+
+.target-server {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.target-server h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.target-server .meta {
+  margin: 2px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.target-row p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.target-row .port {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.target-row .port input {
+  width: 92px;
+}
+
+h3 {
+  margin: 22px 0 8px;
+  font-size: 15px;
+}
+
+.instance .detail {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 @media (max-width: 640px) {
   form {
     grid-template-columns: 1fr;
