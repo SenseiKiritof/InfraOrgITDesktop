@@ -16,7 +16,7 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   allowlist from the instance and open `ssh -L`/`-J` forwards through the
   user's SSH agent. The token stays in memory, never on disk; the app shows
   active tunnels and closes them on request or on exit.
-- Still to do: packaging, signing and auto-update.
+- Still to do: signing, notarization and auto-update.
 
 ## Run
 
@@ -58,8 +58,22 @@ scripts/publish.sh osx-arm64   # or osx-x64, linux-x64, win-x64
 ```
 
 Self-contained publish. On macOS the script builds `InfraOrgIT Desktop.app`
-plus a zip; set `CODESIGN_IDENTITY` to sign it. Notarization and auto-update
-are still open.
+plus a zip; set `CODESIGN_IDENTITY` to sign it. Linux produces a `.tar.gz` and
+Windows a `.zip` of the published folder. Set `VERSION` to change the default
+`0.1.0` in the artifact names.
+
+`.github/workflows/publish.yml` packages all four RIDs as unsigned artifacts.
+Run it manually (`version` input, default `0.1.0`) or push a `v*` tag (the tag
+is used with the leading `v` stripped):
+
+- `InfraOrgIT-Desktop-<version>-osx-arm64` (`macos-latest`)
+- `InfraOrgIT-Desktop-<version>-osx-x64` (`macos-15-intel`)
+- `InfraOrgIT-Desktop-<version>-win-x64` (`windows-latest`)
+- `InfraOrgIT-Desktop-<version>-linux-x64` (`ubuntu-latest`)
+
+Each artifact holds the zip or tar.gz from `scripts/publish.sh`. Signing
+(macOS Developer ID and Windows certificate), notarization and auto-update are
+still manual; the workflow has no signing secrets and does not create releases.
 
 ## Layout
 
