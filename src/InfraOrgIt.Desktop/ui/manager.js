@@ -7,9 +7,21 @@
   const empty = document.querySelector("#empty");
   const count = document.querySelector("#count");
 
+  const tunnelPanel = document.querySelector("#tunnel-panel");
+  const tunnelTitle = document.querySelector("#tunnel-title");
+  const tunnelClose = document.querySelector("#tunnel-close");
+  const tokenForm = document.querySelector("#token-form");
+  const tokenInput = document.querySelector("#token");
+  const tunnelStatus = document.querySelector("#tunnel-status");
+  const tunnelTargets = document.querySelector("#tunnel-targets");
+  const activeTunnels = document.querySelector("#active-tunnels");
+  const noTunnels = document.querySelector("#no-tunnels");
+
   let instances = [];
   let busy = false;
   let adding = false;
+  let tunnelInstance = null;
+  let targets = [];
 
   const send = (payload) => {
     window.external.sendMessage(JSON.stringify(payload));
@@ -20,9 +32,14 @@
     status.classList.toggle("error", isError);
   };
 
+  const setTunnelStatus = (message, isError = false) => {
+    tunnelStatus.textContent = message;
+    tunnelStatus.classList.toggle("error", isError);
+  };
+
   const setBusy = (value) => {
     busy = value;
-    for (const button of document.querySelectorAll("button")) {
+    for (const button of form.querySelectorAll("button")) {
       button.disabled = value;
     }
   };
@@ -30,7 +47,8 @@
   const render = () => {
     list.replaceChildren();
     empty.hidden = instances.length > 0;
-    count.textContent = instances.length === 1 ? "1 istanza" : `${instances.length} istanze`;
+    count.textContent =
+      instances.length === 1 ? "1 istanza" : `${instances.length} istanze`;
 
     for (const instance of instances) {
       const item = document.createElement("li");
@@ -46,6 +64,12 @@
       const actions = document.createElement("div");
       actions.className = "instance-actions";
 
+      const tunnel = document.createElement("button");
+      tunnel.type = "button";
+      tunnel.className = "secondary";
+      tunnel.textContent = "Tunnel";
+      tunnel.addEventListener("click", () => openTunnelPanel(instance));
+
       const open = document.createElement("button");
       open.type = "button";
       open.textContent = "Apri";
@@ -60,6 +84,9 @@
       remove.className = "secondary danger";
       remove.textContent = "Rimuovi";
       remove.addEventListener("click", () => {
+        if (tunnelInstance?.url === instance.url) {
+          closeTunnelPanel();
+        }
         setBusy(true);
         send({
           type: "save",
@@ -67,9 +94,152 @@
         });
       });
 
-      actions.append(open, remove);
+      actions.append(tunnel, open, remove);
       item.append(text, actions);
       list.append(item);
+    }
+  };
+
+  const openTunnelPanel = (instance) => {
+    tunnelInstance = instance;
+    tunnelTitle.textContent = `Tunnel — ${instance.name}`;
+    targets = [];
+    tokenForm.reset();
+    renderTargets();
+    setTunnelStatus("");
+    tunnelPanel.hidden = false;
+    tunnelPanel.scrollIntoView({ block: "start" });
+  };
+
+  const closeTunnelPanel = () => {
+    tunnelInstance = null;
+    targets = [];
+    tunnelFormReset();
+    tunnelPanel.hidden = true;
+  };
+
+  const tunnelFormReset = () => {
+    tokenForm.reset();
+    setTunnelStatus("");
+    renderTargets();
+  };
+
+  const renderTargets = () => {
+    tunnelTargets.replaceChildren();
+    if (!tunnelInstance || targets.length === 0) {
+      const message = document.createElement("p");
+      message.className = "empty";
+      message.textContent = tunnelInstance
+        ? "Nessun target disponibile per questo token."
+        : "";
+      if (message.textContent) {
+        tunnelTargets.append(message);
+      }
+      return;
+    }
+
+    for (const server of targets) {
+      const card = document.createElement("div");
+      card.className = "target-server";
+
+      const title = document.createElement("h4");
+      title.textContent = server.serverName;
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      let detail = `${server.environmentLabel} · ${server.username}@${server.sshHost}:${server.sshPort}`;
+      if (server.jump) {
+        detail += ` · jump ${server.jump.username}@${server.jump.host}:${server.jump.port}`;
+      }
+      meta.textContent = detail;
+      card.append(title, meta);
+
+      for (const target of server.targets) {
+        const row = document.createElement("div");
+        row.className = "target-row";
+
+        const description = document.createElement("p");
+        description.textContent = `${target.application} ${target.version} · ${target.targetHost}:${target.targetPort}`;
+
+        const controls = document.createElement("div");
+        controls.className = "port";
+
+        const port = document.createElement("input");
+        port.type = "number";
+        port.min = "1024";
+        port.max = "65535";
+        port.placeholder = "auto";
+        port.value = target.suggestedLocalPort ?? "";
+        port.setAttribute(
+          "aria-label",
+          `Porta locale per ${target.application} ${target.version}`,
+        );
+
+        const start = document.createElement("button");
+        start.type = "button";
+        start.textContent = "Apri";
+        start.addEventListener("click", () => {
+          let localPort = null;
+          if (port.value.trim() !== "") {
+            localPort = Number(port.value);
+            if (
+              !Number.isInteger(localPort) ||
+              localPort < 1024 ||
+              localPort > 65535
+            ) {
+              setTunnelStatus("La porta locale deve essere tra 1024 e 65535.", true);
+              return;
+            }
+          }
+
+          setTunnelStatus(`Avvio del tunnel per ${target.application}…`);
+          send({
+            type: "tunnels.start",
+            url: tunnelInstance.url,
+            serverId: server.serverId,
+            targetId: target.serverApplicationId,
+            localPort,
+          });
+        });
+
+        controls.append(port, start);
+        row.append(description, controls);
+        card.append(row);
+      }
+
+      tunnelTargets.append(card);
+    }
+  };
+
+  const renderActiveTunnels = (items) => {
+    activeTunnels.replaceChildren();
+    noTunnels.hidden = items.length > 0;
+
+    for (const tunnel of items) {
+      const item = document.createElement("li");
+      item.className = "instance";
+
+      const text = document.createElement("div");
+      const title = document.createElement("h3");
+      title.textContent = `${tunnel.application} · ${tunnel.serverName}`;
+      const detail = document.createElement("p");
+      detail.className = "detail";
+      detail.textContent = `${tunnel.instanceName} · 127.0.0.1:${tunnel.localPort} → :${tunnel.targetPort}`;
+      text.append(title, detail);
+
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "secondary danger";
+      stop.textContent = "Chiudi";
+      stop.addEventListener("click", () => {
+        send({ type: "tunnels.stop", id: tunnel.id });
+      });
+
+      const actions = document.createElement("div");
+      actions.className = "instance-actions";
+      actions.append(stop);
+
+      item.append(text, actions);
+      activeTunnels.append(item);
     }
   };
 
@@ -94,6 +264,12 @@
           adding = false;
           form.reset();
         }
+        if (
+          tunnelInstance &&
+          !instances.some((item) => item.url === tunnelInstance.url)
+        ) {
+          closeTunnelPanel();
+        }
         break;
       case "opened":
         setStatus("Istanza aperta in una nuova finestra.");
@@ -101,6 +277,26 @@
       case "error":
         adding = false;
         setStatus(message.message ?? "Errore sconosciuto.", true);
+        break;
+      case "tunnels.targets":
+        if (tunnelInstance && message.url === tunnelInstance.url) {
+          targets = message.items ?? [];
+          renderTargets();
+          setTunnelStatus(
+            targets.length === 0
+              ? "Nessun target disponibile per questo token."
+              : "Target caricati. Scegli la porta locale e apri il tunnel.",
+          );
+        }
+        break;
+      case "tunnels.state":
+        renderActiveTunnels(message.items ?? []);
+        break;
+      case "tunnels.log":
+        setTunnelStatus(message.message ?? "");
+        break;
+      case "tunnels.error":
+        setTunnelStatus(message.message ?? "Errore tunnel.", true);
         break;
       default:
         setStatus("Risposta non riconosciuta.", true);
@@ -129,6 +325,32 @@
       instances: [...instances, { name, url }],
     });
   });
+
+  tokenForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!tunnelInstance) {
+      return;
+    }
+
+    const token = tokenInput.value.trim();
+    if (!token) {
+      setTunnelStatus("Inserisci il token personale.", true);
+      return;
+    }
+
+    tokenInput.value = "";
+    targets = [];
+    renderTargets();
+    setTunnelStatus("Caricamento target…");
+    send({
+      type: "tunnels.list",
+      url: tunnelInstance.url,
+      name: tunnelInstance.name,
+      token,
+    });
+  });
+
+  tunnelClose.addEventListener("click", closeTunnelPanel);
 
   if (!window.external) {
     setStatus("Questa pagina va aperta dall'app desktop.", true);
