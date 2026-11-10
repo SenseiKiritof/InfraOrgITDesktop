@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'"
+    />
+    <title>InfraOrgIT Desktop</title>
+    <link rel="stylesheet" href="manager.css" />
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">InfraOrgIT</p>
+      <h1>Desktop</h1>
+      <p class="subtitle">
+        Istanze e tunnel SSH, con le credenziali del tuo sistema.
+      </p>
+    </header>
+
+    <main>
+      <section class="card" aria-labelledby="add-title">
+        <h2 id="add-title">Aggiungi un'istanza</h2>
+        <form id="add-form">
+          <label>
+            Nome
+            <input
+              id="name"
+              name="name"
+              maxlength="80"
+              placeholder="Produzione"
+              required
+            />
+          </label>
+          <label>
+            URL
+            <input
+              id="url"
+              name="url"
+              type="url"
+              placeholder="https://infra.example.com"
+              required
+            />
+          </label>
+          <button type="submit">Aggiungi</button>
+        </form>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="instances-title">
+        <div class="section-header">
+          <h2 id="instances-title">Istanze</h2>
+          <span id="count" class="count"></span>
+        </div>
+        <p id="empty" class="empty" hidden>
+          Nessuna istanza configurata. Aggiungine una per iniziare.
+        </p>
+        <ul id="instances" class="instances"></ul>
+      </section>
+
+      <section class="card muted" aria-labelledby="tunnels-title">
+        <h2 id="tunnels-title">Tunnel SSH</h2>
+        <p>
+          Il gestore dei tunnel userà l'agente SSH del sistema e l'allowlist
+          dell'istanza. Sarà disponibile nella prossima iterazione.
+        </p>
+      </section>
+    </main>
+
+    <script src="manager.js"></script>
+  </body>
+</html>
