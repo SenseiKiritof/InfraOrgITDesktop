@@ -359,7 +359,8 @@ public sealed class TunnelManager(HttpClient http, Action<object> notify)
                 });
             }
         }
-        catch (HttpRequestException exception)
+        catch (Exception exception) when (
+            exception is HttpRequestException or TaskCanceledException)
         {
             Send(new
             {
