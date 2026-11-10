@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" />
+  <Project Path="tests/InfraOrgIt.Desktop.Tests/InfraOrgIt.Desktop.Tests.csproj" />
+</Solution>
