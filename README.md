@@ -20,7 +20,11 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   live only in memory. `Esci` forgets the stored session. The app shows active
   tunnels, publishes their live session projection to the instance while they
   run, and closes them on request or on exit.
-- Still to do: auto-update.
+- Update check: reads the latest GitHub release, compares its semver tag with
+  the assembly informational version and shows the current version. When a
+  newer stable release exists, `Apri release` opens its page in the default
+  browser. Download and install remain manual.
+- Still to do: automatic download and install.
 
 ## Run
 
@@ -97,7 +101,7 @@ Self-contained publish. On macOS the script builds `InfraOrgIT Desktop.app`
 plus a zip; set `CODESIGN_IDENTITY` to sign it with hardened runtime and a
 secure timestamp. Linux produces a `.tar.gz` and Windows a `.zip` of the
 published folder. Set `VERSION` to change the default `0.1.0` in the artifact
-names.
+names and in the assembly version used by the update check.
 
 `.github/workflows/publish.yml` packages all four RIDs:
 
@@ -168,6 +172,8 @@ The `contents: write` permission is granted only to the release job.
 - `src/InfraOrgIt.Desktop/Instances/`: instance model and JSON store.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
   port allocation and process tracking.
+- `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison and
+  the update result shown in the manager page.
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
 
 ## Decisions

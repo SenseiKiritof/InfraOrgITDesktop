@@ -220,6 +220,32 @@ button:disabled {
   background: var(--bg);
 }
 
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.update-release {
+  margin: 10px 0 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.update-notes {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
 #tunnel-panel {
   scroll-margin-top: 24px;
 }

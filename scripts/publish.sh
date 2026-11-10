@@ -28,6 +28,7 @@ dotnet publish "$ROOT/src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" \
   -c Release -r "$RID" --self-contained true \
   -p:PublishSingleFile=true \
   -p:IncludeNativeLibrariesForSelfExtract=true \
+  -p:Version="$VERSION" \
   -o "$OUT"
 
 if [ "$(uname -s)" = "Darwin" ] && [[ "$RID" == osx-* ]]; then
