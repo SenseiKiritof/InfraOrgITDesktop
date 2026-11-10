@@ -13,6 +13,8 @@
   const tokenForm = document.querySelector("#token-form");
   const tokenInput = document.querySelector("#token");
   const keycloakLogin = document.querySelector("#keycloak-login");
+  const keycloakLogout = document.querySelector("#keycloak-logout");
+  const sessionState = document.querySelector("#session-state");
   const deviceLogin = document.querySelector("#device-login");
   const deviceCode = document.querySelector("#device-code");
   const deviceOpen = document.querySelector("#device-open");
@@ -42,6 +44,12 @@
   const setTunnelStatus = (message, isError = false) => {
     tunnelStatus.textContent = message;
     tunnelStatus.classList.toggle("error", isError);
+  };
+
+  const setSessionState = (label) => {
+    sessionState.textContent = label ?? "";
+    sessionState.hidden = !label;
+    keycloakLogout.hidden = !label;
   };
 
   const resetDeviceLogin = () => {
@@ -135,10 +143,12 @@
     targets = [];
     tokenForm.reset();
     resetDeviceLogin();
+    setSessionState("");
     renderTargets();
     setTunnelStatus("");
     tunnelPanel.hidden = false;
     tunnelPanel.scrollIntoView({ block: "start" });
+    send({ type: "tunnels.restore", url: instance.url, name: instance.name });
   };
 
   const closeTunnelPanel = () => {
@@ -146,6 +156,7 @@
     tunnelInstance = null;
     targets = [];
     tunnelFormReset();
+    setSessionState("");
     tunnelPanel.hidden = true;
   };
 
@@ -326,11 +337,40 @@
           deviceOpen.disabled = false;
           keycloakLogin.disabled = true;
           setTunnelStatus("In attesa di conferma nel browser…");
+        } else if (message.status === "restoring") {
+          setTunnelStatus("Ripristino della sessione salvata…");
+        } else if (message.status === "none") {
+          setTunnelStatus(
+            "Nessuna sessione salvata. Accedi con Keycloak o incolla un token.",
+          );
+        } else if (message.status === "restored") {
+          resetDeviceLogin();
+          setSessionState(
+            message.saved
+              ? "Sessione salvata · ripristinata"
+              : "Sessione attiva · ripristinata",
+          );
+          setTunnelStatus(message.message ?? "Sessione ripristinata.");
         } else if (message.status === "success") {
           resetDeviceLogin();
+          setSessionState(
+            message.saved ? "Sessione salvata" : "Sessione attiva (non salvata)",
+          );
           setTunnelStatus(message.message ?? "Accesso riuscito.");
+        } else if (message.status === "logout") {
+          resetDeviceLogin();
+          targets = [];
+          renderTargets();
+          tokenForm.reset();
+          setSessionState("");
+          setTunnelStatus(message.message ?? "Sessione eliminata.");
         } else if (message.status === "error") {
           resetDeviceLogin();
+          if (message.requiresLogin) {
+            targets = [];
+            renderTargets();
+            setSessionState("");
+          }
           setTunnelStatus(message.message ?? "Accesso non riuscito.", true);
         }
         break;
@@ -338,6 +378,9 @@
         if (tunnelInstance && message.url === tunnelInstance.url) {
           targets = message.items ?? [];
           renderTargets();
+          if (sessionState.hidden) {
+            setSessionState("Sessione attiva");
+          }
           setTunnelStatus(
             targets.length === 0
               ? "Nessun target disponibile per questo token."
@@ -350,6 +393,13 @@
         break;
       case "tunnels.log":
         setTunnelStatus(message.message ?? "");
+        break;
+      case "tunnels.warning":
+        if (tunnelInstance) {
+          setTunnelStatus(message.message ?? "", false);
+        } else {
+          setStatus(message.message ?? "");
+        }
         break;
       case "tunnels.error":
         resetDeviceLogin();
@@ -399,6 +449,7 @@
     cancelDeviceLogin();
     targets = [];
     renderTargets();
+    setSessionState("");
     setTunnelStatus("Caricamento target…");
     send({
       type: "tunnels.list",
@@ -426,6 +477,20 @@
       url: tunnelInstance.url,
       name: tunnelInstance.name,
     });
+  });
+
+  keycloakLogout.addEventListener("click", () => {
+    if (!tunnelInstance) {
+      return;
+    }
+
+    cancelDeviceLogin();
+    targets = [];
+    renderTargets();
+    tokenForm.reset();
+    setSessionState("");
+    setTunnelStatus("Rimozione della sessione…");
+    send({ type: "tunnels.logout", url: tunnelInstance.url });
   });
 
   deviceOpen.addEventListener("click", () => {
