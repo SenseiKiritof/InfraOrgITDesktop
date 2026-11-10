@@ -3,6 +3,7 @@ using System.Text.Json;
 using InfraOrgIt.Desktop.Auth;
 using InfraOrgIt.Desktop.Instances;
 using InfraOrgIt.Desktop.Tunnels;
+using InfraOrgIt.Desktop.Update;
 using Photino.NET;
 
 namespace InfraOrgIt.Desktop;
@@ -14,6 +15,7 @@ internal static class Program
 
     private static PhotinoWindow? _manager;
     private static TunnelManager? _tunnels;
+    private static UpdateChecker? _updates;
 
     [STAThread]
     private static void Main()
@@ -44,6 +46,11 @@ internal static class Program
             tokenStore: TokenStoreFactory.Create(message =>
                 _manager?.Invoke(() => Send(
                     _manager, new { type = "tunnels.warning", message }))));
+
+        // GitHub checks use their own client: the dev TLS override applies to
+        // instances, never to the release lookup.
+        _updates = new UpdateChecker(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
 
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
@@ -105,18 +112,36 @@ internal static class Program
             switch (type)
             {
                 case "list":
-                    Send(window, new { type = "instances", instances = SafeLoad(store) });
+                    Send(window, new
+                    {
+                        type = "instances",
+                        instances = SafeLoad(store),
+                        version = _updates?.CurrentVersion
+                    });
                     break;
 
                 case "auth.open":
                     OpenVerification(window, root);
                     break;
 
+                case "update.check":
+                    _ = CheckForUpdatesAsync();
+                    break;
+
+                case "open-external":
+                    OpenExternal(window, root);
+                    break;
+
                 case "save":
                     var input = root.GetProperty("instances")
                         .Deserialize<List<Instance>>(JsonOptions) ?? [];
                     var saved = store.Save(input);
-                    Send(window, new { type = "instances", instances = saved });
+                    Send(window, new
+                    {
+                        type = "instances",
+                        instances = saved,
+                        version = _updates?.CurrentVersion
+                    });
                     break;
 
                 case "open":
@@ -191,6 +216,85 @@ internal static class Program
             Send(window, new
             {
                 type = "tunnels.error",
+                message = "Apertura del browser non riuscita."
+            });
+        }
+    }
+
+    /// <summary>
+    /// Runs the GitHub lookup off the message loop and reports the result to
+    /// the manager page. <see cref="UpdateChecker.CheckAsync"/> returns its
+    /// failures, and the extra guard keeps the native loop safe anyway.
+    /// </summary>
+    private static async Task CheckForUpdatesAsync()
+    {
+        var checker = _updates;
+        if (checker is null)
+            return;
+
+        UpdateCheckResult result;
+        try
+        {
+            result = await checker.CheckAsync();
+        }
+        catch (Exception)
+        {
+            result = new UpdateCheckResult(
+                checker.CurrentVersion,
+                LatestVersion: null,
+                IsNewer: false,
+                Failed: true,
+                "Controllo aggiornamenti non riuscito.");
+        }
+
+        _manager?.Invoke(() => Send(_manager, new
+        {
+            type = "update.status",
+            currentVersion = result.CurrentVersion,
+            latestVersion = result.LatestVersion,
+            isNewer = result.IsNewer,
+            failed = result.Failed,
+            message = result.Message,
+            releaseUrl = result.ReleaseUrl?.AbsoluteUri,
+            releaseName = result.ReleaseName,
+            releaseNotes = result.ReleaseNotes
+        }));
+    }
+
+    /// <summary>
+    /// Opens an https link in the default browser. The Keycloak verification
+    /// page keeps its own allowlist check in <see cref="OpenVerification"/>.
+    /// </summary>
+    private static void OpenExternal(PhotinoWindow window, JsonElement root)
+    {
+        var value = root.TryGetProperty("url", out var urlElement)
+            ? urlElement.GetString()
+            : null;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps)
+        {
+            Send(window, new
+            {
+                type = "external.error",
+                message = "Link non valido: serve un indirizzo https."
+            });
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or
+            System.ComponentModel.Win32Exception)
+        {
+            Send(window, new
+            {
+                type = "external.error",
                 message = "Apertura del browser non riuscita."
             });
         }
