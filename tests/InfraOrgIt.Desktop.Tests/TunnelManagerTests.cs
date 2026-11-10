@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using InfraOrgIt.Desktop.Auth;
 using InfraOrgIt.Desktop.Tunnels;
 
 namespace InfraOrgIt.Desktop.Tests;
@@ -85,6 +86,69 @@ public sealed class TunnelManagerTests
         var payload = Messages(messages);
         var error = payload.Single(x => x.GetProperty("type").GetString() == "tunnels.error");
         Assert.Contains("Carica prima", error.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Device_login_loads_targets_and_keeps_the_refresh_token_in_memory()
+    {
+        var authHandler = new FakeHandler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            return path switch
+            {
+                "/.well-known/oauth-protected-resource" => Json(
+                    HttpStatusCode.OK,
+                    """{"authorization_servers":["https://auth.example.com/realms/infraorgit"]}"""),
+                "/realms/infraorgit/protocol/openid-connect/auth/device" => Json(
+                    HttpStatusCode.OK,
+                    """
+                    {
+                      "device_code": "device-code",
+                      "user_code": "ABCD-EFGH",
+                      "verification_uri": "https://auth.example.com/device",
+                      "verification_uri_complete": "https://auth.example.com/device?user_code=ABCD-EFGH",
+                      "expires_in": 600,
+                      "interval": 5
+                    }
+                    """),
+                "/realms/infraorgit/protocol/openid-connect/token" => Json(
+                    HttpStatusCode.OK,
+                    """
+                    {
+                      "access_token": "access-token",
+                      "refresh_token": "refresh-token",
+                      "token_type": "Bearer",
+                      "expires_in": 300
+                    }
+                    """),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+            };
+        });
+        var auth = new DeviceAuthClient(
+            new HttpClient(authHandler), (_, _) => Task.CompletedTask);
+        var apiHandler = new FakeHandler(_ => Json(HttpStatusCode.OK, TargetsJson));
+        var messages = new ConcurrentQueue<object>();
+        var manager = new TunnelManager(
+            new HttpClient(apiHandler), messages.Enqueue, auth);
+
+        await manager.LoginWithDeviceCodeAsync(
+            "https://infra.example.com", "Prod");
+
+        Assert.Equal("refresh-token", manager.GetRefreshToken("https://infra.example.com"));
+        var request = Assert.Single(apiHandler.Requests);
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+        Assert.Equal("access-token", request.Headers.Authorization.Parameter);
+
+        var payload = Messages(messages);
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "pending" &&
+            x.GetProperty("userCode").GetString() == "ABCD-EFGH");
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.auth" &&
+            x.GetProperty("status").GetString() == "success");
+        Assert.Contains(payload, x =>
+            x.GetProperty("type").GetString() == "tunnels.targets");
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string json) =>

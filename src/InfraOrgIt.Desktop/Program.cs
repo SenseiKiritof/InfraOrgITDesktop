@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using InfraOrgIt.Desktop.Instances;
 using InfraOrgIt.Desktop.Tunnels;
@@ -73,7 +74,7 @@ internal static class Program
                 ? typeElement.GetString()
                 : null;
 
-            if (type is "tunnels.list" or "tunnels.start")
+            if (type is "tunnels.list" or "tunnels.start" or "tunnels.login")
             {
                 var tunnelUrl = root.GetProperty("url").GetString();
                 if (!SafeLoad(store).Any(x => x.Url == tunnelUrl))
@@ -90,7 +91,7 @@ internal static class Program
                 return;
             }
 
-            if (type == "tunnels.stop")
+            if (type is "tunnels.stop" or "tunnels.login.cancel")
             {
                 _tunnels?.Handle(message);
                 return;
@@ -100,6 +101,10 @@ internal static class Program
             {
                 case "list":
                     Send(window, new { type = "instances", instances = SafeLoad(store) });
+                    break;
+
+                case "auth.open":
+                    OpenVerification(window, root);
                     break;
 
                 case "save":
@@ -141,6 +146,48 @@ internal static class Program
             KeyNotFoundException or InvalidOperationException)
         {
             Send(window, new { type = "error", message = exception.Message });
+        }
+    }
+
+    private static void OpenVerification(PhotinoWindow window, JsonElement root)
+    {
+        var value = root.TryGetProperty("url", out var urlElement)
+            ? urlElement.GetString()
+            : null;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp &&
+             uri.Scheme != Uri.UriSchemeHttps) ||
+            _tunnels?.IsVerificationUrl(uri.AbsoluteUri) != true)
+        {
+            Send(window, new
+            {
+                type = "tunnels.error",
+                message = "Pagina di accesso non valida."
+            });
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+            Send(window, new
+            {
+                type = "tunnels.log",
+                message = "Pagina di accesso aperta nel browser."
+            });
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or
+            System.ComponentModel.Win32Exception)
+        {
+            Send(window, new
+            {
+                type = "tunnels.error",
+                message = "Apertura del browser non riuscita."
+            });
         }
     }
 
