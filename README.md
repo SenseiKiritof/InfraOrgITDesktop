@@ -12,11 +12,13 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
 - Multi-instance manager: add, remove and open installations; the list is
   stored per user in `instances.json`.
 - One window per open instance, so sessions and cookies stay independent.
-- Tunnel manager: paste a personal token with `tunnels:operate`, load the
+- Tunnel manager: sign in with Keycloak through the OAuth 2.0 device grant
+  (PKCE S256) or paste a personal token with `tunnels:operate`, load the
   allowlist from the instance and open `ssh -L`/`-J` forwards through the
-  user's SSH agent. The token stays in memory, never on disk; the app shows
+  user's SSH agent. Tokens stay in memory, never on disk; the app shows
   active tunnels and closes them on request or on exit.
-- Still to do: signing, notarization and auto-update.
+- Still to do: keychain storage and automatic token refresh; signing,
+  notarization and auto-update.
 
 ## Run
 
@@ -38,6 +40,13 @@ keys.
 Create the token from the instance user menu (`/tokens`) with
 `tunnels:operate`; the same token needs the `ServerOperator` or `ServerAdmin`
 role on the environments to expose.
+
+`Accedi con Keycloak` uses the public `infraorgit-mcp-desktop` client with the
+device authorization grant, PKCE S256 and the scopes
+`openid profile email offline_access mcp:read tunnels:operate`. The panel
+shows the user code; the verification page opens in the default browser and
+the allowlist loads as soon as the token arrives. The manual token form stays
+available as a fallback.
 
 Instances file:
 
@@ -79,6 +88,8 @@ still manual; the workflow has no signing secrets and does not create releases.
 
 - `src/InfraOrgIt.Desktop/Program.cs`: manager window, message bridge, child
   windows.
+- `src/InfraOrgIt.Desktop/Auth/`: Keycloak device grant discovery, PKCE and
+  token polling.
 - `src/InfraOrgIt.Desktop/Instances/`: instance model and JSON store.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
   port allocation and process tracking.
