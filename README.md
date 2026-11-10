@@ -51,6 +51,16 @@ Instances file:
 dotnet test InfraOrgITDesktop.slnx
 ```
 
+## Package
+
+```bash
+scripts/publish.sh osx-arm64   # or osx-x64, linux-x64, win-x64
+```
+
+Self-contained publish. On macOS the script builds `InfraOrgIT Desktop.app`
+plus a zip; set `CODESIGN_IDENTITY` to sign it. Notarization and auto-update
+are still open.
+
 ## Layout
 
 - `src/InfraOrgIt.Desktop/Program.cs`: manager window, message bridge, child
