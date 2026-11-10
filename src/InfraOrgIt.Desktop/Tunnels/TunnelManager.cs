@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using InfraOrgIt.Desktop.Auth;
 
 namespace InfraOrgIt.Desktop.Tunnels;
@@ -19,14 +20,32 @@ public sealed class TunnelManager(
     HttpClient http,
     Action<object> notify,
     DeviceAuthClient? auth = null,
-    ITokenStore? tokenStore = null)
+    ITokenStore? tokenStore = null,
+    TimeSpan? heartbeatInterval = null,
+    Func<TimeSpan, CancellationToken, Task>? delay = null)
 {
     /// <summary>Refresh this long before the access token expires.</summary>
     internal static readonly TimeSpan RefreshWindow = TimeSpan.FromSeconds(60);
 
+    /// <summary>How often an active tunnel refreshes its live session.</summary>
+    internal static readonly TimeSpan DefaultHeartbeatInterval =
+        TimeSpan.FromSeconds(30);
+
+    private const int SessionDetailLength = 200;
+
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
 
+    private static readonly Regex BearerPattern = new(
+        @"\bbearer\s+\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex SecretAssignmentPattern = new(
+        @"\b(token|password|passphrase|secret)\s*=\s*[^\s&;]+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private readonly TimeSpan _heartbeatInterval =
+        heartbeatInterval ?? DefaultHeartbeatInterval;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay =
+        delay ?? ((time, cancellationToken) => Task.Delay(time, cancellationToken));
     private readonly DeviceAuthClient _auth = auth ?? new DeviceAuthClient(http);
     private readonly ITokenStore _tokens = tokenStore ?? new MemoryTokenStore();
     private readonly Lock _gate = new();
@@ -40,6 +59,10 @@ public sealed class TunnelManager(
     private readonly HashSet<string> _verificationUrls =
         new(StringComparer.Ordinal);
     private CancellationTokenSource? _loginCancellation;
+
+    /// <summary>Test seam: the default starts a real ssh process.</summary>
+    internal Func<ProcessStartInfo, ISshProcess> SshProcessFactory { get; init; } =
+        startInfo => new SystemSshProcess(startInfo);
 
     public void Handle(string message) => _ = HandleAsync(message);
 
@@ -382,6 +405,9 @@ public sealed class TunnelManager(
     private void SendWarning(string message) =>
         Send(new { type = "tunnels.warning", message });
 
+    private void SendLog(string message) =>
+        Send(new { type = "tunnels.log", message });
+
     /// <summary>Loads targets for a manual token, without refresh.</summary>
     public Task LoadTargetsAsync(string url, string name, string token) =>
         LoadTargetsAsync(
@@ -569,20 +595,23 @@ public sealed class TunnelManager(
 
         var id = Guid.NewGuid().ToString("N");
         var correlationId = Guid.NewGuid().ToString("N");
-        Process process;
+        ISshProcess? process = null;
+        TunnelProcess tunnel;
         try
         {
-            process = new Process
-            {
-                StartInfo = SshTunnel.BuildStartInfo(server, endpoint, port)
-            };
+            process = SshProcessFactory(
+                SshTunnel.BuildStartInfo(server, endpoint, port));
+            tunnel = new TunnelProcess(
+                id, session, server, endpoint, port, correlationId, process);
+            process.ErrorLine += tunnel.AppendError;
             process.Start();
         }
         catch (Exception exception)
         {
+            process?.Dispose();
             await SendEventAsync(
                 session, server, endpoint, port, "error", correlationId,
-                "spawn_failed", exception.Message);
+                "spawn_failed", ShortErrorDetail(exception.Message));
             Send(new
             {
                 type = "tunnels.error",
@@ -590,15 +619,6 @@ public sealed class TunnelManager(
             });
             return;
         }
-
-        var tunnel = new TunnelProcess(
-            id, session, server, endpoint, port, correlationId, process);
-        process.ErrorDataReceived += (_, args) =>
-        {
-            if (args.Data is not null)
-                tunnel.AppendError(args.Data);
-        };
-        process.BeginErrorReadLine();
 
         lock (_gate)
         {
@@ -608,6 +628,8 @@ public sealed class TunnelManager(
         await SendEventAsync(
             session, server, endpoint, port, "start", correlationId,
             null, null);
+        var projectionActive = await SendSessionAsync(
+            tunnel, "active", null, null, CancellationToken.None);
         Send(new { type = "tunnels.state", items = ActiveItems() });
         Send(new
         {
@@ -615,6 +637,8 @@ public sealed class TunnelManager(
             message = $"Tunnel {endpoint.Application} su 127.0.0.1:{port} attivo."
         });
 
+        if (projectionActive)
+            tunnel.HeartbeatTask = HeartbeatAsync(tunnel);
         _ = MonitorAsync(tunnel);
     }
 
@@ -630,7 +654,7 @@ public sealed class TunnelManager(
 
         try
         {
-            tunnel.Process.Kill(entireProcessTree: true);
+            tunnel.Process.Kill();
         }
         catch (InvalidOperationException)
         {
@@ -655,7 +679,7 @@ public sealed class TunnelManager(
         {
             try
             {
-                tunnel.Process.Kill(entireProcessTree: true);
+                tunnel.Process.Kill();
             }
             catch (InvalidOperationException)
             {
@@ -675,24 +699,33 @@ public sealed class TunnelManager(
             // Process already gone.
         }
 
-        var error = tunnel.StopRequested
+        var stopped = tunnel.StopRequested;
+        var error = stopped
             ? null
             : tunnel.ErrorText() is { Length: > 0 } text
                 ? text
                 : $"ssh è terminato con codice {tunnel.Process.ExitCode}.";
+        var detail = error is null ? null : ShortErrorDetail(error);
+
+        // Stop the heartbeat before the final status, so an active projection
+        // cannot arrive after stopped/error.
+        await tunnel.StopHeartbeatAsync();
 
         lock (_gate)
         {
             _active.Remove(tunnel.Id);
         }
 
+        await SendSessionAsync(
+            tunnel, stopped ? "stopped" : "error",
+            stopped ? null : "ssh_exit", detail, CancellationToken.None);
         await SendEventAsync(
             tunnel.Session,
             tunnel.Server, tunnel.Endpoint, tunnel.LocalPort,
-            tunnel.StopRequested ? "stop" : "error",
+            stopped ? "stop" : "error",
             tunnel.CorrelationId,
             error is null ? null : "ssh_exit",
-            error);
+            detail);
 
         Send(new { type = "tunnels.state", items = ActiveItems() });
         Send(new
@@ -703,7 +736,159 @@ public sealed class TunnelManager(
                 : $"Tunnel su 127.0.0.1:{tunnel.LocalPort} terminato: {error}"
         });
 
+        tunnel.Heartbeat.Dispose();
         tunnel.Process.Dispose();
+    }
+
+    /// <summary>
+    /// Keeps the central live projection fresh while ssh runs. Every failure
+    /// is non-fatal; a rejected session stops the loop so it cannot retry the
+    /// same expired credentials forever.
+    /// </summary>
+    private async Task HeartbeatAsync(TunnelProcess tunnel)
+    {
+        try
+        {
+            while (true)
+            {
+                await _delay(_heartbeatInterval, tunnel.Heartbeat.Token);
+                if (!await SendSessionAsync(
+                        tunnel, "active", null, null, tunnel.Heartbeat.Token))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (tunnel.Heartbeat.IsCancellationRequested)
+        {
+            // Stop requested or the tunnel exited.
+        }
+    }
+
+    /// <summary>
+    /// Upserts the live projection. A rejection is logged and ignored; it
+    /// never stops the tunnel. Returns false when the session cannot be used
+    /// again, so the heartbeat loop exits instead of repeating a 401 forever.
+    /// </summary>
+    private async Task<bool> SendSessionAsync(
+        TunnelProcess tunnel,
+        string status,
+        string? errorCode,
+        string? detail,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SendSessionWithRefreshAsync(
+                tunnel, status, errorCode, detail, cancellationToken);
+            if (response is null)
+                return false;
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                SendAuthError(
+                    tunnel.Session.Url,
+                    "Sessione non più valida. Accedi di nuovo.",
+                    requiresLogin: true);
+                return false;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                SendLog(
+                    $"Stato tunnel non aggiornato ({(int)response.StatusCode}).");
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or TaskCanceledException)
+        {
+            SendLog($"Stato tunnel non aggiornato: {exception.Message}");
+            return true;
+        }
+    }
+
+    private async Task<HttpResponseMessage?> SendSessionWithRefreshAsync(
+        TunnelProcess tunnel,
+        string status,
+        string? errorCode,
+        string? detail,
+        CancellationToken cancellationToken)
+    {
+        var session = tunnel.Session;
+        if (!await EnsureSessionTokenAsync(session, cancellationToken))
+            return null;
+
+        var token = session.Token;
+        var response = await PostSessionAsync(
+            tunnel, token, status, errorCode, detail, cancellationToken);
+        if (response.StatusCode != HttpStatusCode.Unauthorized ||
+            !session.CanRefresh)
+        {
+            return response;
+        }
+
+        response.Dispose();
+        if (!await RefreshSessionAsync(session, token, cancellationToken))
+            return null;
+
+        return await PostSessionAsync(
+            tunnel, session.Token, status, errorCode, detail,
+            cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> PostSessionAsync(
+        TunnelProcess tunnel,
+        string token,
+        string status,
+        string? errorCode,
+        string? detail,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, tunnel.Session.SessionUrl);
+        request.Headers.Authorization =
+            new AuthenticationHeaderValue("Bearer", token);
+        request.Content = JsonContent.Create(new
+        {
+            sessionKey = tunnel.Id,
+            status,
+            serverId = tunnel.Server.ServerId,
+            serverApplicationId = tunnel.Endpoint.ServerApplicationId,
+            targetHost = tunnel.Endpoint.TargetHost,
+            targetPort = tunnel.Endpoint.TargetPort,
+            localPort = tunnel.LocalPort,
+            errorCode,
+            detail
+        });
+
+        return await http.SendAsync(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// First non-empty stderr line, redacted and capped: the live projection
+    /// and the audit event must not carry the whole ssh output.
+    /// </summary>
+    private static string ShortErrorDetail(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "ssh exited";
+
+        var line = value
+            .Split(['\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? value.Trim();
+        line = BearerPattern.Replace(line, "Bearer ***");
+        line = SecretAssignmentPattern.Replace(line, "$1=***");
+        return line.Length <= SessionDetailLength
+            ? line
+            : line[..SessionDetailLength];
     }
 
     private async Task SendEventAsync(
@@ -1060,6 +1245,7 @@ public sealed class TunnelManager(
         public bool CanRefresh { get; } = canRefresh;
         public IReadOnlyList<TunnelServer> Targets { get; } = targets;
         public string EventUrl => Url.TrimEnd('/') + "/api/tunnels/events";
+        public string SessionUrl => Url.TrimEnd('/') + "/api/tunnels/sessions";
     }
 
     private sealed record RefreshedTokens(DeviceTokens Tokens, string Issuer);
@@ -1080,7 +1266,7 @@ public sealed class TunnelManager(
         TunnelEndpoint endpoint,
         int localPort,
         string correlationId,
-        Process process)
+        ISshProcess process)
     {
         private readonly Lock _errorGate = new();
         private readonly StringBuilder _error = new();
@@ -1091,8 +1277,10 @@ public sealed class TunnelManager(
         public TunnelEndpoint Endpoint { get; } = endpoint;
         public int LocalPort { get; } = localPort;
         public string CorrelationId { get; } = correlationId;
-        public Process Process { get; } = process;
+        public ISshProcess Process { get; } = process;
         public bool StopRequested { get; set; }
+        public CancellationTokenSource Heartbeat { get; } = new();
+        public Task HeartbeatTask { get; set; } = Task.CompletedTask;
 
         public void AppendError(string line)
         {
@@ -1108,6 +1296,21 @@ public sealed class TunnelManager(
             lock (_errorGate)
             {
                 return _error.ToString().Trim();
+            }
+        }
+
+        public async Task StopHeartbeatAsync()
+        {
+            if (!Heartbeat.IsCancellationRequested)
+                Heartbeat.Cancel();
+
+            try
+            {
+                await HeartbeatTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // The loop already handles cancellation; a late observer is fine.
             }
         }
     }
