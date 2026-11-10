@@ -12,6 +12,11 @@
   const tunnelClose = document.querySelector("#tunnel-close");
   const tokenForm = document.querySelector("#token-form");
   const tokenInput = document.querySelector("#token");
+  const keycloakLogin = document.querySelector("#keycloak-login");
+  const deviceLogin = document.querySelector("#device-login");
+  const deviceCode = document.querySelector("#device-code");
+  const deviceOpen = document.querySelector("#device-open");
+  const deviceCancel = document.querySelector("#device-cancel");
   const tunnelStatus = document.querySelector("#tunnel-status");
   const tunnelTargets = document.querySelector("#tunnel-targets");
   const activeTunnels = document.querySelector("#active-tunnels");
@@ -22,6 +27,8 @@
   let adding = false;
   let tunnelInstance = null;
   let targets = [];
+  let loginActive = false;
+  let deviceAuth = null;
 
   const send = (payload) => {
     window.external.sendMessage(JSON.stringify(payload));
@@ -35,6 +42,27 @@
   const setTunnelStatus = (message, isError = false) => {
     tunnelStatus.textContent = message;
     tunnelStatus.classList.toggle("error", isError);
+  };
+
+  const resetDeviceLogin = () => {
+    loginActive = false;
+    deviceAuth = null;
+    deviceLogin.hidden = true;
+    deviceCode.textContent = "";
+    deviceOpen.disabled = true;
+    keycloakLogin.disabled = false;
+  };
+
+  const cancelDeviceLogin = () => {
+    if (!loginActive) {
+      return;
+    }
+
+    const url = deviceAuth?.url ?? tunnelInstance?.url;
+    if (url) {
+      send({ type: "tunnels.login.cancel", url });
+    }
+    resetDeviceLogin();
   };
 
   const setBusy = (value) => {
@@ -101,10 +129,12 @@
   };
 
   const openTunnelPanel = (instance) => {
+    cancelDeviceLogin();
     tunnelInstance = instance;
     tunnelTitle.textContent = `Tunnel — ${instance.name}`;
     targets = [];
     tokenForm.reset();
+    resetDeviceLogin();
     renderTargets();
     setTunnelStatus("");
     tunnelPanel.hidden = false;
@@ -112,6 +142,7 @@
   };
 
   const closeTunnelPanel = () => {
+    cancelDeviceLogin();
     tunnelInstance = null;
     targets = [];
     tunnelFormReset();
@@ -278,6 +309,31 @@
         adding = false;
         setStatus(message.message ?? "Errore sconosciuto.", true);
         break;
+      case "tunnels.auth":
+        if (!tunnelInstance || message.url !== tunnelInstance.url) {
+          break;
+        }
+        if (message.status === "pending") {
+          loginActive = true;
+          deviceAuth = {
+            url: message.url,
+            verificationUri: message.verificationUri,
+            verificationUriComplete:
+              message.verificationUriComplete ?? message.verificationUri,
+          };
+          deviceCode.textContent = message.userCode ?? "";
+          deviceLogin.hidden = false;
+          deviceOpen.disabled = false;
+          keycloakLogin.disabled = true;
+          setTunnelStatus("In attesa di conferma nel browser…");
+        } else if (message.status === "success") {
+          resetDeviceLogin();
+          setTunnelStatus(message.message ?? "Accesso riuscito.");
+        } else if (message.status === "error") {
+          resetDeviceLogin();
+          setTunnelStatus(message.message ?? "Accesso non riuscito.", true);
+        }
+        break;
       case "tunnels.targets":
         if (tunnelInstance && message.url === tunnelInstance.url) {
           targets = message.items ?? [];
@@ -296,6 +352,7 @@
         setTunnelStatus(message.message ?? "");
         break;
       case "tunnels.error":
+        resetDeviceLogin();
         setTunnelStatus(message.message ?? "Errore tunnel.", true);
         break;
       default:
@@ -339,6 +396,7 @@
     }
 
     tokenInput.value = "";
+    cancelDeviceLogin();
     targets = [];
     renderTargets();
     setTunnelStatus("Caricamento target…");
@@ -348,6 +406,40 @@
       name: tunnelInstance.name,
       token,
     });
+  });
+
+  keycloakLogin.addEventListener("click", () => {
+    if (!tunnelInstance) {
+      return;
+    }
+
+    cancelDeviceLogin();
+    targets = [];
+    renderTargets();
+    tokenForm.reset();
+    resetDeviceLogin();
+    loginActive = true;
+    keycloakLogin.disabled = true;
+    setTunnelStatus("Avvio dell'accesso con Keycloak…");
+    send({
+      type: "tunnels.login",
+      url: tunnelInstance.url,
+      name: tunnelInstance.name,
+    });
+  });
+
+  deviceOpen.addEventListener("click", () => {
+    const url =
+      deviceAuth?.verificationUriComplete ?? deviceAuth?.verificationUri;
+    if (!url) {
+      return;
+    }
+    send({ type: "auth.open", url });
+  });
+
+  deviceCancel.addEventListener("click", () => {
+    cancelDeviceLogin();
+    setTunnelStatus("Accesso annullato.");
   });
 
   tunnelClose.addEventListener("click", closeTunnelPanel);
