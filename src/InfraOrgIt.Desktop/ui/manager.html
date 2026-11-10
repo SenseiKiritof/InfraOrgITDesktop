@@ -67,23 +67,44 @@
           </button>
         </div>
         <p class="hint">
-          Serve un token personale con scope <code>tunnels:operate</code>. Il
-          token resta solo in memoria e i target arrivano dall'allowlist
-          dell'istanza.
+          Accedi con Keycloak per ottenere un token con gli scope
+          <code>mcp:read</code> e <code>tunnels:operate</code>, oppure incolla
+          un token personale. I token restano solo in memoria e i target
+          arrivano dall'allowlist dell'istanza.
         </p>
-        <form id="token-form">
-          <label>
-            Token personale
-            <input
-              id="token"
-              type="password"
-              autocomplete="off"
-              placeholder="itk_…"
-              required
-            />
-          </label>
-          <button type="submit">Carica target</button>
-        </form>
+        <div class="token-row">
+          <form id="token-form">
+            <label>
+              Token personale
+              <input
+                id="token"
+                type="password"
+                autocomplete="off"
+                placeholder="itk_…"
+                required
+              />
+            </label>
+            <button type="submit">Carica target</button>
+          </form>
+          <button type="button" id="keycloak-login">Accedi con Keycloak</button>
+        </div>
+        <div id="device-login" class="device-login" hidden>
+          <p class="device-instruction">
+            Codice: <strong id="device-code" class="device-code"></strong>
+          </p>
+          <p class="hint">
+            Apri la pagina di accesso, conferma il codice e torna qui: i
+            target si caricano da soli.
+          </p>
+          <div class="device-actions">
+            <button type="button" id="device-open">
+              Apri la pagina di accesso
+            </button>
+            <button type="button" id="device-cancel" class="secondary">
+              Annulla
+            </button>
+          </div>
+        </div>
         <p id="tunnel-status" class="status" role="status" aria-live="polite"></p>
         <div id="tunnel-targets" class="targets"></div>
         <h3>Tunnel attivi</h3>
