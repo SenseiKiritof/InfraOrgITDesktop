@@ -11,6 +11,9 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
 - `dotnet build InfraOrgITDesktop.slnx -warnaserror`: the build gate.
 - `scripts/publish.sh [RID]`: self-contained publish plus a zip/tar.gz in
   `dist/`; macOS also builds the `.app` (optional `CODESIGN_IDENTITY`).
+- `scripts/test-real-self-install.sh`: macOS real published-bundle self-install
+  test; publishes into temp folders and is not run in CI.
+- `scripts/smoke.sh`: Linux GUI startup smoke test.
 
 ## Rules
 
