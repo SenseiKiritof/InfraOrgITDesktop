@@ -56,6 +56,18 @@
         <p id="empty" class="empty" hidden>
           Nessuna istanza configurata. Aggiungine una per iniziare.
         </p>
+        <p
+          id="restore-status"
+          class="status restore-status"
+          role="status"
+          aria-live="polite"
+          hidden
+        >
+          <span id="restore-message"></span>
+          <button type="button" id="restore-clear" class="secondary">
+            Non ripristinare
+          </button>
+        </p>
         <ul id="instances" class="instances"></ul>
       </section>
 

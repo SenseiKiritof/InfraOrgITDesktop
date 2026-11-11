@@ -24,8 +24,9 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
   `secret-tool` on Linux. Never write tokens to `instances.json` or logs. If
   the platform store fails, `FallbackTokenStore` keeps the session in memory
   and warns in the UI.
-- `Instances/InstanceStore` is the only file persistence: keep saves atomic
-  and validate URLs (`http`/`https` only).
+- `Instances/InstanceStore` and `Tunnels/TunnelsStateStore` are the only file
+  persistence: keep saves atomic, validate every value, and never write tokens,
+  hosts or secrets to `tunnels.json`.
 - `Tunnels/SshTunnel` builds `ArgumentList`, never a shell string; keep
   `BatchMode` and host-key verification on.
 - `Tunnels/TunnelManager` owns tokens, targets, processes and the live tunnel
