@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using InfraOrgIt.Desktop.Auth;
+using InfraOrgIt.Desktop.Instances;
 
 namespace InfraOrgIt.Desktop.Tunnels;
 
@@ -23,7 +24,8 @@ public sealed class TunnelManager(
     ITokenStore? tokenStore = null,
     TimeSpan? heartbeatInterval = null,
     Func<TimeSpan, CancellationToken, Task>? delay = null,
-    TimeSpan? reconnectDelay = null)
+    TimeSpan? reconnectDelay = null,
+    TunnelsStateStore? state = null)
 {
     /// <summary>Refresh this long before the access token expires.</summary>
     internal static readonly TimeSpan RefreshWindow = TimeSpan.FromSeconds(60);
@@ -64,9 +66,11 @@ public sealed class TunnelManager(
         delay ?? ((time, cancellationToken) => Task.Delay(time, cancellationToken));
     private readonly DeviceAuthClient _auth = auth ?? new DeviceAuthClient(http);
     private readonly ITokenStore _tokens = tokenStore ?? new MemoryTokenStore();
+    private readonly TunnelsStateStore _state = state ?? new TunnelsStateStore(null);
     private readonly Lock _gate = new();
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly SemaphoreSlim _autoStartGate = new(1, 1);
+    private readonly SemaphoreSlim _restoreGate = new(1, 1);
     private readonly Dictionary<string, Session> _sessions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TunnelProcess> _active =
@@ -79,6 +83,7 @@ public sealed class TunnelManager(
         new(StringComparer.Ordinal);
     private CancellationTokenSource? _loginCancellation;
     private bool _stopping;
+    private bool _stateWriteWarned;
 
     /// <summary>Test seam: the default starts a real ssh process.</summary>
     internal Func<ProcessStartInfo, ISshProcess> SshProcessFactory { get; init; } =
@@ -160,6 +165,10 @@ public sealed class TunnelManager(
 
                 case "tunnels.stop":
                     await StopAsync(RequiredString(root, "id"));
+                    break;
+
+                case "tunnels.forget":
+                    ForgetPersisted();
                     break;
 
                 default:
@@ -349,6 +358,131 @@ public sealed class TunnelManager(
     }
 
     /// <summary>
+    /// Restores the tunnels saved in the state file for the configured
+    /// instances. Each instance needs a stored refresh token: without a valid
+    /// session the saved identities stay in place, one log line is sent and the
+    /// app waits for a later sign-in. No browser login is ever started here.
+    /// Returns the number of tunnels that were started.
+    /// </summary>
+    public async Task<int> RestoreSavedTunnelsAsync(
+        IReadOnlyList<Instance> instances)
+    {
+        IReadOnlyList<TunnelStateEntry> saved;
+        try
+        {
+            saved = _state.Load();
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+            return 0;
+        }
+
+        if (saved.Count == 0)
+        {
+            Send(new { type = "tunnels.restored", count = 0 });
+            return 0;
+        }
+
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var instance in instances)
+        {
+            var url = TunnelStateEntry.NormalizeUrl(instance.Url);
+            if (url.Length > 0)
+                names[url] = instance.Name;
+        }
+
+        var welcomed = saved
+            .Where(x => names.ContainsKey(x.InstanceUrl))
+            .Select(x => x.InstanceUrl)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var total = 0;
+        foreach (var url in welcomed)
+            total += await RestoreSavedInstanceAsync(url, names[url]);
+
+        Send(new { type = "tunnels.restored", count = total });
+        return total;
+    }
+
+    /// <summary>
+    /// Drops every saved tunnel identity. Running tunnels keep running; only
+    /// the next app start changes.
+    /// </summary>
+    public void ForgetPersisted()
+    {
+        try
+        {
+            _state.Clear();
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+            return;
+        }
+
+        SendLog(
+            "Tunnel salvati dimenticati: non saranno ripristinati al prossimo avvio.");
+    }
+
+    private async Task<int> RestoreSavedInstanceAsync(string url, string name)
+    {
+        string? stored;
+        try
+        {
+            stored = await _tokens.LoadAsync(url);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            stored = null;
+        }
+
+        if (string.IsNullOrEmpty(stored))
+        {
+            SendLog(
+                $"Tunnel salvati per \"{name}\": sessione non disponibile, " +
+                "ripristino al prossimo accesso.");
+            return 0;
+        }
+
+        lock (_gate)
+        {
+            _refreshTokens[url] = stored;
+        }
+
+        var refreshed = await RefreshTokensForUrlAsync(
+            url, null, CancellationToken.None, notify: false);
+        if (refreshed is null)
+        {
+            SendLog(
+                $"Tunnel salvati per \"{name}\": sessione non più valida, " +
+                "ripristino al prossimo accesso.");
+            return 0;
+        }
+
+        var before = ActiveCountFor(url);
+        await LoadTargetsAsync(
+            url,
+            name,
+            refreshed.Tokens.AccessToken,
+            refreshed.Tokens.ExpiresAt,
+            refreshed.Issuer,
+            canRefresh: true,
+            CancellationToken.None,
+            silent: true);
+        return Math.Max(0, ActiveCountFor(url) - before);
+    }
+
+    private int ActiveCountFor(string url)
+    {
+        lock (_gate)
+        {
+            return _active.Values.Count(x =>
+                string.Equals(x.Session.Url, url, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    /// <summary>
     /// Forgets the instance session: in-memory tokens, targets and the
     /// refresh token in the platform store. Manual tokens keep working.
     /// </summary>
@@ -356,6 +490,7 @@ public sealed class TunnelManager(
     {
         CancelLogin();
         await ClearSessionAsync(url);
+        RemovePersistedForUrl(url);
         Send(new
         {
             type = "tunnels.auth",
@@ -458,12 +593,13 @@ public sealed class TunnelManager(
         DateTimeOffset? expiresAt,
         string? issuer,
         bool canRefresh,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool silent = false)
     {
         token = token.Trim();
         if (token.Length == 0)
         {
-            Send(new { type = "tunnels.error", message = "Inserisci il token personale." });
+            ReportTargetsError("Inserisci il token personale.", silent);
             return;
         }
 
@@ -472,25 +608,31 @@ public sealed class TunnelManager(
         CancelRetries(url);
 
         using var result = await SendTargetsAsync(
-            url, token, expiresAt, issuer, canRefresh, cancellationToken);
+            url, token, expiresAt, issuer, canRefresh, cancellationToken, silent);
         if (result is null)
+        {
+            if (silent)
+            {
+                SendLog(
+                    "Tunnel salvati: sessione non più valida, " +
+                    "ripristino al prossimo accesso.");
+            }
             return;
+        }
 
         var response = result.Response;
         if (!response.IsSuccessStatusCode)
         {
-            Send(new
-            {
-                type = "tunnels.error",
-                message = response.StatusCode switch
+            ReportTargetsError(
+                response.StatusCode switch
                 {
                     HttpStatusCode.Unauthorized =>
                         "Token non valido o scaduto.",
                     HttpStatusCode.Forbidden =>
                         "Serve un token con tunnels:operate e il ruolo operatore sull'ambiente.",
                     _ => $"L'istanza ha risposto {(int)response.StatusCode}."
-                }
-            });
+                },
+                silent);
             return;
         }
 
@@ -498,7 +640,7 @@ public sealed class TunnelManager(
             .ReadFromJsonAsync<TunnelTargetsResponse>(JsonOptions, cancellationToken);
         if (payload is null)
         {
-            Send(new { type = "tunnels.error", message = "Risposta target non valida." });
+            ReportTargetsError("Risposta target non valida.", silent);
             return;
         }
 
@@ -521,7 +663,196 @@ public sealed class TunnelManager(
             items = payload.Items
         });
 
+        ReconcileStoredTargets(url, payload.Items);
+        var savedKeys = StoredKeysFor(url);
         await AutoStartAsync(url, payload.Items, cancellationToken);
+        await RestoreStoredTunnelsAsync(
+            url, payload.Items, savedKeys, cancellationToken);
+    }
+
+    /// <summary>
+    /// Identities saved before this targets load. AutoStart services started
+    /// during the same load are not part of it, so the restore pass cannot
+    /// race their first process or a reconnect.
+    /// </summary>
+    private HashSet<string> StoredKeysFor(string url)
+    {
+        try
+        {
+            return _state.Load()
+                .Where(x => string.Equals(
+                    x.InstanceUrl, url, StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.Key)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+            return [];
+        }
+    }
+
+    private void ReportTargetsError(string message, bool silent)
+    {
+        if (silent)
+            SendLog("Tunnel salvati: " + message);
+        else
+            Send(new { type = "tunnels.error", message });
+    }
+
+    /// <summary>
+    /// Drops saved identities that the instance allowlist no longer returns,
+    /// or that belong to a disabled service. The API stays authoritative.
+    /// </summary>
+    private void ReconcileStoredTargets(
+        string url,
+        IReadOnlyList<TunnelServer> servers)
+    {
+        IReadOnlyList<TunnelStateEntry> saved;
+        try
+        {
+            saved = _state.Load();
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+            return;
+        }
+
+        var stale = saved
+            .Where(x =>
+                string.Equals(x.InstanceUrl, url, StringComparison.OrdinalIgnoreCase) &&
+                !ExistsInTargets(x, servers))
+            .Select(x => x.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        if (stale.Count == 0)
+            return;
+
+        try
+        {
+            _state.RemoveWhere(x => stale.Contains(x.Key));
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+            return;
+        }
+
+        SendLog(
+            stale.Count == 1
+                ? "Rimosso 1 tunnel salvato non più disponibile."
+                : $"Rimossi {stale.Count} tunnel salvati non più disponibili.");
+    }
+
+    private static bool ExistsInTargets(
+        TunnelStateEntry entry,
+        IReadOnlyList<TunnelServer> servers)
+    {
+        var server = servers.FirstOrDefault(x => x.ServerId == entry.ServerId);
+        if (server is null)
+            return false;
+
+        if (entry.ServiceId is int serviceId)
+        {
+            return (server.Services ?? [])
+                .Any(x => x.Id == serviceId && x.Enabled);
+        }
+
+        return entry.ServerApplicationId is int applicationId &&
+            server.Targets.Any(x => x.ServerApplicationId == applicationId);
+    }
+
+    /// <summary>
+    /// Starts every saved identity that is not active yet. Runs after each
+    /// targets load so a later sign-in can retry; an already active tunnel is
+    /// never started twice.
+    /// </summary>
+    private async Task RestoreStoredTunnelsAsync(
+        string url,
+        IReadOnlyList<TunnelServer> servers,
+        IReadOnlySet<string> savedKeys,
+        CancellationToken cancellationToken)
+    {
+        await _restoreGate.WaitAsync(cancellationToken);
+        try
+        {
+            IReadOnlyList<TunnelStateEntry> saved;
+            try
+            {
+                saved = _state.Load();
+            }
+            catch (Exception exception) when (IsStateStoreFailure(exception))
+            {
+                WarnStateStore();
+                return;
+            }
+
+            foreach (var entry in saved.Where(x =>
+                         savedKeys.Contains(x.Key) &&
+                         string.Equals(
+                             x.InstanceUrl, url,
+                             StringComparison.OrdinalIgnoreCase)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsEntryActive(url, entry) ||
+                    IsRetryPending(url, entry) ||
+                    !ExistsInTargets(entry, servers))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await StartAsync(
+                        url,
+                        entry.ServerId,
+                        entry.ServerApplicationId,
+                        entry.ServiceId,
+                        entry.LocalPort,
+                        automatic: true);
+                }
+                catch (OperationCanceledException)
+                    when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    SendLog(
+                        "Ripristino del tunnel salvato non riuscito: " +
+                        exception.Message);
+                }
+            }
+        }
+        finally
+        {
+            _restoreGate.Release();
+        }
+    }
+
+    private bool IsEntryActive(string url, TunnelStateEntry entry)
+    {
+        lock (_gate)
+        {
+            return _active.Values.Any(x =>
+                string.Equals(
+                    x.Session.Url, url, StringComparison.OrdinalIgnoreCase) &&
+                (entry.ServiceId is int serviceId
+                    ? x.Spec.Service?.Id == serviceId
+                    : entry.ServerApplicationId is int applicationId &&
+                      x.Spec.Endpoint?.ServerApplicationId == applicationId));
+        }
+    }
+
+    private bool IsRetryPending(string url, TunnelStateEntry entry)
+    {
+        if (entry.ServiceId is not int serviceId)
+            return false;
+
+        lock (_gate)
+        {
+            return _retries.ContainsKey(RetryKey(url, serviceId));
+        }
     }
 
     /// <summary>
@@ -598,12 +929,13 @@ public sealed class TunnelManager(
         DateTimeOffset? expiresAt,
         string? issuer,
         bool canRefresh,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool silent = false)
     {
         if (canRefresh && IsExpiring(expiresAt))
         {
             var early = await RefreshTokensForUrlAsync(
-                url, issuer, cancellationToken);
+                url, issuer, cancellationToken, notify: !silent);
             if (early is null)
                 return null;
 
@@ -619,7 +951,7 @@ public sealed class TunnelManager(
         response.Dispose();
 
         var refreshed = await RefreshTokensForUrlAsync(
-            url, issuer, cancellationToken);
+            url, issuer, cancellationToken, notify: !silent);
         if (refreshed is null)
             return null;
 
@@ -722,7 +1054,9 @@ public sealed class TunnelManager(
         if (activeSpec.Service is { } retryingService)
             CancelRetries(session.Url, retryingService.Id);
 
-        await StartTunnelAsync(session, activeSpec, automatic);
+        var tunnel = await StartTunnelAsync(session, activeSpec, automatic);
+        if (tunnel is not null)
+            PersistTunnel(session, tunnel.Spec, localPort);
     }
 
     /// <summary>
@@ -868,6 +1202,9 @@ public sealed class TunnelManager(
 
         foreach (var tunnel in tunnels)
         {
+            // An app exit keeps the saved identity for the next start; only a
+            // user stop or a logout forgets it.
+            tunnel.PreserveState = true;
             try
             {
                 tunnel.Process.Kill();
@@ -929,8 +1266,16 @@ public sealed class TunnelManager(
         tunnel.Heartbeat.Dispose();
         tunnel.Process.Dispose();
 
-        if (!stopped && projectionUsable)
-            ScheduleReconnect(tunnel);
+        if (!stopped)
+        {
+            var kept = projectionUsable && ScheduleReconnect(tunnel);
+            if (!kept)
+                RemovePersisted(tunnel.Session.Url, tunnel.Spec);
+        }
+        else if (!tunnel.PreserveState)
+        {
+            RemovePersisted(tunnel.Session.Url, tunnel.Spec);
+        }
     }
 
     private static string ClosedMessage(TunnelStartSpec spec) =>
@@ -1002,24 +1347,25 @@ public sealed class TunnelManager(
     /// <summary>
     /// Schedules a reconnect only for an autoStart service that ended without
     /// a user stop and still exists in the current allowlist. Deployment
-    /// tunnels and manual one-shot services never reconnect.
+    /// tunnels and manual one-shot services never reconnect. Returns true when
+    /// the saved identity must be kept: retrying, or the app is exiting.
     /// </summary>
-    private void ScheduleReconnect(TunnelProcess tunnel)
+    private bool ScheduleReconnect(TunnelProcess tunnel)
     {
         if (tunnel.Spec.Service is not { AutoStart: true, Enabled: true } service)
-            return;
+            return false;
 
         if (!IsRetryEligible(tunnel, out var blocked))
         {
             if (blocked is not null)
                 SendLog(blocked);
-            return;
+            return false;
         }
 
         lock (_gate)
         {
             if (_stopping)
-                return;
+                return true;
         }
 
         var attempt = DateTimeOffset.UtcNow - tunnel.StartedAt >= ReconnectResetAfter
@@ -1028,11 +1374,12 @@ public sealed class TunnelManager(
         if (attempt > MaxReconnectAttempts)
         {
             SendLog(ReconnectGiveUpMessage(tunnel.Spec));
-            return;
+            return false;
         }
 
         var entry = GetOrCreateRetryEntry(tunnel.Session.Url, service.Id);
         _ = ReconnectAsync(tunnel, attempt, entry);
+        return true;
     }
 
     private async Task ReconnectAsync(
@@ -1047,7 +1394,10 @@ public sealed class TunnelManager(
             if (!IsRetryEligible(failed, out var blocked))
             {
                 if (blocked is not null)
+                {
                     SendLog(blocked);
+                    RemovePersisted(failed.Session.Url, failed.Spec);
+                }
                 return;
             }
 
@@ -1065,13 +1415,17 @@ public sealed class TunnelManager(
                 !IsRetryEligible(failed, out blocked))
             {
                 if (blocked is not null)
+                {
                     SendLog(blocked);
+                    RemovePersisted(failed.Session.Url, failed.Spec);
+                }
                 return;
             }
 
             if (!TryReconnectSpec(failed.Spec, out var spec, out var portError))
             {
                 SendLog(portError!);
+                RemovePersisted(failed.Session.Url, failed.Spec);
                 return;
             }
 
@@ -1102,6 +1456,7 @@ public sealed class TunnelManager(
             if (attempt > MaxReconnectAttempts)
             {
                 SendLog(ReconnectGiveUpMessage(failed.Spec));
+                RemovePersisted(failed.Session.Url, failed.Spec);
                 return;
             }
         }
@@ -1560,12 +1915,16 @@ public sealed class TunnelManager(
     }
 
     private async Task<RefreshedTokens?> RefreshTokensForUrlAsync(
-        string url, string? issuer, CancellationToken cancellationToken)
+        string url,
+        string? issuer,
+        CancellationToken cancellationToken,
+        bool notify = true)
     {
         await _refreshGate.WaitAsync(cancellationToken);
         try
         {
-            return await RefreshTokensCoreAsync(url, issuer, cancellationToken);
+            return await RefreshTokensCoreAsync(
+                url, issuer, cancellationToken, notify);
         }
         finally
         {
@@ -1579,7 +1938,8 @@ public sealed class TunnelManager(
     /// transient network failure keeps it so a retry can work.
     /// </summary>
     private async Task<RefreshedTokens?> RefreshTokensCoreAsync(
-        string url, string? issuer, CancellationToken cancellationToken)
+        string url, string? issuer, CancellationToken cancellationToken,
+        bool notify = true)
     {
         string? refreshToken;
         lock (_gate)
@@ -1590,10 +1950,13 @@ public sealed class TunnelManager(
         if (string.IsNullOrEmpty(refreshToken))
         {
             await ClearSessionAsync(url);
-            SendAuthError(
-                url,
-                "Sessione non disponibile. Accedi di nuovo.",
-                requiresLogin: true);
+            if (notify)
+            {
+                SendAuthError(
+                    url,
+                    "Sessione non disponibile. Accedi di nuovo.",
+                    requiresLogin: true);
+            }
             return null;
         }
 
@@ -1620,19 +1983,21 @@ public sealed class TunnelManager(
         catch (DeviceAuthException)
         {
             await ClearSessionAsync(url);
-            SendAuthError(
-                url,
-                "Sessione scaduta. Accedi di nuovo.",
-                requiresLogin: true);
+            if (notify)
+            {
+                SendAuthError(
+                    url,
+                    "Sessione scaduta. Accedi di nuovo.",
+                    requiresLogin: true);
+            }
             return null;
         }
         catch (Exception exception) when (
             exception is HttpRequestException or TaskCanceledException or
             JsonException)
         {
-            SendAuthError(
-                url,
-                "Rinnovo della sessione non riuscito. Riprova.");
+            if (notify)
+                SendAuthError(url, "Rinnovo della sessione non riuscito. Riprova.");
             return null;
         }
     }
@@ -1752,6 +2117,104 @@ public sealed class TunnelManager(
         }
     }
 
+    /// <summary>
+    /// Saves the identity of a successful start. Nothing secret is written:
+    /// only ids the instance must confirm again, the mode and the requested
+    /// local port.
+    /// </summary>
+    private void PersistTunnel(
+        Session session, TunnelStartSpec spec, int? requestedLocalPort)
+    {
+        if (!TunnelStateEntry.TryCreate(
+                session.Url,
+                spec.Server.ServerId,
+                spec.Service?.Id,
+                spec.Endpoint?.ServerApplicationId,
+                spec.Mode.ToString(),
+                requestedLocalPort,
+                out var entry,
+                out _))
+        {
+            return;
+        }
+
+        try
+        {
+            _state.Add(entry!);
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+        }
+    }
+
+    private void RemovePersisted(string url, TunnelStartSpec spec)
+    {
+        if (IsSpecActive(url, spec))
+            return;
+
+        try
+        {
+            _state.Remove(TunnelStateEntry.KeyFor(
+                url,
+                spec.Server.ServerId,
+                spec.Service?.Id,
+                spec.Endpoint?.ServerApplicationId));
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+        }
+    }
+
+    private bool IsSpecActive(string url, TunnelStartSpec spec)
+    {
+        lock (_gate)
+        {
+            return _active.Values.Any(x =>
+                string.Equals(
+                    x.Session.Url, url, StringComparison.OrdinalIgnoreCase) &&
+                x.Spec.Server.ServerId == spec.Server.ServerId &&
+                (spec.Service is { } service
+                    ? x.Spec.Service?.Id == service.Id
+                    : spec.Endpoint is { } endpoint &&
+                      x.Spec.Endpoint?.ServerApplicationId ==
+                      endpoint.ServerApplicationId));
+        }
+    }
+
+    private void RemovePersistedForUrl(string url)
+    {
+        var normalized = TunnelStateEntry.NormalizeUrl(url);
+        try
+        {
+            _state.RemoveWhere(x => string.Equals(
+                x.InstanceUrl, normalized, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception exception) when (IsStateStoreFailure(exception))
+        {
+            WarnStateStore();
+        }
+    }
+
+    private void WarnStateStore()
+    {
+        lock (_gate)
+        {
+            if (_stateWriteWarned)
+                return;
+            _stateWriteWarned = true;
+        }
+
+        SendWarning(
+            "Salvataggio dei tunnel non riuscito: il ripristino automatico " +
+            "all'avvio non sarà disponibile.");
+    }
+
+    private static bool IsStateStoreFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or
+        JsonException or ArgumentException;
+
     private void Send(object payload)
     {
         try
@@ -1819,6 +2282,7 @@ public sealed class TunnelManager(
         public int ReconnectAttempt { get; } = reconnectAttempt;
         public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
         public bool StopRequested { get; set; }
+        public bool PreserveState { get; set; }
         public CancellationTokenSource Heartbeat { get; } = new();
         public Task HeartbeatTask { get; set; } = Task.CompletedTask;
 
