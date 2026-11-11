@@ -197,11 +197,15 @@
 
   const closeTunnelPanel = () => {
     cancelDeviceLogin();
+    const url = tunnelInstance?.url;
     tunnelInstance = null;
     targets = [];
     tunnelFormReset();
     setSessionState("");
     tunnelPanel.hidden = true;
+    if (url) {
+      send({ type: "tunnels.retries.cancel", url });
+    }
   };
 
   const tunnelFormReset = () => {
