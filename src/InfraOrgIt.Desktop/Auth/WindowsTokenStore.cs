@@ -17,6 +17,20 @@ public sealed class WindowsTokenStore : ITokenStore
     private const uint CredPersistLocalMachine = 2;
     private const int ErrorNotFound = 1168;
 
+    private readonly string _targetPrefix;
+
+    public WindowsTokenStore()
+        : this(TargetPrefix)
+    {
+    }
+
+    /// <summary>
+    /// Test seam: a unique prefix keeps a test credential away from the real
+    /// instance entries.
+    /// </summary>
+    internal WindowsTokenStore(string targetPrefix) =>
+        _targetPrefix = targetPrefix;
+
     public bool IsPersistent => true;
 
     public string Backend => "Credential Manager";
@@ -48,8 +62,8 @@ public sealed class WindowsTokenStore : ITokenStore
         return Task.CompletedTask;
     }
 
-    private static string Target(string instanceUrl) =>
-        TargetPrefix + TokenStoreKey.Normalize(instanceUrl);
+    private string Target(string instanceUrl) =>
+        _targetPrefix + TokenStoreKey.Normalize(instanceUrl);
 
     private static string? Read(string target)
     {
