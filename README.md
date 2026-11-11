@@ -25,8 +25,14 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   memory. `Esci` forgets the stored session. The app shows active tunnels,
   publishes their live session projection (mode, service, target and port) to
   the instance while they run, and closes them on request or on exit.
-- Still to do for tunnels: no automatic reconnect or persistence of running
-  services across app restarts; a dropped ssh process stays stopped.
+  An `autoStart` service whose ssh process exits unexpectedly is reconnected
+  automatically: up to three attempts five seconds apart, reusing the same
+  service and local port. A port that was auto-allocated is replaced when it
+  is no longer free; a busy fixed port stops the retries with an error in the
+  panel. A manual stop, a tunnel panel change or app exit cancels pending
+  retries. Each attempt is a new tunnel session with its own correlation id.
+- Still to do for tunnels: running services are not persisted across app
+  restarts, and an app restart requires starting them again.
 - Update check: reads the latest GitHub release, compares its semver tag with
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
