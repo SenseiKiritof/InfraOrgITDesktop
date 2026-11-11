@@ -138,9 +138,15 @@ workflow artifacts and the GitHub Release.
 dotnet test InfraOrgITDesktop.slnx
 ```
 
-### Headless smoke test
+### GUI smoke tests
 
-Linux only. It needs the WebKitGTK runtime, Xvfb and `xauth`:
+The smoke checks build the app, start the manager window and fail if the
+process exits before 8 seconds; `SMOKE_HOLD_SECONDS` changes the hold. They
+check that the window is created and the event loop stays up, not that the
+webview content rendered: the manager page itself is covered by the unit
+tests.
+
+Linux needs the WebKitGTK runtime, Xvfb and `xauth`:
 
 ```bash
 sudo apt-get install libwebkit2gtk-4.1-0 libnotify4 xvfb xauth
@@ -148,18 +154,34 @@ dotnet build InfraOrgITDesktop.slnx -warnaserror
 scripts/smoke.sh
 ```
 
-The script starts the manager window under `xvfb-run -a`, keeps it alive for
-8 seconds and fails if the process exited earlier; `SMOKE_HOLD_SECONDS`
-changes the hold. The equivalent manual command is:
+The script starts the window under `xvfb-run -a`. The equivalent manual
+command is:
 
 ```bash
 xvfb-run -a dotnet run --project src/InfraOrgIt.Desktop --no-build
 ```
 
-`.github/workflows/smoke.yml` runs the same check on `ubuntu-latest`; it is
-separate from the `build-test` matrix. On a machine with a desktop session no
-Xvfb is needed: `dotnet run --project src/InfraOrgIt.Desktop` opens the window
-normally.
+On Windows, run the built executable and check it is still alive:
+
+```powershell
+dotnet build InfraOrgITDesktop.slnx -warnaserror
+$exe = 'src/InfraOrgIt.Desktop/bin/Debug/net10.0/InfraOrgIt.Desktop.exe'
+$process = Start-Process $exe -PassThru
+Start-Sleep -Seconds 8
+if ($process.HasExited) { throw "App exited early with $($process.ExitCode)" }
+Stop-Process -Id $process.Id -Force
+```
+
+`.github/workflows/smoke.yml` runs the Linux check on `ubuntu-latest` and the
+Windows check on `windows-latest`, separate from the `build-test` matrix. The
+Windows runner starts the app in its desktop session and ships the WebView2
+runtime; the job asserts the process stays up and logs the main window handle
+for diagnostics. It does not validate the webview content, so a runner that
+can create the window but not render the page would still pass. If the GUI
+cannot start on a future runner image, mark the Windows job non-blocking and
+document the failure instead of leaving a red check. On a machine with a
+desktop session no Xvfb is needed: `dotnet run --project
+src/InfraOrgIt.Desktop` opens the window normally.
 
 ## Package
 
