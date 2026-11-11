@@ -376,6 +376,79 @@ h3 {
   font-size: 15px;
 }
 
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
+.badge.mode-local,
+.badge.mode-dynamic,
+.badge.mode-remote {
+  border-color: currentColor;
+}
+
+.badge.mode-local {
+  color: var(--accent);
+}
+
+.badge.mode-dynamic {
+  color: var(--warning);
+}
+
+.badge.mode-remote {
+  color: var(--danger);
+}
+
+.services-title {
+  margin: 14px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.service-row {
+  align-items: flex-start;
+}
+
+.service-row .service-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: 650;
+}
+
+.service-row .service-meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.toggle input {
+  width: auto;
+}
+
 .instance .detail {
   color: var(--muted);
   font-size: 13px;
