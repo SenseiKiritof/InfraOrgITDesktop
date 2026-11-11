@@ -6,7 +6,10 @@ namespace InfraOrgIt.Desktop.Tests;
 /// Round-trips a throwaway refresh token through the real platform secret
 /// store. Each test uses a unique service/account suffix, deletes the item in
 /// a finally block and never prints the token. Hosts without the platform
-/// tool, an unlocked keychain or a D-Bus session report Skipped.
+/// integration, an unlocked keychain or a D-Bus session report Skipped. The
+/// macOS test drives the native Security.framework store, not the
+/// <c>/usr/bin/security</c> CLI, so the token never reaches a process argument
+/// list (PT-16).
 /// </summary>
 public sealed class TokenStorePlatformTests
 {
@@ -18,14 +21,12 @@ public sealed class TokenStorePlatformTests
         Skip.IfNot(
             OperatingSystem.IsMacOS(),
             "The macOS Keychain store only runs on macOS.");
-        Skip.IfNot(
-            File.Exists("/usr/bin/security"),
-            "/usr/bin/security is not available.");
 
         var service = $"{MacTokenStore.Service} Tests {Guid.NewGuid():N}";
         var account = $"https://keychain-test-{Guid.NewGuid():N}.invalid";
         var token = "refresh-" + Guid.NewGuid().ToString("N");
-        var store = new MacTokenStore(new ProcessRunner(), service);
+        var updated = "refresh-" + Guid.NewGuid().ToString("N");
+        var store = new MacTokenStore(service);
         using var timeout = new CancellationTokenSource(Timeout);
 
         try
@@ -51,8 +52,20 @@ public sealed class TokenStorePlatformTests
                 string.Equals(token, loaded, StringComparison.Ordinal),
                 "The Keychain did not return the saved refresh token.");
 
+            // A second save must update the existing item instead of failing
+            // with errSecDuplicateItem.
+            await store.SaveAsync(account, updated, timeout.Token);
+            Assert.True(
+                string.Equals(
+                    updated, await store.LoadAsync(account, timeout.Token),
+                    StringComparison.Ordinal),
+                "The Keychain did not update the saved refresh token.");
+
             await store.DeleteAsync(account, timeout.Token);
             Assert.Null(await store.LoadAsync(account, timeout.Token));
+
+            // Deleting a missing item is a successful no-op.
+            await store.DeleteAsync(account, timeout.Token);
         }
         finally
         {

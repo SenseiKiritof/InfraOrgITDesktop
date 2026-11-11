@@ -114,17 +114,19 @@ session automatically and shows `Sessione salvata`.
 Only the refresh token is persisted, keyed by instance URL:
 
 - macOS: Keychain generic password, service `InfraOrgIT Desktop`, account the
-  instance URL, through `/usr/bin/security`.
+  instance URL, through the native Security.framework API
+  (`SecKeychainAdd/FindGenericPassword`). The token is passed in memory, never
+  in the arguments of a helper process or in `argv`.
 - Windows: Credential Manager generic credential named
   `InfraOrgIT:<instance URL>`, through `advapi32`.
 - Linux: Secret Service through `secret-tool`, label `InfraOrgIT Desktop`,
   service `infraorgit`, account the instance URL. It needs a desktop session
   with D-Bus; headless sessions fall back to memory.
 
-If the platform tool is missing or refuses access, the app keeps the session
+If the platform store is missing or refuses access, the app keeps the session
 in memory for the current run and shows a non-blocking warning. Access tokens
 are never written to disk, and refresh tokens never appear in
-`instances.json` or logs.
+`instances.json`, logs or a child process argument list.
 
 The access token is renewed when it has less than 60 seconds left, and once
 more after a `401` from the instance API. If Keycloak rejects the refresh
@@ -263,7 +265,7 @@ secrets:
 
 | Integration | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Refresh token round-trip | Keychain through `/usr/bin/security` | Credential Manager through `advapi32` | `secret-tool` with a D-Bus session |
+| Refresh token round-trip | Keychain through native Security.framework | Credential Manager through `advapi32` | `secret-tool` with a D-Bus session |
 | Update helper | generated `install.sh` against a disposable `.app` (replace and restore) | generated `install.ps1` against a real published folder (replace, PID wait and restore) through `scripts/self-install-windows.ps1` | generated `install.sh` against a disposable app directory (replace and restore) |
 
 The token tests save, load and delete a throwaway refresh token under a unique

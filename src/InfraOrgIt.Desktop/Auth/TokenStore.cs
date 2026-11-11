@@ -214,7 +214,7 @@ public static class TokenStoreFactory
     {
         ITokenStore? store = null;
         if (OperatingSystem.IsMacOS())
-            store = new MacTokenStore(new ProcessRunner());
+            store = new MacTokenStore();
         else if (OperatingSystem.IsWindows())
             store = new WindowsTokenStore();
         else if (OperatingSystem.IsLinux())
