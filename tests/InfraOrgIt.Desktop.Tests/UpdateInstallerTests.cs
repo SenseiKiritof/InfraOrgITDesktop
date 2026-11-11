@@ -8,7 +8,7 @@ namespace InfraOrgIt.Desktop.Tests;
 public sealed class UpdateInstallerTests
 {
     [Fact]
-    public void Install_rejects_an_unverified_download_without_running_anything()
+    public void Install_blocks_an_unsigned_download_and_opens_the_folder()
     {
         using var directory = new TempDirectory();
         var archive = directory.WriteFile("update.zip", [1, 2, 3]);
@@ -20,16 +20,16 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: false);
+        var download = Download(archive, signatureVerified: false);
 
         var result = installer.Install(download);
 
-        Assert.Equal(UpdateInstallStatus.Rejected, result.Status);
-        Assert.Contains("SHA-256", result.Message);
-        Assert.Equal(UpdateInstallMode.None, installer.GetMode(download));
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Contains("firma aggiornamento non valida/mancante", result.Message);
+        Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
+        Assert.Equal(directory.Root, Assert.Single(environment.OpenedFolders));
         Assert.Empty(process.Runs);
         Assert.Empty(process.Detached);
-        Assert.Empty(environment.OpenedFolders);
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class UpdateInstallerTests
             Succeeded: false,
             Message: "Download non riuscito.",
             FilePath: archive,
-            ChecksumVerified: true));
+            SignatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Rejected, result.Status);
         Assert.Empty(process.Runs);
@@ -63,7 +63,7 @@ public sealed class UpdateInstallerTests
             process);
 
         var result = installer.Install(Download(
-            Path.Combine(directory.Root, "missing.zip"), checksumVerified: true));
+            Path.Combine(directory.Root, "missing.zip"), signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Rejected, result.Status);
         Assert.Contains("non trovato", result.Message);
@@ -91,7 +91,7 @@ public sealed class UpdateInstallerTests
             ProcessId = 4242,
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Restart, installer.GetMode(download));
 
@@ -139,7 +139,7 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
 
@@ -168,7 +168,7 @@ public sealed class UpdateInstallerTests
         };
         var installer = new UpdateInstaller(environment, process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Contains("non è InfraOrgIT Desktop", result.Message);
@@ -196,7 +196,7 @@ public sealed class UpdateInstallerTests
         };
         var installer = new UpdateInstaller(environment, process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Contains("una sola applicazione .app", result.Message);
@@ -227,7 +227,7 @@ public sealed class UpdateInstallerTests
         };
         var installer = new UpdateInstaller(environment, process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Empty(process.Detached);
@@ -248,15 +248,15 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: false);
+        var download = Download(archive, signatureVerified: false);
 
-        Assert.Equal(UpdateInstallMode.None, installer.GetMode(download));
+        Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
         var result = installer.Install(download);
 
-        Assert.Equal(UpdateInstallStatus.Rejected, result.Status);
-        Assert.Contains("SHA-256", result.Message);
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Contains("firma aggiornamento non valida/mancante", result.Message);
+        Assert.Equal(directory.Root, Assert.Single(environment.OpenedFolders));
         Assert.Empty(process.Detached);
-        Assert.Empty(environment.OpenedFolders);
     }
 
     [Fact]
@@ -276,7 +276,7 @@ public sealed class UpdateInstallerTests
             ProcessId = 5150,
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Restart, installer.GetMode(download));
 
@@ -355,7 +355,7 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
 
@@ -385,7 +385,7 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
         var result = installer.Install(download);
@@ -405,7 +405,7 @@ public sealed class UpdateInstallerTests
         var installer = new UpdateInstaller(
             WindowsEnvironment(directory, app), process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Contains("una sola cartella", result.Message);
@@ -423,7 +423,7 @@ public sealed class UpdateInstallerTests
         var installer = new UpdateInstaller(
             WindowsEnvironment(directory, app), process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Contains(UpdateInstaller.WindowsExecutableName, result.Message);
@@ -447,7 +447,7 @@ public sealed class UpdateInstallerTests
         var installer = new UpdateInstaller(
             WindowsEnvironment(directory, app), process);
 
-        var result = installer.Install(Download(archive, checksumVerified: true));
+        var result = installer.Install(Download(archive, signatureVerified: true));
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
         Assert.Empty(process.Detached);
@@ -507,7 +507,7 @@ public sealed class UpdateInstallerTests
             ProcessId = 777,
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Restart, installer.GetMode(download));
 
@@ -547,7 +547,7 @@ public sealed class UpdateInstallerTests
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
-        var download = Download(archive, checksumVerified: true);
+        var download = Download(archive, signatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
 
@@ -588,12 +588,12 @@ public sealed class UpdateInstallerTests
             UpdateInstaller.ReadBundleIdentifier(plist));
     }
 
-    private static UpdateDownloadResult Download(string path, bool checksumVerified) =>
+    private static UpdateDownloadResult Download(string path, bool signatureVerified) =>
         new(
             Succeeded: true,
             Message: "Download completato.",
             FilePath: path,
-            ChecksumVerified: checksumVerified);
+            SignatureVerified: signatureVerified);
 
     private static FakeEnvironment WindowsEnvironment(
         TempDirectory directory, string app) => new()
