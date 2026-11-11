@@ -75,6 +75,23 @@ For a local instance with the self-signed certificate:
 INFRAORGIT_INSECURE_TLS=1 dotnet run --project src/InfraOrgIt.Desktop
 ```
 
+### Instance URLs
+
+Instance URLs use `https` for every host. Plain `http` is accepted only for
+loopback hosts (`localhost`, `127.0.0.1`, `[::1]`), so a local dev stack keeps
+working. A remote `http` URL is rejected with an Italian message; saved remote
+`http` entries are skipped when `instances.json` is loaded and must be re-added
+as `https`.
+
+`INFRAORGIT_ALLOW_INSECURE_HTTP=1` is the development-only escape hatch that
+allows a remote plain-http instance. Treat it like `INFRAORGIT_INSECURE_TLS`:
+never set it in a packaged install or on a shared host, because bearer tokens
+and inventory data would travel in cleartext.
+
+```bash
+INFRAORGIT_ALLOW_INSECURE_HTTP=1 dotnet run --project src/InfraOrgIt.Desktop
+```
+
 Requires the .NET 10 SDK and the system `ssh` client (OpenSSH). On Linux the
 webview needs WebKitGTK (`libwebkit2gtk-4.1-0` on Debian/Ubuntu). Load the key
 in the agent (`ssh-add`) before opening a tunnel; the app never reads private
