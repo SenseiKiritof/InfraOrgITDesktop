@@ -14,7 +14,14 @@ public static class SshTunnel
     public static IReadOnlyList<string> BuildArguments(
         TunnelServer server,
         TunnelEndpoint endpoint,
-        int localPort)
+        int localPort) =>
+        BuildArguments(
+            server,
+            TunnelStartSpec.CreateDeployment(server, endpoint, localPort));
+
+    internal static IReadOnlyList<string> BuildArguments(
+        TunnelServer server,
+        TunnelStartSpec spec)
     {
         var arguments = new List<string>
         {
@@ -24,16 +31,35 @@ public static class SshTunnel
             "-p", server.SshPort.ToString()
         };
 
-        if (server.Jump is not null)
+        var jumps = JumpChain(server);
+        if (jumps.Count > 0)
         {
             arguments.Add("-J");
-            arguments.Add(
-                $"{server.Jump.Username}@{FormatHost(server.Jump.Host)}:{server.Jump.Port}");
+            arguments.Add(string.Join(",", jumps.Select(FormatJump)));
         }
 
-        arguments.Add("-L");
-        arguments.Add(
-            $"127.0.0.1:{localPort}:{FormatHost(endpoint.TargetHost)}:{endpoint.TargetPort}");
+        switch (spec.Mode)
+        {
+            case TunnelMode.Dynamic:
+                arguments.Add("-D");
+                arguments.Add($"127.0.0.1:{spec.LocalPort}");
+                break;
+
+            case TunnelMode.Remote:
+                arguments.Add("-R");
+                arguments.Add(
+                    $"127.0.0.1:{spec.RemotePort}:" +
+                    $"{FormatHost(spec.TargetHost!)}:{spec.TargetPort}");
+                break;
+
+            default:
+                arguments.Add("-L");
+                arguments.Add(
+                    $"127.0.0.1:{spec.LocalPort}:" +
+                    $"{FormatHost(spec.TargetHost!)}:{spec.TargetPort}");
+                break;
+        }
+
         arguments.Add($"{server.Username}@{FormatHost(server.SshHost)}");
         return arguments;
     }
@@ -46,7 +72,14 @@ public static class SshTunnel
     public static ProcessStartInfo BuildStartInfo(
         TunnelServer server,
         TunnelEndpoint endpoint,
-        int localPort)
+        int localPort) =>
+        BuildStartInfo(
+            server,
+            TunnelStartSpec.CreateDeployment(server, endpoint, localPort));
+
+    internal static ProcessStartInfo BuildStartInfo(
+        TunnelServer server,
+        TunnelStartSpec spec)
     {
         var executable = Environment.GetEnvironmentVariable("INFRAORGIT_SSH");
         var startInfo = new ProcessStartInfo(
@@ -57,10 +90,20 @@ public static class SshTunnel
             RedirectStandardOutput = true,
             CreateNoWindow = true
         };
-        foreach (var argument in BuildArguments(server, endpoint, localPort))
+        foreach (var argument in BuildArguments(server, spec))
             startInfo.ArgumentList.Add(argument);
         return startInfo;
     }
+
+    private static IReadOnlyList<TunnelJump> JumpChain(TunnelServer server)
+    {
+        if (server.Jumps is { Count: > 0 } jumps)
+            return jumps.Take(3).ToArray();
+        return server.Jump is null ? [] : [server.Jump];
+    }
+
+    private static string FormatJump(TunnelJump jump) =>
+        $"{jump.Username}@{FormatHost(jump.Host)}:{jump.Port}";
 }
 
 public static class PortAllocator
