@@ -5,6 +5,8 @@
 # The publish workflow sets CODESIGN_IDENTITY after importing the Developer ID
 # certificate, then notarizes and staples the .app. Without the variable the
 # build stays unsigned, which is what local runs and forks get.
+# Set DIST_ROOT to write the build elsewhere (used by the real self-install
+# test): DIST_ROOT=/tmp/build scripts/publish.sh osx-arm64.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,8 +22,9 @@ if [ -z "$RID" ]; then
 fi
 
 VERSION="${VERSION:-0.1.0}"
-OUT="$ROOT/dist/$RID"
-ARCHIVE_BASE="$ROOT/dist/InfraOrgIT-Desktop-$VERSION-$RID"
+DIST_ROOT="${DIST_ROOT:-$ROOT/dist}"
+OUT="$DIST_ROOT/$RID"
+ARCHIVE_BASE="$DIST_ROOT/InfraOrgIT-Desktop-$VERSION-$RID"
 rm -rf "$OUT" "$ARCHIVE_BASE" "$ARCHIVE_BASE.zip" "$ARCHIVE_BASE.tar.gz"
 
 dotnet publish "$ROOT/src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" \
@@ -32,7 +35,7 @@ dotnet publish "$ROOT/src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" \
   -o "$OUT"
 
 if [ "$(uname -s)" = "Darwin" ] && [[ "$RID" == osx-* ]]; then
-  APP="$ROOT/dist/InfraOrgIT Desktop.app"
+  APP="$DIST_ROOT/InfraOrgIT Desktop.app"
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS"
   cp -R "$OUT/." "$APP/Contents/MacOS/"
@@ -71,7 +74,7 @@ else
           "Compress-Archive -LiteralPath '$(cygpath -w "$ARCHIVE_BASE")' -DestinationPath '$(cygpath -w "$ARCHIVE_BASE.zip")' -Force"
         echo "Archivio: $ARCHIVE_BASE.zip"
       elif command -v zip >/dev/null 2>&1; then
-        (cd "$ROOT/dist" && zip -qr "$(basename "$ARCHIVE_BASE").zip" "$(basename "$ARCHIVE_BASE")")
+        (cd "$DIST_ROOT" && zip -qr "$(basename "$ARCHIVE_BASE").zip" "$(basename "$ARCHIVE_BASE")")
         echo "Archivio: $ARCHIVE_BASE.zip"
       else
         echo "Serve powershell.exe o zip per creare l'archivio Windows." >&2
@@ -79,7 +82,7 @@ else
       fi
       ;;
     *)
-      tar -czf "$ARCHIVE_BASE.tar.gz" -C "$ROOT/dist" "$(basename "$ARCHIVE_BASE")"
+      tar -czf "$ARCHIVE_BASE.tar.gz" -C "$DIST_ROOT" "$(basename "$ARCHIVE_BASE")"
       echo "Archivio: $ARCHIVE_BASE.tar.gz"
       ;;
   esac

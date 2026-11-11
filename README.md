@@ -231,6 +231,34 @@ disposable fake binary. Nothing outside the test directory is touched. The
 Windows PowerShell helper is still covered only by the argument and script-text
 unit tests; it is not executed in CI.
 
+### Real published bundle self-install (macOS)
+
+`scripts/test-real-self-install.sh` complements the fake-layout tests above
+with two real bundles built by `scripts/publish.sh`: the installed version and
+a newer update payload. It publishes both into temporary `DIST_ROOT` folders,
+copies the old bundle into a disposable `Applications` folder, and runs
+`UpdateInstallerRealBundleTests` against the real generated helper:
+
+- the published zip is extracted with `ditto` and the `.app` identifier is
+  checked by `UpdateInstaller`;
+- the real app executable is started from the old bundle (a live stand-in is
+  used when the host has no GUI session) and the helper must stay alive until
+  that PID exits;
+- the relaunch is recorded instead of opening a window, and the replaced
+  bundle must carry the new version and marker;
+- a forced copy failure must leave the old bundle and version in place;
+- the helper work directory and the old bundle backup must disappear.
+
+The script is macOS-only, uses the host architecture by default
+(`RID=osx-x64` for an Intel build), leaves `dist/` alone, never writes to
+`/Applications`, kills the app it starts and removes its temp tree. It is not
+part of CI because it publishes two full bundles; run it locally when changing
+the macOS install helper:
+
+```bash
+scripts/test-real-self-install.sh
+```
+
 ### GUI smoke tests
 
 The smoke checks build the app, start the manager window and fail if the
@@ -286,7 +314,8 @@ Self-contained publish. On macOS the script builds `InfraOrgIT Desktop.app`
 plus a zip; set `CODESIGN_IDENTITY` to sign it with hardened runtime and a
 secure timestamp. Linux produces a `.tar.gz` and Windows a `.zip` of the
 published folder. Set `VERSION` to change the default `0.1.0` in the artifact
-names and in the assembly version used by the update check.
+names and in the assembly version used by the update check, and `DIST_ROOT` to
+write the build outside `dist/` (the real-bundle self-install test uses it).
 
 `.github/workflows/publish.yml` packages all four RIDs:
 
