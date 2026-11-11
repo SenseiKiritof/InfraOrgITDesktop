@@ -90,7 +90,8 @@ internal static class Program
                 : null;
 
             if (type is "tunnels.list" or "tunnels.start" or "tunnels.login" or
-                "tunnels.restore" or "tunnels.logout")
+                "tunnels.restore" or "tunnels.logout" or
+                "tunnels.retries.cancel")
             {
                 var tunnelUrl = root.GetProperty("url").GetString();
                 if (!SafeLoad(store).Any(x => x.Url == tunnelUrl))
