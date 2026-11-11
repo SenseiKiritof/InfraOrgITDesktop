@@ -228,7 +228,9 @@ Windows.
 The helper tests run the real generated shell script with a real exited PID
 against temporary app paths. The macOS launch step is replaced with a recorder
 so the disposable test bundle is never opened; the Linux helper execs the
-disposable fake binary. Nothing outside the test directory is touched.
+disposable fake binary. Nothing outside the test directory is touched. The
+Windows test also starts the published app from the temporary installation
+folder.
 
 ### Windows self-install end-to-end
 
@@ -245,7 +247,7 @@ the generated helper:
    its argument list, so the script and paths come from production code.
 3. Replace only the `Start-Process` launch line with a recorder (the internal
    `CreateWindowsInstallScript` seam), so a second GUI does not start.
-4. Assert the helper is still running after three seconds while the app PID is
+4. Assert the helper logged its start and is still running while the app PID is
    alive and the old marker is untouched; close the app; assert exit code 0,
    the new marker and a recorder hit.
 5. Repeat with a zip whose payload exe is a text file and no seam: the launch
