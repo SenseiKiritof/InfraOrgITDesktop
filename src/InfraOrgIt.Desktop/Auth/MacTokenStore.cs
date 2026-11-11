@@ -4,11 +4,29 @@ namespace InfraOrgIt.Desktop.Auth;
 /// macOS Keychain through <c>/usr/bin/security</c>. The refresh token is the
 /// generic-password value; the instance URL is the account name.
 /// </summary>
-public sealed class MacTokenStore(IProcessRunner runner) : ITokenStore
+public sealed class MacTokenStore : ITokenStore
 {
     internal const string Service = "InfraOrgIT Desktop";
     private const string SecurityPath = "/usr/bin/security";
     private const int ItemNotFound = 44;
+
+    private readonly IProcessRunner _runner;
+    private readonly string _service;
+
+    public MacTokenStore(IProcessRunner runner)
+        : this(runner, Service)
+    {
+    }
+
+    /// <summary>
+    /// Test seam: a unique service keeps a test item away from the real
+    /// instance entries.
+    /// </summary>
+    internal MacTokenStore(IProcessRunner runner, string service)
+    {
+        _runner = runner;
+        _service = service;
+    }
 
     public bool IsPersistent => true;
 
@@ -17,11 +35,11 @@ public sealed class MacTokenStore(IProcessRunner runner) : ITokenStore
     public async Task<string?> LoadAsync(
         string instanceUrl, CancellationToken cancellationToken = default)
     {
-        var result = await runner.RunAsync(
+        var result = await _runner.RunAsync(
             SecurityPath,
             [
                 "find-generic-password",
-                "-s", Service,
+                "-s", _service,
                 "-a", TokenStoreKey.Normalize(instanceUrl),
                 "-w"
             ],
@@ -48,12 +66,12 @@ public sealed class MacTokenStore(IProcessRunner runner) : ITokenStore
         if (string.IsNullOrWhiteSpace(refreshToken))
             throw new ArgumentException("Token vuoto.", nameof(refreshToken));
 
-        var result = await runner.RunAsync(
+        var result = await _runner.RunAsync(
             SecurityPath,
             [
                 "add-generic-password",
                 "-U",
-                "-s", Service,
+                "-s", _service,
                 "-a", TokenStoreKey.Normalize(instanceUrl),
                 "-w", refreshToken
             ],
@@ -70,11 +88,11 @@ public sealed class MacTokenStore(IProcessRunner runner) : ITokenStore
     public async Task DeleteAsync(
         string instanceUrl, CancellationToken cancellationToken = default)
     {
-        var result = await runner.RunAsync(
+        var result = await _runner.RunAsync(
             SecurityPath,
             [
                 "delete-generic-password",
-                "-s", Service,
+                "-s", _service,
                 "-a", TokenStoreKey.Normalize(instanceUrl)
             ],
             null,

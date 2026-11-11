@@ -205,6 +205,32 @@ workflow artifacts and the GitHub Release.
 dotnet test InfraOrgITDesktop.slnx
 ```
 
+### Platform integration tests
+
+`dotnet test` also exercises the real OS integrations when the host provides
+them. Every test reports `Skipped` instead of failing when the platform or the
+tool is missing, so the same suite runs unchanged in the `build-test` CI matrix
+(`ubuntu-latest`, `macos-latest`, `windows-latest`) without extra steps or
+secrets:
+
+| Integration | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Refresh token round-trip | Keychain through `/usr/bin/security` | Credential Manager through `advapi32` | `secret-tool` with a D-Bus session |
+| Update helper | generated `install.sh` against a disposable `.app` (replace and restore) | PowerShell helper covered by argument and script-text unit tests, not executed | generated `install.sh` against a disposable app directory (replace and restore) |
+
+The token tests save, load and delete a throwaway refresh token under a unique
+service/account suffix, clean up in a `finally` block and never print the
+token. macOS skips when the Keychain is locked or unavailable, Linux skips
+without `secret-tool` or `DBUS_SESSION_BUS_ADDRESS`, and Windows only runs on
+Windows.
+
+The helper tests run the real generated shell script with a real exited PID
+against temporary app paths. The macOS launch step is replaced with a recorder
+so the disposable test bundle is never opened; the Linux helper execs the
+disposable fake binary. Nothing outside the test directory is touched. The
+Windows PowerShell helper is still covered only by the argument and script-text
+unit tests; it is not executed in CI.
+
 ### GUI smoke tests
 
 The smoke checks build the app, start the manager window and fail if the
