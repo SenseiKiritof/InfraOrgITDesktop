@@ -175,8 +175,9 @@ Stop-Process -Id $process.Id -Force
 `.github/workflows/smoke.yml` runs the Linux check on `ubuntu-latest` and the
 Windows check on `windows-latest`, separate from the `build-test` matrix. The
 Windows runner starts the app in its desktop session and ships the WebView2
-runtime; the job only asserts the process stays up, so a runner that can
-create the window but not render the webview would still pass. If the GUI
+runtime; the job asserts the process stays up and logs the main window handle
+for diagnostics. It does not validate the webview content, so a runner that
+can create the window but not render the page would still pass. If the GUI
 cannot start on a future runner image, mark the Windows job non-blocking and
 document the failure instead of leaving a red check. On a machine with a
 desktop session no Xvfb is needed: `dotnet run --project
