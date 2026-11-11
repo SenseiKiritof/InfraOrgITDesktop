@@ -197,9 +197,13 @@ public sealed class UpdateCheckerTests
                 "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-arm64.zip",
                 1234),
             Asset(
-                "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip.sha256",
-                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-arm64.zip.sha256",
-                65)
+                "InfraOrgIT-Desktop-0.1.1-sha256.txt",
+                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/InfraOrgIT-Desktop-0.1.1-sha256.txt",
+                100),
+            Asset(
+                "InfraOrgIT-Desktop-0.1.1-sha256.txt.sig",
+                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/InfraOrgIT-Desktop-0.1.1-sha256.txt.sig",
+                256)
         });
         var handler = new FakeHandler(
             _ => Json(HttpStatusCode.OK, Release("v0.1.1", assets: assets)));
@@ -213,10 +217,13 @@ public sealed class UpdateCheckerTests
             "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip",
             result.DownloadAsset!.Name);
         Assert.Equal(1234, result.DownloadAsset.Size);
-        Assert.True(result.ChecksumAvailable);
+        Assert.True(result.SignatureAvailable);
         Assert.Equal(
-            "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip.sha256",
-            result.ChecksumAsset!.Name);
+            "InfraOrgIT-Desktop-0.1.1-sha256.txt",
+            result.ManifestAsset!.Name);
+        Assert.Equal(
+            "InfraOrgIT-Desktop-0.1.1-sha256.txt.sig",
+            result.SignatureAsset!.Name);
     }
 
     [Theory]
@@ -243,7 +250,7 @@ public sealed class UpdateCheckerTests
 
         Assert.True(result.IsNewer);
         Assert.Equal(name, result.DownloadAsset!.Name);
-        Assert.False(result.ChecksumAvailable);
+        Assert.False(result.SignatureAvailable);
     }
 
     [Fact]
@@ -261,11 +268,11 @@ public sealed class UpdateCheckerTests
 
         Assert.True(result.IsNewer);
         Assert.Null(result.DownloadAsset);
-        Assert.False(result.ChecksumAvailable);
+        Assert.False(result.SignatureAvailable);
     }
 
     [Fact]
-    public async Task Check_reports_a_release_without_a_checksum_asset()
+    public async Task Check_reports_a_release_without_a_signed_manifest()
     {
         var assets = Asset(
             "InfraOrgIT-Desktop-0.1.1-linux-x64.tar.gz",
@@ -278,7 +285,9 @@ public sealed class UpdateCheckerTests
         var result = await checker.CheckAsync();
 
         Assert.NotNull(result.DownloadAsset);
-        Assert.False(result.ChecksumAvailable);
+        Assert.Null(result.ManifestAsset);
+        Assert.Null(result.SignatureAsset);
+        Assert.False(result.SignatureAvailable);
     }
 
     [Theory]
