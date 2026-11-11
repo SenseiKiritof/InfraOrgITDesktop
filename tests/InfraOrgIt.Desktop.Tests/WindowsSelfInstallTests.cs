@@ -214,7 +214,7 @@ public sealed class WindowsSelfInstallTests
             Succeeded: true,
             Message: "Download completato.",
             FilePath: archive,
-            ChecksumVerified: true);
+            SignatureVerified: true);
 
         Assert.Equal(UpdateInstallMode.Restart, installer.GetMode(download));
         var result = installer.Install(download);

@@ -12,13 +12,16 @@ namespace InfraOrgIt.Desktop.Update;
 /// <summary>How the manager should label the install action after a download.</summary>
 public enum UpdateInstallMode
 {
-    /// <summary>The download did not pass the SHA-256 check, so it is not installable.</summary>
+    /// <summary>The download is not usable, so there is nothing to install.</summary>
     None,
 
     /// <summary>A helper replaces the app and restarts it.</summary>
     Restart,
 
-    /// <summary>The platform needs a manual install; the button opens the folder.</summary>
+    /// <summary>
+    /// The platform needs a manual install or the signed manifest was not
+    /// verified; the button opens the download folder.
+    /// </summary>
     Open,
 }
 
@@ -81,17 +84,21 @@ internal interface IUpdateInstallProcess
 internal sealed record UpdateProcessResult(int ExitCode, string Output);
 
 /// <summary>
-/// Installs a downloaded and SHA-256 verified archive. macOS replaces the
-/// current <c>.app</c> from a detached helper, Linux does the same for a
-/// published app directory and Windows replaces a published app folder from a
-/// detached PowerShell helper; every other case falls back to opening the
-/// download folder. A missing or failed checksum can never reach a helper.
+/// Installs a downloaded archive whose signed checksum manifest was verified.
+/// macOS replaces the current <c>.app</c> from a detached helper, Linux does
+/// the same for a published app directory and Windows replaces a published app
+/// folder from a detached PowerShell helper; every other case falls back to
+/// opening the download folder. A missing or invalid signature can never reach
+/// a helper: it always degrades to the manual folder.
 /// </summary>
 public sealed class UpdateInstaller
 {
     internal const string MacBundleIdentifier = "it.infraorgit.desktop";
     internal const string MacBundleMarker = "/Contents/MacOS";
     internal const string WindowsExecutableName = "InfraOrgIt.Desktop.exe";
+
+    internal const string SignatureRequiredMessage =
+        "Installazione bloccata: firma aggiornamento non valida/mancante.";
 
     private const string OtherManualMessage =
         "Installazione automatica non disponibile su questo sistema: " +
@@ -114,14 +121,17 @@ public sealed class UpdateInstaller
     }
 
     /// <summary>
-    /// Decides the button label without unpacking the archive. The full
-    /// validation still runs on <see cref="Install"/>; an invalid archive falls
-    /// back to the manual folder.
+    /// Decides the button label without unpacking the archive. An unsigned
+    /// download only offers the manual folder; the full validation still runs
+    /// on <see cref="Install"/>.
     /// </summary>
     public UpdateInstallMode GetMode(UpdateDownloadResult download)
     {
         if (FindRejection(download) is not null)
             return UpdateInstallMode.None;
+
+        if (!download.SignatureVerified)
+            return UpdateInstallMode.Open;
 
         var archive = download.FilePath!;
         return _environment.Platform switch
@@ -137,8 +147,9 @@ public sealed class UpdateInstaller
     }
 
     /// <summary>
-    /// Installs only a successful download whose SHA-256 was verified. Every
-    /// platform checks this first, so no helper can start unverified.
+    /// Installs only a successful download whose signed manifest was verified.
+    /// An unsigned or tampered archive opens the download folder instead, so no
+    /// helper can start without a valid signature and a matching hash.
     /// </summary>
     public UpdateInstallResult Install(UpdateDownloadResult download)
     {
@@ -147,6 +158,15 @@ public sealed class UpdateInstaller
             return new UpdateInstallResult(UpdateInstallStatus.Rejected, rejection);
 
         var archive = download.FilePath!;
+        if (!download.SignatureVerified)
+        {
+            return OpenManual(
+                archive,
+                SignatureRequiredMessage +
+                " L'archivio non ha una firma valida o non corrisponde al " +
+                "manifest firmato.");
+        }
+
         try
         {
             return _environment.Platform switch
@@ -169,17 +189,11 @@ public sealed class UpdateInstaller
         }
     }
 
-    /// <summary>Null when the download is installable; otherwise the reason.</summary>
+    /// <summary>Null when the download is usable; otherwise the reason.</summary>
     internal static string? FindRejection(UpdateDownloadResult download)
     {
         if (!download.Succeeded)
             return "Download non riuscito: installazione non disponibile.";
-
-        if (!download.ChecksumVerified)
-        {
-            return "Installazione bloccata: il pacchetto non ha superato " +
-                   "la verifica SHA-256.";
-        }
 
         if (string.IsNullOrWhiteSpace(download.FilePath))
         {
