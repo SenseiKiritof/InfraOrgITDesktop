@@ -26,10 +26,13 @@
 
   const updateCurrent = document.querySelector("#update-current");
   const updateCheck = document.querySelector("#update-check");
+  const updateDownload = document.querySelector("#update-download");
+  const updateConfirm = document.querySelector("#update-confirm");
   const updateOpen = document.querySelector("#update-open");
   const updateStatus = document.querySelector("#update-status");
   const updateRelease = document.querySelector("#update-release");
   const updateNotes = document.querySelector("#update-notes");
+  const updatePath = document.querySelector("#update-path");
 
   let instances = [];
   let busy = false;
@@ -39,6 +42,7 @@
   let loginActive = false;
   let deviceAuth = null;
   let releaseUrl = null;
+  let downloadAssetName = null;
 
   const send = (payload) => {
     window.external.sendMessage(JSON.stringify(payload));
@@ -54,9 +58,20 @@
     tunnelStatus.classList.toggle("error", isError);
   };
 
-  const setUpdateStatus = (message, isError = false) => {
+  const setUpdateStatus = (message, tone = "") => {
     updateStatus.textContent = message;
-    updateStatus.classList.toggle("error", isError);
+    updateStatus.classList.toggle("error", tone === "error");
+    updateStatus.classList.toggle("warning", tone === "warning");
+  };
+
+  const resetUpdateDownload = () => {
+    downloadAssetName = null;
+    updateDownload.hidden = true;
+    updateDownload.disabled = false;
+    updateConfirm.hidden = true;
+    updateConfirm.disabled = false;
+    updatePath.hidden = true;
+    updatePath.textContent = "";
   };
 
   const setSessionState = (label) => {
@@ -339,6 +354,7 @@
         break;
       case "update.status": {
         updateCheck.disabled = false;
+        resetUpdateDownload();
         if (message.currentVersion) {
           updateCurrent.textContent = `Versione ${message.currentVersion}`;
         }
@@ -349,7 +365,7 @@
           updateNotes.hidden = true;
           setUpdateStatus(
             message.message ?? "Controllo aggiornamenti non riuscito.",
-            true,
+            "error",
           );
           break;
         }
@@ -363,6 +379,8 @@
         }
         releaseUrl = message.releaseUrl ?? null;
         updateOpen.hidden = !releaseUrl;
+        downloadAssetName = message.downloadAssetName ?? null;
+        updateDownload.hidden = !downloadAssetName;
         updateRelease.textContent =
           message.releaseName ?? `Versione ${message.latestVersion}`;
         updateRelease.hidden = false;
@@ -374,10 +392,49 @@
         );
         break;
       }
+      case "update.download.progress": {
+        const percent = message.percent;
+        setUpdateStatus(
+          Number.isInteger(percent)
+            ? `Download in corso… ${percent}%`
+            : "Download in corso…",
+        );
+        break;
+      }
+      case "update.download.status": {
+        updateDownload.disabled = false;
+        updateConfirm.disabled = false;
+        if (message.requiresConfirmation) {
+          updateConfirm.hidden = false;
+          setUpdateStatus(
+            message.message ??
+              "Checksum SHA-256 non disponibile: conferma il download.",
+            "warning",
+          );
+          break;
+        }
+        updateConfirm.hidden = true;
+        if (!message.succeeded) {
+          setUpdateStatus(
+            message.message ?? "Download non riuscito.",
+            "error",
+          );
+          break;
+        }
+        if (message.path) {
+          updatePath.textContent = `File salvato: ${message.path}`;
+          updatePath.hidden = false;
+        }
+        setUpdateStatus(
+          message.message ?? "Download completato.",
+          message.checksumVerified ? "" : "warning",
+        );
+        break;
+      }
       case "external.error":
         setUpdateStatus(
           message.message ?? "Apertura del browser non riuscita.",
-          true,
+          "error",
         );
         break;
       case "tunnels.auth":
@@ -573,8 +630,27 @@
     updateOpen.hidden = true;
     updateRelease.hidden = true;
     updateNotes.hidden = true;
+    resetUpdateDownload();
     setUpdateStatus("Controllo aggiornamenti…");
     send({ type: "update.check" });
+  });
+
+  updateDownload.addEventListener("click", () => {
+    if (!downloadAssetName) {
+      return;
+    }
+    updateDownload.disabled = true;
+    updateConfirm.hidden = true;
+    updatePath.hidden = true;
+    setUpdateStatus(`Download di ${downloadAssetName}…`);
+    send({ type: "update.download" });
+  });
+
+  updateConfirm.addEventListener("click", () => {
+    updateConfirm.disabled = true;
+    updateDownload.disabled = true;
+    setUpdateStatus("Download senza verifica dello SHA-256…", "warning");
+    send({ type: "update.download", confirm: true });
   });
 
   updateOpen.addEventListener("click", () => {

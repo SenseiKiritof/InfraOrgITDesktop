@@ -16,6 +16,8 @@ internal static class Program
     private static PhotinoWindow? _manager;
     private static TunnelManager? _tunnels;
     private static UpdateChecker? _updates;
+    private static UpdateDownloader? _downloads;
+    private static UpdateCheckResult? _latestRelease;
 
     [STAThread]
     private static void Main()
@@ -47,10 +49,12 @@ internal static class Program
                 _manager?.Invoke(() => Send(
                     _manager, new { type = "tunnels.warning", message }))));
 
-        // GitHub checks use their own client: the dev TLS override applies to
-        // instances, never to the release lookup.
+        // GitHub checks use their own clients: the dev TLS override applies to
+        // instances, never to the release lookup or the download.
         _updates = new UpdateChecker(
             new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
+        _downloads = new UpdateDownloader(
+            new HttpClient { Timeout = TimeSpan.FromMinutes(10) });
 
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
@@ -126,6 +130,13 @@ internal static class Program
 
                 case "update.check":
                     _ = CheckForUpdatesAsync();
+                    break;
+
+                case "update.download":
+                    var confirmed =
+                        root.TryGetProperty("confirm", out var confirmElement) &&
+                        confirmElement.ValueKind == JsonValueKind.True;
+                    _ = DownloadUpdateAsync(confirmed);
                     break;
 
                 case "open-external":
@@ -247,6 +258,10 @@ internal static class Program
                 "Controllo aggiornamenti non riuscito.");
         }
 
+        _latestRelease = result is { IsNewer: true, Failed: false }
+            ? result
+            : null;
+
         _manager?.Invoke(() => Send(_manager, new
         {
             type = "update.status",
@@ -257,8 +272,90 @@ internal static class Program
             message = result.Message,
             releaseUrl = result.ReleaseUrl?.AbsoluteUri,
             releaseName = result.ReleaseName,
-            releaseNotes = result.ReleaseNotes
+            releaseNotes = result.ReleaseNotes,
+            downloadAssetName = result.DownloadAsset?.Name,
+            checksumAvailable = result.ChecksumAvailable
         }));
+    }
+
+    /// <summary>
+    /// Downloads the archive selected by the last check, verifies its
+    /// checksum when published and opens the download folder. Nothing is
+    /// executed: installation stays manual.
+    /// </summary>
+    private static async Task DownloadUpdateAsync(bool confirmed)
+    {
+        var downloader = _downloads;
+        var release = _latestRelease;
+        if (downloader is null || release is null)
+        {
+            _manager?.Invoke(() => Send(_manager, new
+            {
+                type = "update.download.status",
+                succeeded = false,
+                message = "Controlla prima la disponibilità di un aggiornamento.",
+                requiresConfirmation = false
+            }));
+            return;
+        }
+
+        UpdateDownloadResult result;
+        try
+        {
+            var progress = new Progress<UpdateDownloadProgress>(value =>
+                _manager?.Invoke(() => Send(_manager, new
+                {
+                    type = "update.download.progress",
+                    received = value.Received,
+                    total = value.Total,
+                    percent = value.Percent
+                })));
+            result = await downloader.DownloadAsync(release, confirmed, progress);
+        }
+        catch (Exception)
+        {
+            result = new UpdateDownloadResult(
+                Succeeded: false, Message: "Download non riuscito.");
+        }
+
+        var folderWarning = result.Succeeded &&
+            result.FilePath is not null &&
+            !TryOpenFolder(result.FilePath);
+        var message = folderWarning
+            ? result.Message + " Cartella non aperta automaticamente."
+            : result.Message;
+
+        _manager?.Invoke(() => Send(_manager, new
+        {
+            type = "update.download.status",
+            succeeded = result.Succeeded,
+            message,
+            path = result.FilePath,
+            checksumVerified = result.ChecksumVerified,
+            requiresConfirmation = result.RequiresConfirmation
+        }));
+    }
+
+    private static bool TryOpenFolder(string filePath)
+    {
+        try
+        {
+            var folder = Path.GetDirectoryName(filePath);
+            if (string.IsNullOrEmpty(folder))
+                return false;
+
+            Process.Start(new ProcessStartInfo(folder)
+            {
+                UseShellExecute = true
+            });
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or
+            System.ComponentModel.Win32Exception or ArgumentException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -23,8 +23,11 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
 - Update check: reads the latest GitHub release, compares its semver tag with
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
-  browser. Download and install remain manual.
-- Still to do: automatic download and install.
+  browser and `Scarica aggiornamento` downloads the archive for the current
+  RID, verifies the published SHA-256 and opens the download folder. Nothing
+  is executed automatically and installation remains user-confirmed/manual.
+- Still to do: automatic install (self-replace), and platform signature
+  verification of the downloaded archive beyond the SHA-256 check.
 
 ## Run
 
@@ -85,6 +88,37 @@ Instances file:
 - Windows: `%APPDATA%\InfraOrgIT\instances.json`
 - Linux: `~/.config/infraorgit/instances.json`
 
+## Updates
+
+The `Aggiornamenti` card reads the latest stable GitHub release and lists its
+release notes. When a newer version exists, `Scarica aggiornamento` downloads
+the archive for the current runtime identifier (`osx-arm64`, `osx-x64`,
+`win-x64` or `linux-x64`):
+
+- The release API asset list is authoritative. The exact RID wins; when it is
+  missing, the same OS with another architecture is accepted as the documented
+  fallback, using the platform archive format: macOS and Windows `.zip`, Linux
+  `.tar.gz`.
+- The archive URL must be `https://github.com/...`; anything else is rejected
+  before a request. GitHub redirects the download to its object storage, which
+  `HttpClient` follows internally.
+- The app looks for `<archive>.sha256` in the same release, downloads the
+  archive to `<archive>.part`, compares the SHA-256 and only then renames it.
+  A mismatch deletes the file and reports the error in Italian.
+- When the checksum asset is missing, the UI shows a warning and requires the
+  explicit `Scarica senza verifica` confirmation before downloading.
+- Files go to `~/Downloads/InfraOrgIT Desktop`, or a temporary folder when the
+  home folder is unknown. After a successful download the app opens the
+  containing folder and shows the full path. It never executes or installs the
+  archive; the user installs it manually.
+- Network, HTTP and checksum failures come back as UI messages instead of
+  exceptions. Tests use a fake `HttpMessageHandler`, so no test touches the
+  network.
+
+`publish.yml` writes a `<archive>.sha256` next to every archive after signing
+and notarization and uploads both the archives and the checksum files to the
+workflow artifacts and the GitHub Release.
+
 ## Test
 
 ```bash
@@ -136,8 +170,9 @@ names and in the assembly version used by the update check.
 Run it manually (`version` input, default `0.1.0`) to upload the workflow
 artifacts only. Pushing a `v*` tag (created manually from `main`, never by the
 workflow) uses the tag without the leading `v` and also creates or updates a
-GitHub Release with the same archives. Each artifact holds the zip or tar.gz
-from `scripts/publish.sh`.
+GitHub Release with the same archives and their `.sha256` files. Each artifact
+holds the zip or tar.gz from `scripts/publish.sh` plus the checksum generated
+after any signing or notarization step.
 
 ### Signing and notarization
 
@@ -195,8 +230,8 @@ The `contents: write` permission is granted only to the release job.
 - `src/InfraOrgIt.Desktop/Instances/`: instance model and JSON store.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
   port allocation and process tracking.
-- `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison and
-  the update result shown in the manager page.
+- `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison,
+  asset selection, archive download and SHA-256 verification.
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
 
 ## Decisions
