@@ -53,6 +53,65 @@ public sealed class SshTunnelTests
     }
 
     [Fact]
+    public void Builds_a_dynamic_socks_proxy_without_a_target()
+    {
+        var port = PortAllocator.FindFree();
+        var spec = ServiceSpec(Server(), "Dynamic", localPort: port);
+
+        var arguments = SshTunnel.BuildArguments(Server(), spec);
+
+        Assert.Equal([
+            "-N",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "BatchMode=yes",
+            "-p", "22",
+            "-D", $"127.0.0.1:{port}",
+            "deploy@10.0.0.1"
+        ], arguments);
+    }
+
+    [Fact]
+    public void Builds_a_remote_forward_on_the_remote_port()
+    {
+        var server = Server();
+        var spec = ServiceSpec(
+            server, "Remote", targetHost: "2001:db8::30", targetPort: 443,
+            localPort: null, remotePort: 9443);
+
+        var arguments = SshTunnel.BuildArguments(server, spec);
+
+        Assert.Equal([
+            "-N",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "BatchMode=yes",
+            "-p", "22",
+            "-R", "127.0.0.1:9443:[2001:db8::30]:443",
+            "deploy@10.0.0.1"
+        ], arguments);
+    }
+
+    [Fact]
+    public void Builds_a_multi_hop_jump_chain_nearest_first()
+    {
+        var server = Server() with
+        {
+            Jump = new TunnelJump("2001:db8::1", 2222, "nearest"),
+            Jumps =
+            [
+                new TunnelJump("2001:db8::1", 2222, "nearest"),
+                new TunnelJump("2001:db8::2", 2200, "far")
+            ]
+        };
+
+        var arguments = SshTunnel.BuildArguments(server, Endpoint(), 18080);
+
+        Assert.Contains("-J", arguments);
+        Assert.Contains(
+            "nearest@[2001:db8::1]:2222,far@[2001:db8::2]:2200",
+            arguments);
+    }
+
+    [Fact]
     public void Finds_a_free_loopback_port()
     {
         var port = PortAllocator.FindFree();
@@ -77,5 +136,24 @@ public sealed class SshTunnelTests
         }
 
         Assert.False(PortAllocator.IsFree(80));
+    }
+
+    private static TunnelStartSpec ServiceSpec(
+        TunnelServer server,
+        string mode,
+        string kind = "Tcp",
+        string targetHost = "127.0.0.1",
+        int? targetPort = 8080,
+        int? localPort = 18080,
+        int? remotePort = null)
+    {
+        var service = new TunnelService(
+            10, server.ServerId, "svc", mode, targetHost,
+            targetPort, localPort, remotePort, kind, null, false, true);
+        Assert.True(
+            TunnelStartSpec.TryCreate(
+                server, null, service, null, out var spec, out var error),
+            error);
+        return spec!;
     }
 }
