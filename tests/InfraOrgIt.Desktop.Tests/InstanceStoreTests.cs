@@ -105,4 +105,71 @@ public sealed class InstanceStoreTests : IDisposable
         Assert.Equal("Prod", instance.Name);
         Assert.Equal("https://example.com/path", instance.Url);
     }
+
+    [Theory]
+    [InlineData("http://localhost:3000")]
+    [InlineData("http://127.0.0.1:3000")]
+    [InlineData("http://[::1]:3000")]
+    public void TryCreate_accepts_http_for_loopback_hosts(string url)
+    {
+        var ok = Instance.TryCreate(
+            "Locale", url, out var instance, out var error, allowInsecureHttp: false);
+
+        Assert.True(ok, error);
+        Assert.Equal(url, instance.Url);
+    }
+
+    [Fact]
+    public void TryCreate_rejects_http_outside_loopback()
+    {
+        var ok = Instance.TryCreate(
+            "Remota", "http://192.0.2.10:8080", out _, out var error,
+            allowInsecureHttp: false);
+
+        Assert.False(ok);
+        Assert.Contains("https", error);
+        Assert.Contains("localhost", error);
+    }
+
+    [Fact]
+    public void TryCreate_accepts_https_for_a_remote_host()
+    {
+        var ok = Instance.TryCreate(
+            "Remota", "https://infra.example.com", out var instance, out var error);
+
+        Assert.True(ok, error);
+        Assert.Equal("https://infra.example.com", instance.Url);
+    }
+
+    [Fact]
+    public void TryCreate_accepts_remote_http_with_the_development_override()
+    {
+        var ok = Instance.TryCreate(
+            "Dev", "http://192.0.2.10:8080", out _, out var error,
+            allowInsecureHttp: true);
+
+        Assert.True(ok, error);
+    }
+
+    [Fact]
+    public void TryCreate_reads_the_insecure_http_override_from_the_environment()
+    {
+        var previous = Environment.GetEnvironmentVariable(
+            Instance.AllowInsecureHttpVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                Instance.AllowInsecureHttpVariable, "1");
+
+            var ok = Instance.TryCreate(
+                "Dev", "http://192.0.2.10:8080", out _, out var error);
+
+            Assert.True(ok, error);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                Instance.AllowInsecureHttpVariable, previous);
+        }
+    }
 }
