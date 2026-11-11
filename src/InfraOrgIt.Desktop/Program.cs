@@ -20,7 +20,7 @@ internal static class Program
     private static UpdateInstaller? _installer;
     private static UpdateCheckResult? _latestRelease;
     private static UpdateDownloadResult? _lastDownload;
-    private static int _installInProgress;
+    private static readonly UpdateInstallGuard _installGuard = new();
     private static int _restoreStarted;
 
     [STAThread]
@@ -384,7 +384,7 @@ internal static class Program
             return;
         }
 
-        if (Interlocked.Exchange(ref _installInProgress, 1) == 1)
+        if (!_installGuard.TryEnter())
             return;
 
         UpdateInstallResult result;
@@ -400,7 +400,7 @@ internal static class Program
         }
 
         if (!result.Launched)
-            Interlocked.Exchange(ref _installInProgress, 0);
+            _installGuard.Release();
 
         _manager?.Invoke(() =>
         {
