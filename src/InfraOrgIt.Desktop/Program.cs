@@ -17,7 +17,10 @@ internal static class Program
     private static TunnelManager? _tunnels;
     private static UpdateChecker? _updates;
     private static UpdateDownloader? _downloads;
+    private static UpdateInstaller? _installer;
     private static UpdateCheckResult? _latestRelease;
+    private static UpdateDownloadResult? _lastDownload;
+    private static int _installInProgress;
     private static int _restoreStarted;
 
     [STAThread]
@@ -57,6 +60,7 @@ internal static class Program
             new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
         _downloads = new UpdateDownloader(
             new HttpClient { Timeout = TimeSpan.FromMinutes(10) });
+        _installer = new UpdateInstaller();
 
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
@@ -147,6 +151,10 @@ internal static class Program
                         root.TryGetProperty("confirm", out var confirmElement) &&
                         confirmElement.ValueKind == JsonValueKind.True;
                     _ = DownloadUpdateAsync(confirmed);
+                    break;
+
+                case "update.install":
+                    _ = InstallUpdateAsync();
                     break;
 
                 case "open-external":
@@ -253,6 +261,8 @@ internal static class Program
         if (checker is null)
             return;
 
+        _lastDownload = null;
+
         UpdateCheckResult result;
         try
         {
@@ -297,6 +307,7 @@ internal static class Program
     {
         var downloader = _downloads;
         var release = _latestRelease;
+        _lastDownload = null;
         if (downloader is null || release is null)
         {
             _manager?.Invoke(() => Send(_manager, new
@@ -328,12 +339,17 @@ internal static class Program
                 Succeeded: false, Message: "Download non riuscito.");
         }
 
+        _lastDownload = result.Succeeded ? result : null;
+
         var folderWarning = result.Succeeded &&
             result.FilePath is not null &&
             !TryOpenFolder(result.FilePath);
         var message = folderWarning
             ? result.Message + " Cartella non aperta automaticamente."
             : result.Message;
+        var installMode = result.Succeeded && _installer is not null
+            ? _installer.GetMode(result).ToString().ToLowerInvariant()
+            : null;
 
         _manager?.Invoke(() => Send(_manager, new
         {
@@ -342,8 +358,62 @@ internal static class Program
             message,
             path = result.FilePath,
             checksumVerified = result.ChecksumVerified,
-            requiresConfirmation = result.RequiresConfirmation
+            requiresConfirmation = result.RequiresConfirmation,
+            installMode
         }));
+    }
+
+    /// <summary>
+    /// Installs the last successful download. The installer re-checks the
+    /// SHA-256 flag, so an unverified archive is rejected even if the UI sends
+    /// the message. On macOS the app closes after the detached helper starts;
+    /// the window closing handler stops the tunnels.
+    /// </summary>
+    private static async Task InstallUpdateAsync()
+    {
+        var installer = _installer;
+        var download = _lastDownload;
+        if (installer is null || download is null)
+        {
+            _manager?.Invoke(() => Send(_manager, new
+            {
+                type = "update.install.status",
+                status = "rejected",
+                message = "Scarica e verifica prima un aggiornamento."
+            }));
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _installInProgress, 1) == 1)
+            return;
+
+        UpdateInstallResult result;
+        try
+        {
+            result = await Task.Run(() => installer.Install(download));
+        }
+        catch (Exception)
+        {
+            result = new UpdateInstallResult(
+                UpdateInstallStatus.Rejected,
+                "Installazione non riuscita.");
+        }
+
+        if (!result.Launched)
+            Interlocked.Exchange(ref _installInProgress, 0);
+
+        _manager?.Invoke(() =>
+        {
+            Send(_manager, new
+            {
+                type = "update.install.status",
+                status = result.Status.ToString().ToLowerInvariant(),
+                message = result.Message
+            });
+
+            if (result.Launched)
+                _manager?.Close();
+        });
     }
 
     private static bool TryOpenFolder(string filePath)

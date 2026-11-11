@@ -32,6 +32,7 @@
   const updateCheck = document.querySelector("#update-check");
   const updateDownload = document.querySelector("#update-download");
   const updateConfirm = document.querySelector("#update-confirm");
+  const updateInstall = document.querySelector("#update-install");
   const updateOpen = document.querySelector("#update-open");
   const updateStatus = document.querySelector("#update-status");
   const updateRelease = document.querySelector("#update-release");
@@ -84,6 +85,8 @@
     updateDownload.disabled = false;
     updateConfirm.hidden = true;
     updateConfirm.disabled = false;
+    updateInstall.hidden = true;
+    updateInstall.disabled = false;
     updatePath.hidden = true;
     updatePath.textContent = "";
   };
@@ -552,6 +555,42 @@
           message.message ?? "Download completato.",
           message.checksumVerified ? "" : "warning",
         );
+        if (
+          message.checksumVerified &&
+          message.installMode &&
+          message.installMode !== "none"
+        ) {
+          updateInstall.textContent =
+            message.installMode === "restart"
+              ? "Installa e riavvia"
+              : "Apri installer";
+          updateInstall.hidden = false;
+        }
+        break;
+      }
+      case "update.install.status": {
+        updateInstall.disabled = false;
+        if (message.status === "launched") {
+          updateInstall.hidden = true;
+          setUpdateStatus(
+            message.message ?? "Installazione avviata: l'app si riavvierà.",
+          );
+          break;
+        }
+        if (message.status === "manual") {
+          updateInstall.textContent = "Apri installer";
+          updateInstall.hidden = false;
+          setUpdateStatus(
+            message.message ?? "Installa manualmente l'aggiornamento.",
+            "warning",
+          );
+          break;
+        }
+        updateInstall.hidden = true;
+        setUpdateStatus(
+          message.message ?? "Installazione non disponibile.",
+          "error",
+        );
         break;
       }
       case "external.error":
@@ -775,6 +814,7 @@
     }
     updateDownload.disabled = true;
     updateConfirm.hidden = true;
+    updateInstall.hidden = true;
     updatePath.hidden = true;
     setUpdateStatus(`Download di ${downloadAssetName}…`);
     send({ type: "update.download" });
@@ -785,6 +825,12 @@
     updateDownload.disabled = true;
     setUpdateStatus("Download senza verifica dello SHA-256…", "warning");
     send({ type: "update.download", confirm: true });
+  });
+
+  updateInstall.addEventListener("click", () => {
+    updateInstall.disabled = true;
+    setUpdateStatus("Preparazione dell'installazione…");
+    send({ type: "update.install" });
   });
 
   updateOpen.addEventListener("click", () => {
