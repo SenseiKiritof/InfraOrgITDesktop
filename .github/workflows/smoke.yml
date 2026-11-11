@@ -1,8 +1,9 @@
 name: smoke
 
-# Headless startup check for the Linux build: Photino must create the manager
-# window under Xvfb and keep the process alive. Kept separate from ci.yml so
-# the cross-platform build-test matrix stays unchanged.
+# GUI startup checks: Photino must create the manager window and keep the
+# process alive. Linux runs the window under Xvfb; Windows opens it on the
+# runner desktop. Kept separate from ci.yml so the cross-platform build-test
+# matrix stays unchanged.
 
 on:
   workflow_dispatch:
@@ -44,3 +45,55 @@ jobs:
 
       - name: Headless startup smoke test
         run: bash scripts/smoke.sh
+
+  gui-smoke-windows:
+    # Start the manager window on the runner desktop and check that the
+    # process is still alive after the hold, mirroring the Linux job. The
+    # runner image ships the WebView2 runtime; if a future runner cannot host
+    # the window, keep this job non-blocking instead of a permanently red
+    # check (see README, "GUI smoke tests").
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build
+        run: dotnet build InfraOrgITDesktop.slnx -warnaserror
+
+      - name: Startup smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hold = if ($env:SMOKE_HOLD_SECONDS) { [int]$env:SMOKE_HOLD_SECONDS } else { 8 }
+          $exe = (Resolve-Path 'src/InfraOrgIt.Desktop/bin/Debug/net10.0/InfraOrgIt.Desktop.exe').Path
+          $stdout = Join-Path $env:RUNNER_TEMP 'desktop-smoke.stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'desktop-smoke.stderr.log'
+
+          $process = Start-Process -FilePath $exe -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds $hold
+
+          if ($process.HasExited) {
+            $code = try { $process.ExitCode } catch { 'unknown' }
+            Write-Host "::error::Desktop smoke test failed: the app exited before ${hold}s (exit code $code)."
+            Write-Host '--- stdout ---'
+            if (Test-Path $stdout) { Get-Content $stdout }
+            Write-Host '--- stderr ---'
+            if (Test-Path $stderr) { Get-Content $stderr }
+            Write-Host '--- Application event log (last 2 minutes) ---'
+            Get-WinEvent -FilterHashtable @{
+              LogName = 'Application'
+              StartTime = (Get-Date).AddMinutes(-2)
+            } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
+              Select-Object -First 5 |
+              Format-List TimeCreated, ProviderName, Id, Message
+            exit 1
+          }
+
+          $window = $process.MainWindowHandle
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "Desktop smoke test passed: the app stayed up for ${hold}s (main window handle: $window)."
