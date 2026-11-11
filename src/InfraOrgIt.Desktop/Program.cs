@@ -18,6 +18,7 @@ internal static class Program
     private static UpdateChecker? _updates;
     private static UpdateDownloader? _downloads;
     private static UpdateCheckResult? _latestRelease;
+    private static int _restoreStarted;
 
     [STAThread]
     private static void Main()
@@ -47,7 +48,8 @@ internal static class Program
             payload => _manager?.Invoke(() => Send(_manager, payload)),
             tokenStore: TokenStoreFactory.Create(message =>
                 _manager?.Invoke(() => Send(
-                    _manager, new { type = "tunnels.warning", message }))));
+                    _manager, new { type = "tunnels.warning", message }))),
+            state: new TunnelsStateStore(TunnelsStateStore.DefaultPath()));
 
         // GitHub checks use their own clients: the dev TLS override applies to
         // instances, never to the release lookup or the download.
@@ -114,6 +116,12 @@ internal static class Program
                 return;
             }
 
+            if (type is "tunnels.forget")
+            {
+                _tunnels?.Handle(message);
+                return;
+            }
+
             switch (type)
             {
                 case "list":
@@ -123,6 +131,7 @@ internal static class Program
                         instances = SafeLoad(store),
                         version = _updates?.CurrentVersion
                     });
+                    StartSavedTunnelRestore(store);
                     break;
 
                 case "auth.open":
@@ -435,6 +444,31 @@ internal static class Program
         {
             return [];
         }
+    }
+
+    /// <summary>
+    /// Starts the saved tunnels once, after the manager page has loaded and
+    /// sent its first <c>list</c>. The restore is best effort and never blocks
+    /// the window; failures stay in the tunnel log.
+    /// </summary>
+    private static void StartSavedTunnelRestore(InstanceStore store)
+    {
+        var manager = _tunnels;
+        if (manager is null || Interlocked.Exchange(ref _restoreStarted, 1) == 1)
+            return;
+
+        var instances = SafeLoad(store);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await manager.RestoreSavedTunnelsAsync(instances);
+            }
+            catch (Exception)
+            {
+                // A failed restore must never keep the manager from opening.
+            }
+        });
     }
 
     private static void Send(PhotinoWindow? window, object payload)

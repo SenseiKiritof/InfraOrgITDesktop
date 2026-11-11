@@ -31,8 +31,20 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   is no longer free; a busy fixed port stops the retries with an error in the
   panel. A manual stop, a tunnel panel change or app exit cancels pending
   retries. Each attempt is a new tunnel session with its own correlation id.
-- Still to do for tunnels: running services are not persisted across app
-  restarts, and an app restart requires starting them again.
+- Tunnel persistence: every successful start is saved by identity (instance
+  URL, server id, custom service or deployment id, mode and requested local
+  port) in `tunnels.json` next to `instances.json`. No token, host, username
+  or secret is written. After the manager page loads, the app restores the
+  saved tunnels with the stored session, without opening a browser; when the
+  session is missing or expired it logs one line and keeps the identity so a
+  later sign-in can retry. Opening a tunnel panel reconciles the saved list
+  with the allowlist (deleted or disabled services are dropped) and never
+  starts a tunnel twice; `autoStart` services keep starting once per allowlist
+  load. A user stop or `Esci` forgets the identity, an app exit keeps it for
+  the next start, and `Non ripristinare` clears the saved list.
+- Still to do for tunnels: the restore pass is best effort, so an instance
+  that is offline at startup is retried only on the next panel open or app
+  start.
 - Update check: reads the latest GitHub release, compares its semver tag with
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
@@ -100,6 +112,12 @@ Instances file:
 - macOS: `~/Library/Application Support/InfraOrgIT/instances.json`
 - Windows: `%APPDATA%\InfraOrgIT\instances.json`
 - Linux: `~/.config/infraorgit/instances.json`
+
+Saved tunnels use `tunnels.json` in the same directory:
+
+- macOS: `~/Library/Application Support/InfraOrgIT/tunnels.json`
+- Windows: `%APPDATA%\InfraOrgIT\tunnels.json`
+- Linux: `~/.config/infraorgit/tunnels.json`
 
 ## Updates
 
@@ -264,7 +282,7 @@ The `contents: write` permission is granted only to the release job.
   OS token stores (Keychain, Credential Manager, secret-tool).
 - `src/InfraOrgIt.Desktop/Instances/`: instance model and JSON store.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
-  port allocation and process tracking.
+  port allocation, process tracking and the saved tunnel state.
 - `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison,
   asset selection, archive download and SHA-256 verification.
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
