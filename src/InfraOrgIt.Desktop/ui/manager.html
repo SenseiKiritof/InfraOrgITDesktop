@@ -78,8 +78,9 @@
         </div>
         <p class="hint">
           Il controllo legge l'ultima release GitHub. Il download verifica lo
-          SHA-256 quando pubblicato e salva l'archivio: l'installazione resta
-          manuale.
+          SHA-256 quando pubblicato. Solo un archivio verificato può essere
+          installato: su macOS l'app si sostituisce e si riavvia, sugli altri
+          sistemi si apre la cartella per l'installazione manuale.
         </p>
         <div class="update-actions">
           <button type="button" id="update-check">
@@ -90,6 +91,9 @@
           </button>
           <button type="button" id="update-confirm" class="secondary" hidden>
             Scarica senza verifica
+          </button>
+          <button type="button" id="update-install" class="secondary" hidden>
+            Installa e riavvia
           </button>
           <button type="button" id="update-open" class="secondary" hidden>
             Apri release

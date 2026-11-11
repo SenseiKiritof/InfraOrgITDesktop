@@ -5,9 +5,10 @@ namespace InfraOrgIt.Desktop.Update;
 
 /// <summary>
 /// Downloads the release archive selected by <see cref="UpdateChecker"/> and
-/// verifies the SHA-256 file published next to it. Files are only saved, never
-/// executed: the manager opens the containing folder and the user installs the
-/// update manually. Errors come back as a result.
+/// verifies the SHA-256 file published next to it. The result carries the saved
+/// path and <see cref="UpdateDownloadResult.ChecksumVerified"/>; only that flag
+/// makes the file eligible for <see cref="UpdateInstaller"/>. The download
+/// itself never executes the archive. Errors come back as a result.
 /// </summary>
 public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory = null)
 {
@@ -290,6 +291,12 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
         new(Succeeded: false, Message: message);
 }
 
+/// <summary>
+/// Result of a download. <see cref="ChecksumVerified"/> is true only after the
+/// published SHA-256 matched the saved file; <see cref="FilePath"/> is the final
+/// archive path, never the <c>.part</c> file. Both are required by
+/// <see cref="UpdateInstaller"/>.
+/// </summary>
 public sealed record UpdateDownloadResult(
     bool Succeeded,
     string Message,
