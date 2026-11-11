@@ -160,6 +160,13 @@ button:disabled {
   color: var(--warning);
 }
 
+.restore-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .section-header {
   display: flex;
   align-items: baseline;

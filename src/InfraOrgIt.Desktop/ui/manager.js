@@ -6,6 +6,9 @@
   const list = document.querySelector("#instances");
   const empty = document.querySelector("#empty");
   const count = document.querySelector("#count");
+  const restoreStatus = document.querySelector("#restore-status");
+  const restoreMessage = document.querySelector("#restore-message");
+  const restoreClear = document.querySelector("#restore-clear");
 
   const tunnelPanel = document.querySelector("#tunnel-panel");
   const tunnelTitle = document.querySelector("#tunnel-title");
@@ -631,6 +634,15 @@
       case "tunnels.log":
         setTunnelStatus(message.message ?? "");
         break;
+      case "tunnels.restored": {
+        const restored = Number.isInteger(message.count) ? message.count : 0;
+        restoreMessage.textContent =
+          restored === 1
+            ? "Ripristinato 1 tunnel"
+            : `Ripristinati ${restored} tunnel`;
+        restoreStatus.hidden = restored === 0;
+        break;
+      }
       case "tunnels.warning":
         if (tunnelInstance) {
           setTunnelStatus(message.message ?? "", false);
@@ -783,6 +795,12 @@
   });
 
   tunnelClose.addEventListener("click", closeTunnelPanel);
+
+  restoreClear.addEventListener("click", () => {
+    restoreStatus.hidden = true;
+    restoreMessage.textContent = "";
+    send({ type: "tunnels.forget" });
+  });
 
   if (!window.external) {
     setStatus("Questa pagina va aperta dall'app desktop.", true);
