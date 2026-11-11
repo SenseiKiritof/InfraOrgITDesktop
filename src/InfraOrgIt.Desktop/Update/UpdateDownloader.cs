@@ -1,16 +1,26 @@
 using System.Buffers;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace InfraOrgIt.Desktop.Update;
 
 /// <summary>
 /// Downloads the release archive selected by <see cref="UpdateChecker"/> and
-/// verifies the SHA-256 file published next to it. The result carries the saved
-/// path and <see cref="UpdateDownloadResult.ChecksumVerified"/>; only that flag
-/// makes the file eligible for <see cref="UpdateInstaller"/>. The download
-/// itself never executes the archive. Errors come back as a result.
+/// verifies it against the signed checksum manifest. The result carries the
+/// saved path and <see cref="UpdateDownloadResult.SignatureVerified"/>; only
+/// that flag makes the file eligible for <see cref="UpdateInstaller"/>. The
+/// download itself never executes the archive. Errors come back as a result.
 /// </summary>
-public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory = null)
+/// <remarks>
+/// A SHA-256 file published next to an unsigned release is not trusted: the
+/// hash is read only from a manifest whose RSA/SHA-256 signature matches the
+/// public key embedded in the app. A download may still be offered without a
+/// valid signature, but installation is then manual only.
+/// </remarks>
+public sealed class UpdateDownloader(
+    HttpClient http,
+    string? downloadDirectory = null,
+    string? publicKeyPem = null)
 {
     /// <summary>
     /// Only the initial URL is checked; GitHub redirects the download to its
@@ -18,7 +28,13 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
     /// </summary>
     internal const string AllowedDownloadHost = "github.com";
 
+    internal const string SignatureBlockedMessage =
+        "Installazione bloccata: firma aggiornamento non valida/mancante.";
+
     private const int BufferSize = 81920;
+
+    private readonly string? _publicKeyPem =
+        publicKeyPem ?? UpdateSignature.ProductionPublicKeyPem;
 
     /// <summary>
     /// Downloads go to <c>~/Downloads/InfraOrgIT Desktop</c> so the user can
@@ -43,16 +59,23 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
         if (!IsAllowedUri(asset.Url))
             return Failure("URL del pacchetto non attendibile.");
 
-        if (release.ChecksumAsset is { } checksum && !IsAllowedUri(checksum.Url))
-            return Failure("URL del checksum non attendibile.");
+        var manifest = release.ManifestAsset;
+        var signatureAsset = release.SignatureAsset;
+        if (manifest is not null && !IsAllowedUri(manifest.Url))
+            return Failure("URL del manifest non attendibile.");
 
-        if (release.ChecksumAsset is null && !allowUnverified)
+        if (signatureAsset is not null && !IsAllowedUri(signatureAsset.Url))
+            return Failure("URL della firma non attendibile.");
+
+        var signed = manifest is not null && signatureAsset is not null;
+        if (!signed && !allowUnverified)
         {
             return new UpdateDownloadResult(
                 Succeeded: false,
                 Message:
-                    "Checksum SHA-256 non disponibile per questo pacchetto. " +
-                    "Puoi scaricarlo comunque, ma l'integrità non sarà verificata.",
+                    SignatureBlockedMessage +
+                    " Il pacchetto non è firmato: puoi scaricarlo comunque, " +
+                    "ma l'installazione automatica resterà bloccata.",
                 RequiresConfirmation: true);
         }
 
@@ -73,25 +96,50 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
                 return Failure(error);
 
             var verified = false;
-            if (release.ChecksumAsset is { } checksumAsset)
+            var warning = (string?)null;
+            if (signed)
             {
-                var expected = await FetchChecksumAsync(
-                    checksumAsset.Url, cancellationToken);
-                if (expected is null)
+                var manifestBytes = await TryFetchAsync(
+                    manifest!.Url, cancellationToken);
+                var signatureBytes = await TryFetchAsync(
+                    signatureAsset!.Url, cancellationToken);
+                if (manifestBytes is null || signatureBytes is null ||
+                    !UpdateSignature.Verify(
+                        manifestBytes, signatureBytes, _publicKeyPem))
                 {
-                    return Failure(
-                        "Checksum SHA-256 non scaricato o non valido: " +
-                        "download annullato.");
+                    warning = SignatureBlockedMessage +
+                        " Il manifest o la firma non sono validi: " +
+                        "il file resta disponibile per un'installazione manuale.";
                 }
-
-                var actual = await ComputeSha256Async(partial, cancellationToken);
-                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                else
                 {
-                    return Failure(
-                        "Checksum SHA-256 non corrispondente: file eliminato.");
-                }
+                    var expected = UpdateManifest
+                        .Parse(Encoding.UTF8.GetString(manifestBytes))
+                        ?.FindHash(asset.Name);
+                    if (expected is null)
+                    {
+                        warning = SignatureBlockedMessage +
+                            " Il pacchetto non è elencato nel manifest firmato: " +
+                            "il file resta disponibile per un'installazione " +
+                            "manuale.";
+                    }
+                    else
+                    {
+                        var actual = await ComputeSha256Async(
+                            partial, cancellationToken);
+                        if (!string.Equals(
+                                actual,
+                                expected,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            return Failure(
+                                "Checksum SHA-256 non corrispondente al " +
+                                "manifest firmato: file eliminato.");
+                        }
 
-                verified = true;
+                        verified = true;
+                    }
+                }
             }
 
             File.Move(partial, destination, overwrite: true);
@@ -102,11 +150,13 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
             return new UpdateDownloadResult(
                 Succeeded: true,
                 Message: verified
-                    ? "Download completato e verificato (SHA-256)."
-                    : "Download completato senza verifica: " +
-                      "checksum SHA-256 non disponibile.",
+                    ? "Download completato e verificato (firma del manifest " +
+                      "e SHA-256)."
+                    : warning ??
+                      SignatureBlockedMessage +
+                      " Il file resta disponibile per un'installazione manuale.",
                 FilePath: destination,
-                ChecksumVerified: verified);
+                SignatureVerified: verified);
         }
         catch (OperationCanceledException)
         {
@@ -152,23 +202,6 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
         uri is not null &&
         uri.Scheme == Uri.UriSchemeHttps &&
         string.Equals(uri.Host, AllowedDownloadHost, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Reads the first token of a <c>sha256sum</c> file:
-    /// <c>&lt;64 hex chars&gt;  &lt;file name&gt;</c>.
-    /// </summary>
-    internal static string? ParseChecksum(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        var token = text.Trim()
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .FirstOrDefault();
-        return token is { Length: 64 } && token.All(char.IsAsciiHexDigit)
-            ? token
-            : null;
-    }
 
     private async Task<string?> DownloadToFileAsync(
         Uri uri,
@@ -235,19 +268,30 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
         return null;
     }
 
-    private async Task<string?> FetchChecksumAsync(
+    /// <summary>
+    /// Best effort fetch for the manifest and its signature: a missing file
+    /// turns into the unsigned path (download kept, install blocked) instead of
+    /// discarding an archive the user already downloaded.
+    /// </summary>
+    private async Task<byte[]?> TryFetchAsync(
         Uri uri,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.UserAgent.ParseAdd(UpdateChecker.UserAgent);
 
-        using var response = await http.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return null;
+        try
+        {
+            using var response = await http.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return null;
 
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
-        return ParseChecksum(text);
+            return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
     }
 
     private static async Task<string> ComputeSha256Async(
@@ -292,16 +336,17 @@ public sealed class UpdateDownloader(HttpClient http, string? downloadDirectory 
 }
 
 /// <summary>
-/// Result of a download. <see cref="ChecksumVerified"/> is true only after the
-/// published SHA-256 matched the saved file; <see cref="FilePath"/> is the final
-/// archive path, never the <c>.part</c> file. Both are required by
+/// Result of a download. <see cref="SignatureVerified"/> is true only after
+/// the manifest signature matched the embedded public key and the archive hash
+/// matched the signed manifest; <see cref="FilePath"/> is the final archive
+/// path, never the <c>.part</c> file. Both are required by
 /// <see cref="UpdateInstaller"/>.
 /// </summary>
 public sealed record UpdateDownloadResult(
     bool Succeeded,
     string Message,
     string? FilePath = null,
-    bool ChecksumVerified = false,
+    bool SignatureVerified = false,
     bool RequiresConfirmation = false);
 
 public sealed record UpdateDownloadProgress(long Received, long? Total)

@@ -77,10 +77,12 @@
           <span id="update-current" class="count">Versione —</span>
         </div>
         <p class="hint">
-          Il controllo legge l'ultima release GitHub. Il download verifica lo
-          SHA-256 quando pubblicato. Solo un archivio verificato può essere
-          installato: su macOS l'app si sostituisce e si riavvia, sugli altri
-          sistemi si apre la cartella per l'installazione manuale.
+          Il controllo legge l'ultima release GitHub. Il download verifica la
+          firma del manifest SHA-256 con la chiave pubblica inclusa nell'app.
+          Solo un archivio elencato nel manifest firmato e con hash
+          corrispondente può essere installato automaticamente: su macOS l'app
+          si sostituisce e si riavvia, sugli altri sistemi si apre la cartella
+          per l'installazione manuale.
         </p>
         <div class="update-actions">
           <button type="button" id="update-check">
@@ -90,7 +92,7 @@
             Scarica aggiornamento
           </button>
           <button type="button" id="update-confirm" class="secondary" hidden>
-            Scarica senza verifica
+            Scarica senza firma
           </button>
           <button type="button" id="update-install" class="secondary" hidden>
             Installa e riavvia
