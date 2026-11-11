@@ -182,8 +182,9 @@ install, even if the UI is bypassed.
   with `-LiteralPath`; no user-controlled string is written into the script
   body. A `dotnet run` build (managed `.dll` present) or a missing exe is
   refused with an Italian message and `Apri installer` opens the download
-  folder. The helper is not executed in CI: the tests only check the generated
-  arguments and script content.
+  folder. `scripts/self-install-windows.ps1` runs this helper against a real
+  publish (replace, PID wait and restore); the `self-install-windows` job in
+  `smoke.yml` runs the script on `windows-latest`.
 - Linux: for a published folder (apphost binary, no managed `.dll`), the same
   `Installa e riavvia` starts a helper that waits for the PID, extracts the
   tar.gz into a temp directory, moves the current app folder aside, copies the
@@ -216,7 +217,7 @@ secrets:
 | Integration | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Refresh token round-trip | Keychain through `/usr/bin/security` | Credential Manager through `advapi32` | `secret-tool` with a D-Bus session |
-| Update helper | generated `install.sh` against a disposable `.app` (replace and restore) | PowerShell helper covered by argument and script-text unit tests, not executed | generated `install.sh` against a disposable app directory (replace and restore) |
+| Update helper | generated `install.sh` against a disposable `.app` (replace and restore) | generated `install.ps1` against a real published folder (replace, PID wait and restore) through `scripts/self-install-windows.ps1` | generated `install.sh` against a disposable app directory (replace and restore) |
 
 The token tests save, load and delete a throwaway refresh token under a unique
 service/account suffix, clean up in a `finally` block and never print the
@@ -227,9 +228,45 @@ Windows.
 The helper tests run the real generated shell script with a real exited PID
 against temporary app paths. The macOS launch step is replaced with a recorder
 so the disposable test bundle is never opened; the Linux helper execs the
-disposable fake binary. Nothing outside the test directory is touched. The
-Windows PowerShell helper is still covered only by the argument and script-text
-unit tests; it is not executed in CI.
+disposable fake binary. Nothing outside the test directory is touched.
+
+### Windows self-install end-to-end
+
+`scripts/self-install-windows.ps1` (PowerShell 7) publishes two real
+self-contained `win-x64` builds, `0.1.0` and `0.2.0`, and writes a
+`self-install-marker.txt` into each. It keeps the old publish as the
+"installation" source, rebuilds the new one with the release layout
+(`InfraOrgIT-Desktop-0.2.0-win-x64/...`) and zips it. Two xUnit tests then run
+the generated helper:
+
+1. Start the real `InfraOrgIt.Desktop.exe` from the old folder and wait for
+   its manager window.
+2. Run the real installer in-process to obtain the generated `install.ps1` and
+   its argument list, so the script and paths come from production code.
+3. Replace only the `Start-Process` launch line with a recorder (the internal
+   `CreateWindowsInstallScript` seam), so a second GUI does not start.
+4. Assert the helper is still running after three seconds while the app PID is
+   alive and the old marker is untouched; close the app; assert exit code 0,
+   the new marker and a recorder hit.
+5. Repeat with a zip whose payload exe is a text file and no seam: the launch
+   step fails after the old folder has been moved aside, and the helper
+   restores the old folder, marker and executable.
+
+```powershell
+pwsh scripts/self-install-windows.ps1
+pwsh scripts/self-install-windows.ps1 -Root C:\temp\self-install -Keep
+```
+
+The tests read `INFRAORGIT_SELF_INSTALL_OLD_PUBLISH`, `..._ARCHIVE`,
+`..._OLD_MARKER`, `..._NEW_MARKER` and an optional `..._EVIDENCE` file. Without
+them `WindowsSelfInstallTests` reports `Skipped`, so `dotnet test` and the
+`build-test` matrix are unchanged. The `self-install-windows` job in
+`smoke.yml` runs the script on `windows-latest` with `-Keep` and uploads
+`evidence.txt`. It needs an interactive desktop session and the WebView2
+runtime, like the GUI smoke test. It is a diagnostic job, not one of the
+required checks: if a future runner cannot open the window or run
+`powershell.exe`, the job stays red with the failing step instead of passing
+silently.
 
 ### GUI smoke tests
 
@@ -265,11 +302,11 @@ if ($process.HasExited) { throw "App exited early with $($process.ExitCode)" }
 Stop-Process -Id $process.Id -Force
 ```
 
-`.github/workflows/smoke.yml` runs the Linux check on `ubuntu-latest` and the
-Windows check on `windows-latest`, separate from the `build-test` matrix. The
-Windows runner starts the app in its desktop session and ships the WebView2
-runtime; the job asserts the process stays up and logs the main window handle
-for diagnostics. It does not validate the webview content, so a runner that
+`.github/workflows/smoke.yml` runs the Linux check on `ubuntu-latest`, the
+Windows check on `windows-latest` and the Windows self-install end-to-end job
+described above, separate from the `build-test` matrix. The Windows runner
+starts the app in its desktop session and ships the WebView2 runtime; the job
+asserts the process stays up and logs the main window handle for diagnostics. It does not validate the webview content, so a runner that
 can create the window but not render the page would still pass. If the GUI
 cannot start on a future runner image, mark the Windows job non-blocking and
 document the failure instead of leaving a red check. On a machine with a
@@ -360,7 +397,7 @@ The `contents: write` permission is granted only to the release job.
   port allocation, process tracking and the saved tunnel state.
 - `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison,
   asset selection, archive download, SHA-256 verification and the verified
-  install helpers (macOS and Linux).
+  install helpers (macOS, Windows and Linux).
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
 
 ## Decisions

@@ -937,6 +937,25 @@ try {
 
 exit 0
 """;
+
+    /// <summary>
+    /// Test seam for the Windows helper: the launch step is the only side
+    /// effect that opens a second GUI instance, so the self-install test
+    /// replaces it with a recorder. Everything else stays as generated.
+    /// </summary>
+    internal static string CreateWindowsInstallScript(string launchCommand)
+    {
+        const string marker =
+            "Start-Process -FilePath \"$newExe\" -WorkingDirectory \"$TargetDirectory\"";
+        if (!WindowsInstallScript.Contains(marker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The Windows helper template no longer contains the launch line.");
+        }
+
+        return WindowsInstallScript.Replace(
+            marker, launchCommand, StringComparison.Ordinal);
+    }
 }
 
 /// <summary>
