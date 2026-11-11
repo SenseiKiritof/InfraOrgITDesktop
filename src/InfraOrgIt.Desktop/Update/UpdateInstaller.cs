@@ -767,6 +767,26 @@ exit 1
 """;
 
     /// <summary>
+    /// Test seam for the macOS helper: the launch command is the only side
+    /// effect that cannot run against a disposable bundle, so an integration
+    /// test replaces it with a recorder. Everything else stays as generated.
+    /// </summary>
+    internal static string CreateMacInstallScript(string launchCommand)
+    {
+        const string marker = "/usr/bin/open \"$target_app\"";
+        if (!MacInstallScript.Contains(marker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The macOS helper template no longer contains the launch line.");
+        }
+
+        return MacInstallScript.Replace(
+            marker,
+            launchCommand + " \"$target_app\"",
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Waits for the current PID, moves the app directory aside, copies the
     /// unpacked payload into place, restores on failure and execs the new
     /// binary. Arguments arrive through the argument list.
