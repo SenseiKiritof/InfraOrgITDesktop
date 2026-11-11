@@ -82,18 +82,16 @@ internal sealed record UpdateProcessResult(int ExitCode, string Output);
 
 /// <summary>
 /// Installs a downloaded and SHA-256 verified archive. macOS replaces the
-/// current <c>.app</c> from a detached helper; Linux does the same for a
-/// published app directory; Windows and every other case fall back to opening
-/// the download folder. A missing or failed checksum can never reach a helper.
+/// current <c>.app</c> from a detached helper, Linux does the same for a
+/// published app directory and Windows replaces a published app folder from a
+/// detached PowerShell helper; every other case falls back to opening the
+/// download folder. A missing or failed checksum can never reach a helper.
 /// </summary>
 public sealed class UpdateInstaller
 {
     internal const string MacBundleIdentifier = "it.infraorgit.desktop";
     internal const string MacBundleMarker = "/Contents/MacOS";
-
-    private const string WindowsManualMessage =
-        "Installazione automatica non disponibile su Windows: chiudi l'app, " +
-        "estrai lo zip nella cartella di installazione e riapri l'eseguibile.";
+    internal const string WindowsExecutableName = "InfraOrgIt.Desktop.exe";
 
     private const string OtherManualMessage =
         "Installazione automatica non disponibile su questo sistema: " +
@@ -132,6 +130,8 @@ public sealed class UpdateInstaller
                 UpdateInstallMode.Restart,
             UpdateInstallPlatform.Linux when IsAutomaticLinuxTarget(archive) =>
                 UpdateInstallMode.Restart,
+            UpdateInstallPlatform.Windows when IsAutomaticWindowsTarget(archive) =>
+                UpdateInstallMode.Restart,
             _ => UpdateInstallMode.Open,
         };
     }
@@ -153,15 +153,15 @@ public sealed class UpdateInstaller
             {
                 UpdateInstallPlatform.MacOS => InstallMac(archive),
                 UpdateInstallPlatform.Linux => InstallLinux(archive),
-                UpdateInstallPlatform.Windows =>
-                    OpenManual(archive, WindowsManualMessage),
+                UpdateInstallPlatform.Windows => InstallWindows(archive),
                 _ => OpenManual(archive, OtherManualMessage),
             };
         }
         catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or
-            ArgumentException or InvalidOperationException or
-            Win32Exception or NotSupportedException)
+            exception is IOException or InvalidDataException or
+            UnauthorizedAccessException or ArgumentException or
+            InvalidOperationException or Win32Exception or
+            NotSupportedException)
         {
             return OpenManual(
                 archive,
@@ -333,6 +333,56 @@ public sealed class UpdateInstaller
         return parent is not null &&
                IsDirectoryWritable(target) &&
                IsDirectoryWritable(parent);
+    }
+
+    private bool IsAutomaticWindowsTarget(string archive)
+    {
+        if (!archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var target = AppDirectory(_environment.BaseDirectory);
+        return IsWindowsInstalledLayout(target, _environment.ProcessPath) &&
+               CanReplaceWindowsDirectory(target);
+    }
+
+    private static bool CanReplaceWindowsDirectory(string target)
+    {
+        var parent = Path.GetDirectoryName(target);
+        return parent is not null &&
+               !string.Equals(target, Path.GetPathRoot(target), StringComparison.Ordinal) &&
+               IsDirectoryWritable(target) &&
+               IsDirectoryWritable(parent);
+    }
+
+    /// <summary>
+    /// A published Windows folder runs <c>InfraOrgIt.Desktop.exe</c> from the
+    /// app directory and has no managed <c>.dll</c> next to it (single-file
+    /// publish); <c>dotnet run</c> is refused.
+    /// </summary>
+    internal static bool IsWindowsInstalledLayout(
+        string appDirectory, string? processPath)
+    {
+        if (string.IsNullOrWhiteSpace(processPath))
+            return false;
+
+        var executable = Path.GetFileName(processPath);
+        if (!string.Equals(
+                executable, WindowsExecutableName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+                    Path.GetDirectoryName(Path.GetFullPath(processPath))!)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(appDirectory)),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return File.Exists(Path.Combine(appDirectory, WindowsExecutableName)) &&
+               IsInstalledLayout(appDirectory, processPath);
     }
 
     private UpdateInstallResult InstallMac(string archive)
@@ -515,6 +565,124 @@ public sealed class UpdateInstaller
             : null;
     }
 
+    private UpdateInstallResult InstallWindows(string archive)
+    {
+        if (!archive.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return OpenManual(
+                archive,
+                "Il pacchetto non è un archivio zip Windows valido: " +
+                "installa manualmente.");
+        }
+
+        var target = AppDirectory(_environment.BaseDirectory);
+        if (!IsWindowsInstalledLayout(target, _environment.ProcessPath))
+        {
+            return OpenManual(
+                archive,
+                "L'app non è in esecuzione da un'installazione pubblicata " +
+                "(per esempio con dotnet run): installazione automatica non " +
+                "disponibile.");
+        }
+
+        if (!CanReplaceWindowsDirectory(target))
+        {
+            return OpenManual(
+                archive,
+                "La cartella dell'app non è scrivibile: " +
+                "installa manualmente con i permessi necessari.");
+        }
+
+        var payload = FindWindowsPayloadFolder(archive);
+        if (payload is null)
+        {
+            return OpenManual(
+                archive,
+                "Il pacchetto non contiene una sola cartella con " +
+                $"{WindowsExecutableName}: installa manualmente.");
+        }
+
+        var work = CreateWorkDirectory();
+        var keep = false;
+        try
+        {
+            var script = Path.Combine(work, "install.ps1");
+            var log = Path.Combine(
+                _environment.TempDirectory, Path.GetFileName(work) + ".log");
+            File.WriteAllText(
+                script, WindowsInstallScript, new UTF8Encoding(false));
+            _process.StartDetached(
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", script,
+                    "-AppProcessId",
+                    _environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                    "-ArchivePath", archive,
+                    "-TargetDirectory", target,
+                    "-WorkDirectory", work,
+                    "-LogPath", log,
+                    "-PayloadFolder", payload,
+                    "-ExecutableName", WindowsExecutableName,
+                ]);
+            keep = true;
+
+            return new UpdateInstallResult(
+                UpdateInstallStatus.Launched,
+                "Installazione avviata: l'app si chiuderà e verrà riavviata.");
+        }
+        finally
+        {
+            if (!keep)
+                TryDeleteDirectory(work);
+        }
+    }
+
+    /// <summary>
+    /// Reads the zip directory only: exactly one top-level folder, the expected
+    /// executable directly inside it and no rooted or <c>..</c> entry. Returns
+    /// the folder name, or null when the archive is not installable.
+    /// </summary>
+    internal static string? FindWindowsPayloadFolder(string archive)
+    {
+        using var zip = ZipFile.OpenRead(archive);
+        string? root = null;
+        var hasExecutable = false;
+        foreach (var entry in zip.Entries)
+        {
+            var name = entry.FullName.Replace('\\', '/');
+            if (name.Length == 0)
+                continue;
+
+            if (name.StartsWith('/') || name.Contains(':'))
+                return null;
+
+            var trimmed = name.TrimEnd('/');
+            var segments = trimmed.Split('/');
+            if (segments.Length == 0 ||
+                segments.Any(segment => segment.Length == 0 || segment == ".."))
+            {
+                return null;
+            }
+
+            if (root is null)
+                root = segments[0];
+            else if (!string.Equals(root, segments[0], StringComparison.Ordinal))
+                return null;
+
+            if (segments.Length == 2 &&
+                !name.EndsWith('/') &&
+                string.Equals(
+                    segments[1], WindowsExecutableName, StringComparison.OrdinalIgnoreCase))
+            {
+                hasExecutable = true;
+            }
+        }
+
+        return root is not null && hasExecutable ? root : null;
+    }
+
     private UpdateInstallResult OpenManual(string archive, string reason)
     {
         var folder = Path.GetDirectoryName(archive);
@@ -646,6 +814,122 @@ echo "Copy failed; restoring the previous app directory."
 /bin/mv "$old_dir" "$target_dir"
 exit 1
 """;
+
+    /// <summary>
+    /// Waits for the current PID, expands the zip into a fresh temp folder,
+    /// validates the single top-level payload folder, moves the app folder
+    /// aside, copies the new payload into place, restores on failure, starts
+    /// the new exe and cleans up. Every path arrives as an argument, so no
+    /// user-controlled string is interpolated into the script body.
+    /// </summary>
+    internal const string WindowsInstallScript = """
+# Generated by InfraOrgIT Desktop.
+# Arguments: -AppProcessId -ArchivePath -TargetDirectory -WorkDirectory
+#            -LogPath -PayloadFolder -ExecutableName
+param(
+  [Parameter(Mandatory = $true)][int]$AppProcessId,
+  [Parameter(Mandatory = $true)][string]$ArchivePath,
+  [Parameter(Mandatory = $true)][string]$TargetDirectory,
+  [Parameter(Mandatory = $true)][string]$WorkDirectory,
+  [Parameter(Mandatory = $true)][string]$LogPath,
+  [Parameter(Mandatory = $true)][string]$PayloadFolder,
+  [Parameter(Mandatory = $true)][string]$ExecutableName
+)
+
+$ErrorActionPreference = 'Stop'
+
+# The helper inherits the app folder as its current directory when the app was
+# started from there; leave it before that folder is moved aside, and keep the
+# temp work folder removable later.
+Set-Location -LiteralPath ([System.IO.Path]::GetTempPath())
+
+function Write-Log {
+  param([string]$Message)
+  try {
+    $line = "[{0}] {1}" -f (Get-Date).ToString("o"), $Message
+    Add-Content -LiteralPath "$LogPath" -Value $line
+  } catch {
+    # Logging must never stop the replacement.
+  }
+}
+
+Write-Log "InfraOrgIT Desktop update helper started."
+
+try {
+  $deadline = (Get-Date).AddSeconds(120)
+  while (Get-Process -Id $AppProcessId -ErrorAction SilentlyContinue) {
+    if ((Get-Date) -ge $deadline) {
+      throw "Timeout while waiting for the app to exit."
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  Write-Log "App exited; expanding the package."
+
+  $extract = Join-Path "$WorkDirectory" "extract"
+  if (Test-Path -LiteralPath "$extract") {
+    Remove-Item -LiteralPath "$extract" -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path "$extract" -Force | Out-Null
+  Expand-Archive -LiteralPath "$ArchivePath" -DestinationPath "$extract" -Force
+
+  $folders = @(Get-ChildItem -LiteralPath "$extract" -Directory)
+  if ($folders.Count -ne 1 -or $folders[0].Name -ne $PayloadFolder) {
+    throw "Unexpected package layout."
+  }
+  $newDir = $folders[0].FullName
+  if (-not (Test-Path -LiteralPath (Join-Path "$newDir" "$ExecutableName") -PathType Leaf)) {
+    throw "The package does not contain the expected executable."
+  }
+
+  $oldDir = "$TargetDirectory.old.$AppProcessId"
+  if (Test-Path -LiteralPath "$oldDir") {
+    Remove-Item -LiteralPath "$oldDir" -Recurse -Force
+  }
+  Move-Item -LiteralPath "$TargetDirectory" -Destination "$oldDir"
+  Write-Log "Previous installation moved aside."
+
+  try {
+    New-Item -ItemType Directory -Path "$TargetDirectory" -Force | Out-Null
+    Get-ChildItem -LiteralPath "$newDir" -Force |
+      Copy-Item -Destination "$TargetDirectory" -Recurse -Force
+    $newExe = Join-Path "$TargetDirectory" "$ExecutableName"
+    if (-not (Test-Path -LiteralPath "$newExe" -PathType Leaf)) {
+      throw "Copy failed."
+    }
+    Write-Log "New payload copied."
+    Start-Process -FilePath "$newExe" -WorkingDirectory "$TargetDirectory"
+    Write-Log "New version started."
+  } catch {
+    Write-Log ("Replacement failed; restoring the previous installation: " + $_.Exception.Message)
+    if (Test-Path -LiteralPath "$TargetDirectory") {
+      Remove-Item -LiteralPath "$TargetDirectory" -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Move-Item -LiteralPath "$oldDir" -Destination "$TargetDirectory"
+    throw
+  }
+
+  Remove-Item -LiteralPath "$oldDir" -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath "$WorkDirectory" -Recurse -Force -ErrorAction SilentlyContinue
+} catch {
+  Write-Log ("Update failed: " + $_.Exception.Message)
+  exit 1
+}
+
+exit 0
+""";
+}
+
+/// <summary>
+/// One install at a time: the manager page can send <c>update.install</c>
+/// twice, and the second message must not start another helper.
+/// </summary>
+internal sealed class UpdateInstallGuard
+{
+    private int _inProgress;
+
+    public bool TryEnter() => Interlocked.Exchange(ref _inProgress, 1) == 0;
+
+    public void Release() => Interlocked.Exchange(ref _inProgress, 0);
 }
 
 internal sealed class SystemUpdateInstallEnvironment : IUpdateInstallEnvironment
