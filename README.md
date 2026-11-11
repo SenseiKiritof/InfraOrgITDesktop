@@ -91,6 +91,29 @@ Instances file:
 dotnet test InfraOrgITDesktop.slnx
 ```
 
+### Headless smoke test
+
+Linux only. It needs the WebKitGTK runtime, Xvfb and `xauth`:
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-0 libnotify4 xvfb xauth
+dotnet build InfraOrgITDesktop.slnx -warnaserror
+scripts/smoke.sh
+```
+
+The script starts the manager window under `xvfb-run -a`, keeps it alive for
+8 seconds and fails if the process exited earlier; `SMOKE_HOLD_SECONDS`
+changes the hold. The equivalent manual command is:
+
+```bash
+xvfb-run -a dotnet run --project src/InfraOrgIt.Desktop --no-build
+```
+
+`.github/workflows/smoke.yml` runs the same check on `ubuntu-latest`; it is
+separate from the `build-test` matrix. On a machine with a desktop session no
+Xvfb is needed: `dotnet run --project src/InfraOrgIt.Desktop` opens the window
+normally.
+
 ## Package
 
 ```bash
