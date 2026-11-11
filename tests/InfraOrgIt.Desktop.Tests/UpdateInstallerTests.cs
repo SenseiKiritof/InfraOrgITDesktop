@@ -316,6 +316,26 @@ public sealed class UpdateInstallerTests
     }
 
     [Fact]
+    public void Windows_helper_seam_replaces_only_the_launch_line()
+    {
+        const string launch = "& 'C:\\temp\\launch-recorder.cmd' \"$newExe\"";
+
+        var script = UpdateInstaller.CreateWindowsInstallScript(launch);
+
+        Assert.Contains(launch, script, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Start-Process -FilePath \"$newExe\"", script, StringComparison.Ordinal);
+        Assert.Contains(
+            "Move-Item -LiteralPath \"$TargetDirectory\"", script, StringComparison.Ordinal);
+        Assert.Equal(
+            UpdateInstaller.WindowsInstallScript.Replace(
+                "Start-Process -FilePath \"$newExe\" -WorkingDirectory \"$TargetDirectory\"",
+                launch,
+                StringComparison.Ordinal),
+            script);
+    }
+
+    [Fact]
     public void Windows_install_refuses_dotnet_run_and_opens_the_folder()
     {
         using var directory = new TempDirectory();
