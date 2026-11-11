@@ -50,6 +50,7 @@ public sealed class TunnelManager(
     private readonly ITokenStore _tokens = tokenStore ?? new MemoryTokenStore();
     private readonly Lock _gate = new();
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly SemaphoreSlim _autoStartGate = new(1, 1);
     private readonly Dictionary<string, Session> _sessions =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TunnelProcess> _active =
@@ -63,6 +64,12 @@ public sealed class TunnelManager(
     /// <summary>Test seam: the default starts a real ssh process.</summary>
     internal Func<ProcessStartInfo, ISshProcess> SshProcessFactory { get; init; } =
         startInfo => new SystemSshProcess(startInfo);
+
+    /// <summary>
+    /// Starts services marked <c>autoStart</c> after every targets load. The
+    /// UI toggle clears it for the current app run.
+    /// </summary>
+    public bool AutoStartEnabled { get; set; } = true;
 
     public void Handle(string message) => _ = HandleAsync(message);
 
@@ -81,6 +88,7 @@ public sealed class TunnelManager(
                 case "tunnels.list":
                     var listUrl = RequiredString(root, "url");
                     var listName = RequiredString(root, "name");
+                    ApplyAutoStart(root);
                     if (OptionalString(root, "token") is { Length: > 0 } token)
                     {
                         await LoadTargetsAsync(listUrl, listName, token);
@@ -92,6 +100,7 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.restore":
+                    ApplyAutoStart(root);
                     await RestoreSessionAsync(
                         RequiredString(root, "url"),
                         RequiredString(root, "name"));
@@ -102,6 +111,7 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.login":
+                    ApplyAutoStart(root);
                     await LoginWithDeviceCodeAsync(
                         RequiredString(root, "url"),
                         RequiredString(root, "name"));
@@ -115,11 +125,9 @@ public sealed class TunnelManager(
                     await StartAsync(
                         RequiredString(root, "url"),
                         root.GetProperty("serverId").GetInt32(),
-                        root.GetProperty("targetId").GetInt32(),
-                        root.TryGetProperty("localPort", out var portElement) &&
-                        portElement.ValueKind is not JsonValueKind.Null
-                            ? portElement.GetInt32()
-                            : null);
+                        OptionalInt(root, "targetId"),
+                        OptionalInt(root, "serviceId"),
+                        OptionalInt(root, "localPort"));
                     break;
 
                 case "tunnels.stop":
@@ -479,6 +487,71 @@ public sealed class TunnelManager(
             url,
             items = payload.Items
         });
+
+        await AutoStartAsync(url, payload.Items, cancellationToken);
+    }
+
+    /// <summary>
+    /// Starts each enabled autoStart service once per targets load, in API
+    /// order. A service already running is skipped and a failure only logs,
+    /// so one bad service cannot stop the others.
+    /// </summary>
+    private async Task AutoStartAsync(
+        string url,
+        IReadOnlyList<TunnelServer> servers,
+        CancellationToken cancellationToken)
+    {
+        if (!AutoStartEnabled)
+            return;
+
+        await _autoStartGate.WaitAsync(cancellationToken);
+        try
+        {
+            foreach (var server in servers)
+            {
+                foreach (var service in server.Services ?? [])
+                {
+                    if (!service.Enabled || !service.AutoStart)
+                        continue;
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (IsServiceActive(url, service.Id))
+                        continue;
+
+                    try
+                    {
+                        await StartAsync(
+                            url, server.ServerId, null, service.Id, null,
+                            automatic: true);
+                    }
+                    catch (OperationCanceledException)
+                        when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        SendLog(
+                            $"Avvio automatico di \"{service.Name}\" non riuscito: " +
+                            exception.Message);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _autoStartGate.Release();
+        }
+    }
+
+    private bool IsServiceActive(string url, int serviceId)
+    {
+        lock (_gate)
+        {
+            return _active.Values.Any(x =>
+                string.Equals(x.Session.Url, url, StringComparison.OrdinalIgnoreCase) &&
+                x.Spec.Service?.Id == serviceId);
+        }
     }
 
     /// <summary>
@@ -536,60 +609,80 @@ public sealed class TunnelManager(
         return await http.SendAsync(request, cancellationToken);
     }
 
-    public async Task StartAsync(
+    public Task StartAsync(
         string url,
         int serverId,
         int targetId,
-        int? localPort)
+        int? localPort) =>
+        StartAsync(url, serverId, targetId, null, localPort);
+
+    public async Task StartAsync(
+        string url,
+        int serverId,
+        int? targetId,
+        int? serviceId,
+        int? localPort,
+        bool automatic = false)
     {
+        if ((targetId is null) == (serviceId is null))
+        {
+            ReportStartFailure(
+                "Indica un deployment o un servizio tunnel, non entrambi.",
+                automatic);
+            return;
+        }
+
         Session session;
-        TunnelServer server;
-        TunnelEndpoint endpoint;
+        TunnelServer? server;
+        TunnelEndpoint? endpoint = null;
+        TunnelService? service = null;
         lock (_gate)
         {
             if (!_sessions.TryGetValue(url, out session!))
             {
-                Send(new
-                {
-                    type = "tunnels.error",
-                    message = "Carica prima i target dell'istanza."
-                });
+                ReportStartFailure(
+                    "Carica prima i target dell'istanza.", automatic);
                 return;
             }
 
-            server = session.Targets
-                .SingleOrDefault(x => x.ServerId == serverId)!;
-            endpoint = server?.Targets
-                .SingleOrDefault(x => x.ServerApplicationId == targetId)!;
-            if (server is null || endpoint is null)
+            server = session.Targets.SingleOrDefault(x => x.ServerId == serverId);
+            if (targetId is int deploymentId)
             {
-                Send(new
-                {
-                    type = "tunnels.error",
-                    message = "Target non più disponibile; ricarica i target."
-                });
-                return;
+                endpoint = server?.Targets.SingleOrDefault(
+                    x => x.ServerApplicationId == deploymentId);
+            }
+            else if (serviceId is int customServiceId)
+            {
+                service = (server?.Services ?? [])
+                    .SingleOrDefault(x => x.Id == customServiceId);
             }
         }
 
-        var port = localPort ?? endpoint.SuggestedLocalPort ?? PortAllocator.FindFree();
-        if (port is < 1024 or > 65_535)
+        if (server is null ||
+            (targetId is not null && endpoint is null) ||
+            (serviceId is not null && service is null))
         {
-            Send(new
-            {
-                type = "tunnels.error",
-                message = "La porta locale deve essere tra 1024 e 65535."
-            });
+            ReportStartFailure(
+                serviceId is null
+                    ? "Target non più disponibile; ricarica i target."
+                    : "Servizio tunnel non più disponibile; ricarica i target.",
+                automatic);
             return;
         }
 
-        if (!PortAllocator.IsFree(port))
+        if (!TunnelStartSpec.TryCreate(
+                server, endpoint, service, localPort, out var spec, out var error))
         {
-            Send(new
-            {
-                type = "tunnels.error",
-                message = $"La porta locale {port} è già in uso."
-            });
+            ReportStartFailure(
+                error ?? "Configurazione del tunnel non valida.", automatic);
+            return;
+        }
+
+        var activeSpec = spec!;
+        if (activeSpec.Service is { } activeService &&
+            IsServiceActive(session.Url, activeService.Id))
+        {
+            SendLog($"Il servizio \"{activeService.Name}\" è già attivo.");
             return;
         }
 
@@ -600,9 +693,9 @@ public sealed class TunnelManager(
         try
         {
             process = SshProcessFactory(
-                SshTunnel.BuildStartInfo(server, endpoint, port));
+                SshTunnel.BuildStartInfo(server, activeSpec));
             tunnel = new TunnelProcess(
-                id, session, server, endpoint, port, correlationId, process);
+                id, session, activeSpec, correlationId, process);
             process.ErrorLine += tunnel.AppendError;
             process.Start();
         }
@@ -610,13 +703,10 @@ public sealed class TunnelManager(
         {
             process?.Dispose();
             await SendEventAsync(
-                session, server, endpoint, port, "error", correlationId,
+                session, activeSpec, "error", correlationId,
                 "spawn_failed", ShortErrorDetail(exception.Message));
-            Send(new
-            {
-                type = "tunnels.error",
-                message = $"Avvio di ssh non riuscito: {exception.Message}"
-            });
+            ReportStartFailure(
+                $"Avvio di ssh non riuscito: {exception.Message}", automatic);
             return;
         }
 
@@ -626,21 +716,34 @@ public sealed class TunnelManager(
         }
 
         await SendEventAsync(
-            session, server, endpoint, port, "start", correlationId,
-            null, null);
+            session, activeSpec, "start", correlationId, null, null);
         var projectionActive = await SendSessionAsync(
             tunnel, "active", null, null, CancellationToken.None);
         Send(new { type = "tunnels.state", items = ActiveItems() });
-        Send(new
-        {
-            type = "tunnels.log",
-            message = $"Tunnel {endpoint.Application} su 127.0.0.1:{port} attivo."
-        });
+        SendLog(ActiveMessage(activeSpec));
 
         if (projectionActive)
             tunnel.HeartbeatTask = HeartbeatAsync(tunnel);
         _ = MonitorAsync(tunnel);
     }
+
+    private void ReportStartFailure(string message, bool automatic)
+    {
+        if (automatic)
+            SendLog("Avvio automatico non riuscito: " + message);
+        else
+            Send(new { type = "tunnels.error", message });
+    }
+
+    private static string ActiveMessage(TunnelStartSpec spec) =>
+        spec.Mode switch
+        {
+            TunnelMode.Dynamic =>
+                $"Proxy SOCKS {spec.Name} su 127.0.0.1:{spec.LocalPort} attivo.",
+            TunnelMode.Remote =>
+                $"Tunnel {spec.Name} sulla porta remota {spec.RemotePort} attivo.",
+            _ => $"Tunnel {spec.Name} su 127.0.0.1:{spec.LocalPort} attivo."
+        };
 
     public Task StopAsync(string id)
     {
@@ -721,24 +824,32 @@ public sealed class TunnelManager(
             stopped ? null : "ssh_exit", detail, CancellationToken.None);
         await SendEventAsync(
             tunnel.Session,
-            tunnel.Server, tunnel.Endpoint, tunnel.LocalPort,
+            tunnel.Spec,
             stopped ? "stop" : "error",
             tunnel.CorrelationId,
             error is null ? null : "ssh_exit",
             detail);
 
         Send(new { type = "tunnels.state", items = ActiveItems() });
+        var closed = ClosedMessage(tunnel.Spec);
         Send(new
         {
             type = "tunnels.log",
-            message = error is null
-                ? $"Tunnel su 127.0.0.1:{tunnel.LocalPort} chiuso."
-                : $"Tunnel su 127.0.0.1:{tunnel.LocalPort} terminato: {error}"
+            message = error is null ? closed : $"{closed} Dettaglio: {error}"
         });
 
         tunnel.Heartbeat.Dispose();
         tunnel.Process.Dispose();
     }
+
+    private static string ClosedMessage(TunnelStartSpec spec) =>
+        spec.Mode switch
+        {
+            TunnelMode.Dynamic => $"Proxy SOCKS {spec.Name} chiuso.",
+            TunnelMode.Remote =>
+                $"Tunnel {spec.Name} sulla porta remota {spec.RemotePort} chiuso.",
+            _ => $"Tunnel {spec.Name} su 127.0.0.1:{spec.LocalPort} chiuso."
+        };
 
     /// <summary>
     /// Keeps the central live projection fresh while ssh runs. Every failure
@@ -858,11 +969,17 @@ public sealed class TunnelManager(
         {
             sessionKey = tunnel.Id,
             status,
-            serverId = tunnel.Server.ServerId,
-            serverApplicationId = tunnel.Endpoint.ServerApplicationId,
-            targetHost = tunnel.Endpoint.TargetHost,
-            targetPort = tunnel.Endpoint.TargetPort,
-            localPort = tunnel.LocalPort,
+            serverId = tunnel.Spec.Server.ServerId,
+            serverApplicationId = tunnel.Spec.Endpoint?.ServerApplicationId,
+            mode = tunnel.Spec.Mode.ToString(),
+            // The API exposes serviceId; the current request DTO binds
+            // tunnelServiceId. Send both while the naming settles.
+            serviceId = tunnel.Spec.Service?.Id,
+            tunnelServiceId = tunnel.Spec.Service?.Id,
+            targetHost = tunnel.Spec.TargetHost,
+            targetPort = tunnel.Spec.TargetPort,
+            localPort = tunnel.Spec.LocalPort,
+            remotePort = tunnel.Spec.RemotePort,
             errorCode,
             detail
         });
@@ -893,9 +1010,7 @@ public sealed class TunnelManager(
 
     private async Task SendEventAsync(
         Session session,
-        TunnelServer server,
-        TunnelEndpoint endpoint,
-        int localPort,
+        TunnelStartSpec spec,
         string kind,
         string correlationId,
         string? errorCode,
@@ -904,8 +1019,7 @@ public sealed class TunnelManager(
         try
         {
             using var response = await SendEventWithRefreshAsync(
-                session, server, endpoint, localPort, kind, correlationId,
-                errorCode, detail);
+                session, spec, kind, correlationId, errorCode, detail);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 // Keep "Accedi di nuovo" as the final message instead of a
@@ -937,9 +1051,7 @@ public sealed class TunnelManager(
 
     private async Task<HttpResponseMessage> SendEventWithRefreshAsync(
         Session session,
-        TunnelServer server,
-        TunnelEndpoint endpoint,
-        int localPort,
+        TunnelStartSpec spec,
         string kind,
         string correlationId,
         string? errorCode,
@@ -950,8 +1062,7 @@ public sealed class TunnelManager(
 
         var token = session.Token;
         var response = await PostEventAsync(
-            session, token, server, endpoint, localPort, kind,
-            correlationId, errorCode, detail);
+            session, token, spec, kind, correlationId, errorCode, detail);
         if (response.StatusCode != HttpStatusCode.Unauthorized || !session.CanRefresh)
             return response;
 
@@ -960,16 +1071,14 @@ public sealed class TunnelManager(
             return new HttpResponseMessage(HttpStatusCode.Unauthorized);
 
         return await PostEventAsync(
-            session, session.Token, server, endpoint, localPort, kind,
-            correlationId, errorCode, detail);
+            session, session.Token, spec, kind, correlationId,
+            errorCode, detail);
     }
 
     private async Task<HttpResponseMessage> PostEventAsync(
         Session session,
         string token,
-        TunnelServer server,
-        TunnelEndpoint endpoint,
-        int localPort,
+        TunnelStartSpec spec,
         string kind,
         string correlationId,
         string? errorCode,
@@ -982,11 +1091,15 @@ public sealed class TunnelManager(
         request.Content = JsonContent.Create(new
         {
             kind,
-            serverId = server.ServerId,
-            serverApplicationId = endpoint.ServerApplicationId,
-            targetHost = endpoint.TargetHost,
-            targetPort = endpoint.TargetPort,
-            localPort,
+            serverId = spec.Server.ServerId,
+            serverApplicationId = spec.Endpoint?.ServerApplicationId,
+            mode = spec.Mode.ToString(),
+            serviceId = spec.Service?.Id,
+            tunnelServiceId = spec.Service?.Id,
+            targetHost = spec.TargetHost,
+            targetPort = spec.TargetPort,
+            localPort = spec.LocalPort,
+            remotePort = spec.RemotePort,
             errorCode,
             detail,
             correlationId
@@ -1191,17 +1304,45 @@ public sealed class TunnelManager(
         lock (_gate)
         {
             return _active.Values
-                .OrderBy(x => x.LocalPort)
+                .OrderBy(x => x.Spec.LocalPort ?? int.MaxValue)
+                .ThenBy(x => x.Spec.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(x => (object)new
                 {
                     id = x.Id,
                     instanceName = x.Session.Name,
-                    serverName = x.Server.ServerName,
-                    application = x.Endpoint.Application,
-                    localPort = x.LocalPort,
-                    targetPort = x.Endpoint.TargetPort
+                    serverName = x.Spec.Server.ServerName,
+                    application = x.Spec.Name,
+                    serviceId = x.Spec.Service?.Id,
+                    mode = x.Spec.Mode.ToString(),
+                    kind = x.Spec.Kind.ToString(),
+                    targetHost = x.Spec.TargetHost,
+                    targetPort = x.Spec.TargetPort,
+                    localPort = x.Spec.LocalPort,
+                    remotePort = x.Spec.RemotePort,
+                    openUrl = x.Spec.OpenUrl
                 })
                 .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// True only for a browser URL generated by an active local HTTP(S)
+    /// tunnel. The manager bridge uses it to keep the generic open-external
+    /// path from launching arbitrary http addresses.
+    /// </summary>
+    public bool IsTunnelOpenUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var candidate))
+            return false;
+
+        lock (_gate)
+        {
+            return _active.Values.Any(x =>
+                x.Spec.OpenUrl is { } open &&
+                Uri.TryCreate(open, UriKind.Absolute, out var expected) &&
+                string.Equals(
+                    expected.AbsoluteUri, candidate.AbsoluteUri,
+                    StringComparison.Ordinal));
         }
     }
 
@@ -1215,6 +1356,22 @@ public sealed class TunnelManager(
         element.ValueKind == JsonValueKind.String
             ? element.GetString()
             : null;
+
+    private static int? OptionalInt(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var element) &&
+        element.ValueKind == JsonValueKind.Number &&
+        element.TryGetInt32(out var value)
+            ? value
+            : null;
+
+    private void ApplyAutoStart(JsonElement root)
+    {
+        if (root.TryGetProperty("autoStart", out var element) &&
+            element.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            AutoStartEnabled = element.GetBoolean();
+        }
+    }
 
     private void Send(object payload)
     {
@@ -1262,9 +1419,7 @@ public sealed class TunnelManager(
     private sealed class TunnelProcess(
         string id,
         Session session,
-        TunnelServer server,
-        TunnelEndpoint endpoint,
-        int localPort,
+        TunnelStartSpec spec,
         string correlationId,
         ISshProcess process)
     {
@@ -1273,9 +1428,7 @@ public sealed class TunnelManager(
 
         public string Id { get; } = id;
         public Session Session { get; } = session;
-        public TunnelServer Server { get; } = server;
-        public TunnelEndpoint Endpoint { get; } = endpoint;
-        public int LocalPort { get; } = localPort;
+        public TunnelStartSpec Spec { get; } = spec;
         public string CorrelationId { get; } = correlationId;
         public ISshProcess Process { get; } = process;
         public bool StopRequested { get; set; }

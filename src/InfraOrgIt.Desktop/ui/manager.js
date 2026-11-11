@@ -15,6 +15,7 @@
   const keycloakLogin = document.querySelector("#keycloak-login");
   const keycloakLogout = document.querySelector("#keycloak-logout");
   const sessionState = document.querySelector("#session-state");
+  const autoStartToggle = document.querySelector("#auto-start");
   const deviceLogin = document.querySelector("#device-login");
   const deviceCode = document.querySelector("#device-code");
   const deviceOpen = document.querySelector("#device-open");
@@ -47,6 +48,16 @@
   const send = (payload) => {
     window.external.sendMessage(JSON.stringify(payload));
   };
+
+  const autoStartValue = () => autoStartToggle.checked;
+
+  const modeLabels = {
+    Local: "Locale",
+    Dynamic: "Dinamico",
+    Remote: "Remoto",
+  };
+
+  const modeLabel = (mode) => modeLabels[mode] ?? mode;
 
   const setStatus = (message, isError = false) => {
     status.textContent = message;
@@ -176,7 +187,12 @@
     setTunnelStatus("");
     tunnelPanel.hidden = false;
     tunnelPanel.scrollIntoView({ block: "start" });
-    send({ type: "tunnels.restore", url: instance.url, name: instance.name });
+    send({
+      type: "tunnels.restore",
+      url: instance.url,
+      name: instance.name,
+      autoStart: autoStartValue(),
+    });
   };
 
   const closeTunnelPanel = () => {
@@ -192,6 +208,62 @@
     tokenForm.reset();
     setTunnelStatus("");
     renderTargets();
+  };
+
+  const servicePorts = (service) =>
+    service.mode === "Remote"
+      ? `remota :${service.remotePort ?? "—"}`
+      : `locale :${service.localPort ?? "auto"}`;
+
+  const createServiceRow = (server, service) => {
+    const row = document.createElement("div");
+    row.className = "target-row service-row";
+
+    const text = document.createElement("div");
+    const name = document.createElement("p");
+    name.className = "service-name";
+    const label = document.createElement("span");
+    label.textContent = service.name;
+    const badge = document.createElement("span");
+    badge.className = `badge mode-${(service.mode ?? "").toLowerCase()}`;
+    badge.textContent = modeLabel(service.mode);
+    name.append(label, badge);
+    if (service.autoStart) {
+      const auto = document.createElement("span");
+      auto.className = "badge auto";
+      auto.textContent = "auto";
+      name.append(auto);
+    }
+
+    const meta = document.createElement("p");
+    meta.className = "service-meta";
+    const target =
+      service.mode === "Dynamic"
+        ? "SOCKS"
+        : `${service.targetHost ?? ""}:${service.targetPort ?? ""}`;
+    meta.textContent = `${target} · ${servicePorts(service)} · ${service.kind ?? ""}`;
+    text.append(name, meta);
+
+    const controls = document.createElement("div");
+    controls.className = "port";
+
+    const start = document.createElement("button");
+    start.type = "button";
+    start.textContent = "Avvia";
+    start.disabled = service.enabled === false;
+    start.addEventListener("click", () => {
+      setTunnelStatus(`Avvio del servizio ${service.name}…`);
+      send({
+        type: "tunnels.start",
+        url: tunnelInstance.url,
+        serverId: server.serverId,
+        serviceId: service.id,
+      });
+    });
+    controls.append(start);
+
+    row.append(text, controls);
+    return row;
   };
 
   const renderTargets = () => {
@@ -217,13 +289,21 @@
       const meta = document.createElement("p");
       meta.className = "meta";
       let detail = `${server.environmentLabel} · ${server.username}@${server.sshHost}:${server.sshPort}`;
-      if (server.jump) {
-        detail += ` · jump ${server.jump.username}@${server.jump.host}:${server.jump.port}`;
+      const jumps = server.jumps?.length
+        ? server.jumps
+        : server.jump
+          ? [server.jump]
+          : [];
+      if (jumps.length > 0) {
+        const chain = jumps
+          .map((jump) => `${jump.username}@${jump.host}:${jump.port}`)
+          .join(" → ");
+        detail += ` · jump ${chain}`;
       }
       meta.textContent = detail;
       card.append(title, meta);
 
-      for (const target of server.targets) {
+      for (const target of server.targets ?? []) {
         const row = document.createElement("div");
         row.className = "target-row";
 
@@ -276,6 +356,17 @@
         card.append(row);
       }
 
+      const services = server.services ?? [];
+      if (services.length > 0) {
+        const serviceTitle = document.createElement("p");
+        serviceTitle.className = "services-title";
+        serviceTitle.textContent = "Servizi personalizzati";
+        card.append(serviceTitle);
+        for (const service of services) {
+          card.append(createServiceRow(server, service));
+        }
+      }
+
       tunnelTargets.append(card);
     }
   };
@@ -289,12 +380,39 @@
       item.className = "instance";
 
       const text = document.createElement("div");
+      const mode = tunnel.mode ?? "Local";
       const title = document.createElement("h3");
       title.textContent = `${tunnel.application} · ${tunnel.serverName}`;
+      const badge = document.createElement("span");
+      badge.className = `badge mode-${mode.toLowerCase()}`;
+      badge.textContent = modeLabel(mode);
+      title.append(" ", badge);
+
       const detail = document.createElement("p");
       detail.className = "detail";
-      detail.textContent = `${tunnel.instanceName} · 127.0.0.1:${tunnel.localPort} → :${tunnel.targetPort}`;
+      if (mode === "Remote") {
+        detail.textContent = `${tunnel.instanceName} · remota :${tunnel.remotePort} → ${tunnel.targetHost}:${tunnel.targetPort}`;
+      } else if (mode === "Dynamic") {
+        detail.textContent = `${tunnel.instanceName} · SOCKS 127.0.0.1:${tunnel.localPort}`;
+      } else {
+        detail.textContent = `${tunnel.instanceName} · 127.0.0.1:${tunnel.localPort} → ${tunnel.targetHost ?? ""}:${tunnel.targetPort}`;
+      }
       text.append(title, detail);
+
+      const actions = document.createElement("div");
+      actions.className = "instance-actions";
+
+      if (tunnel.openUrl) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "secondary";
+        open.textContent = "Apri";
+        open.title = "Apri nel browser";
+        open.addEventListener("click", () => {
+          send({ type: "open-external", url: tunnel.openUrl });
+        });
+        actions.append(open);
+      }
 
       const stop = document.createElement("button");
       stop.type = "button";
@@ -304,8 +422,6 @@
         send({ type: "tunnels.stop", id: tunnel.id });
       });
 
-      const actions = document.createElement("div");
-      actions.className = "instance-actions";
       actions.append(stop);
 
       item.append(text, actions);
@@ -501,7 +617,7 @@
           setTunnelStatus(
             targets.length === 0
               ? "Nessun target disponibile per questo token."
-              : "Target caricati. Scegli la porta locale e apri il tunnel.",
+              : "Target e servizi caricati. Avvia un tunnel o un servizio.",
           );
         }
         break;
@@ -573,6 +689,7 @@
       url: tunnelInstance.url,
       name: tunnelInstance.name,
       token,
+      autoStart: autoStartValue(),
     });
   });
 
@@ -593,6 +710,7 @@
       type: "tunnels.login",
       url: tunnelInstance.url,
       name: tunnelInstance.name,
+      autoStart: autoStartValue(),
     });
   });
 
