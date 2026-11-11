@@ -1,3 +1,4 @@
+using System.Reflection;
 using InfraOrgIt.Desktop.Auth;
 
 namespace InfraOrgIt.Desktop.Tests;
@@ -24,70 +25,16 @@ public sealed class TokenStoreTests
     }
 
     [Fact]
-    public async Task Mac_store_builds_the_security_commands()
+    public void Mac_store_does_not_use_the_security_cli()
     {
-        var runner = new RecordingRunner((_, _, _) => new ProcessResult(0, "", ""));
-        var store = new MacTokenStore(runner);
-
-        await store.SaveAsync(Url, Token);
-        await store.LoadAsync(Url);
-        await store.DeleteAsync(Url);
-
-        Assert.Collection(
-            runner.Calls,
-            save =>
-            {
-                Assert.Equal("/usr/bin/security", save.FileName);
-                Assert.Equal(
-                    [
-                        "add-generic-password", "-U", "-s", "InfraOrgIT Desktop",
-                        "-a", Url, "-w", Token
-                    ],
-                    save.Arguments);
-                Assert.Null(save.StandardInput);
-            },
-            load =>
-            {
-                Assert.Equal(
-                    [
-                        "find-generic-password", "-s", "InfraOrgIT Desktop",
-                        "-a", Url, "-w"
-                    ],
-                    load.Arguments);
-            },
-            delete =>
-            {
-                Assert.Equal(
-                    [
-                        "delete-generic-password", "-s", "InfraOrgIT Desktop",
-                        "-a", Url
-                    ],
-                    delete.Arguments);
-            });
-    }
-
-    [Fact]
-    public async Task Mac_load_returns_null_when_the_item_is_missing()
-    {
-        var runner = new RecordingRunner(
-            (_, _, _) => new ProcessResult(44, "", "not found"));
-        var store = new MacTokenStore(runner);
-
-        Assert.Null(await store.LoadAsync(Url));
-    }
-
-    [Fact]
-    public async Task Mac_failures_do_not_leak_the_token()
-    {
-        var runner = new RecordingRunner(
-            (_, _, _) => new ProcessResult(1, Token, Token));
-        var store = new MacTokenStore(runner);
-
-        var exception = await Assert.ThrowsAsync<TokenStoreException>(
-            () => store.LoadAsync(Url));
-
-        Assert.Contains("codice 1", exception.Message);
-        Assert.DoesNotContain(Token, exception.Message);
+        // PT-16 regression guard: the native Keychain store must not accept a
+        // process runner, so the refresh token can never reach argv.
+        Assert.DoesNotContain(
+            typeof(MacTokenStore).GetConstructors(
+                BindingFlags.Public | BindingFlags.NonPublic |
+                BindingFlags.Instance),
+            constructor => constructor.GetParameters().Any(
+                parameter => parameter.ParameterType == typeof(IProcessRunner)));
     }
 
     [Fact]
