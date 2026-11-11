@@ -359,8 +359,10 @@ internal static class Program
     }
 
     /// <summary>
-    /// Opens an https link in the default browser. The Keycloak verification
-    /// page keeps its own allowlist check in <see cref="OpenVerification"/>.
+    /// Opens an https link in the default browser. A plain http URL is allowed
+    /// only when it is the browser URL of an active local HTTP tunnel; the
+    /// Keycloak verification page keeps its own allowlist check in
+    /// <see cref="OpenVerification"/>.
     /// </summary>
     private static void OpenExternal(PhotinoWindow window, JsonElement root)
     {
@@ -368,12 +370,14 @@ internal static class Program
             ? urlElement.GetString()
             : null;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            uri.Scheme != Uri.UriSchemeHttps)
+            (uri.Scheme != Uri.UriSchemeHttps &&
+             !(uri.Scheme == Uri.UriSchemeHttp &&
+               _tunnels?.IsTunnelOpenUrl(uri.AbsoluteUri) == true)))
         {
             Send(window, new
             {
                 type = "external.error",
-                message = "Link non valido: serve un indirizzo https."
+                message = "Link non valido: serve un indirizzo https o un tunnel HTTP attivo."
             });
             return;
         }

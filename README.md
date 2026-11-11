@@ -14,12 +14,19 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
 - One window per open instance, so sessions and cookies stay independent.
 - Tunnel manager: sign in with Keycloak through the OAuth 2.0 device grant
   (PKCE S256) or paste a personal token with `tunnels:operate`, load the
-  allowlist from the instance and open `ssh -L`/`-J` forwards through the
-  user's SSH agent. The refresh token stays in the OS secret store and is used
-  to restore the session and to renew an expired access token; access tokens
-  live only in memory. `Esci` forgets the stored session. The app shows active
-  tunnels, publishes their live session projection to the instance while they
-  run, and closes them on request or on exit.
+  allowlist from the instance and open `ssh -L`, `-D` or `-R` forwards through
+  the user's SSH agent. Multi-hop `-J` chains come from the API nearest-first.
+  Each server card lists its deployments and custom services (local, SOCKS and
+  remote modes); `Avvia` opens a service by id. Local HTTP/HTTPS services get
+  an `Apri` button only while the tunnel is active, and services marked
+  `autoStart` start once per allowlist load unless the panel toggle is off.
+  The refresh token stays in the OS secret store and is used to restore the
+  session and to renew an expired access token; access tokens live only in
+  memory. `Esci` forgets the stored session. The app shows active tunnels,
+  publishes their live session projection (mode, service, target and port) to
+  the instance while they run, and closes them on request or on exit.
+- Still to do for tunnels: no automatic reconnect or persistence of running
+  services across app restarts; a dropped ssh process stays stopped.
 - Update check: reads the latest GitHub release, compares its semver tag with
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
