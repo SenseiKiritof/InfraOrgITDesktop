@@ -97,3 +97,34 @@ jobs:
           $window = $process.MainWindowHandle
           Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
           Write-Host "Desktop smoke test passed: the app stayed up for ${hold}s (main window handle: $window)."
+
+  self-install-windows:
+    # End-to-end check of the generated PowerShell update helper against a real
+    # win-x64 publish: scripts/self-install-windows.ps1 builds an old and a new
+    # version, starts the real exe from the old folder, runs the helper the
+    # installer generated, and asserts the PID wait, the folder replacement and
+    # the restore path. Two publishes make this slower than build-test, so the
+    # job is diagnostic: it is not part of the required checks. If a future
+    # runner image cannot host the GUI window or powershell.exe, keep the
+    # failure visible and document it instead of adding continue-on-error.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Self-install end-to-end
+        shell: pwsh
+        run: ./scripts/self-install-windows.ps1 -Root "$env:RUNNER_TEMP\self-install" -Keep
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-self-install-evidence
+          path: ${{ runner.temp }}/self-install/evidence.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
