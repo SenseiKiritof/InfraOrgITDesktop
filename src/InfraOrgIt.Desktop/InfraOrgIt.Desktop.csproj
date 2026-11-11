@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <Content Include="ui/**/*" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Update/update-public.pem"
+                      LogicalName="InfraOrgIt.Desktop.Update.update-public.pem" />
   </ItemGroup>
 
   <ItemGroup>

@@ -534,7 +534,7 @@
           updateConfirm.hidden = false;
           setUpdateStatus(
             message.message ??
-              "Checksum SHA-256 non disponibile: conferma il download.",
+              "Firma aggiornamento mancante: conferma il download manuale.",
             "warning",
           );
           break;
@@ -553,13 +553,9 @@
         }
         setUpdateStatus(
           message.message ?? "Download completato.",
-          message.checksumVerified ? "" : "warning",
+          message.signatureVerified ? "" : "warning",
         );
-        if (
-          message.checksumVerified &&
-          message.installMode &&
-          message.installMode !== "none"
-        ) {
+        if (message.installMode && message.installMode !== "none") {
           updateInstall.textContent =
             message.installMode === "restart"
               ? "Installa e riavvia"
@@ -823,7 +819,7 @@
   updateConfirm.addEventListener("click", () => {
     updateConfirm.disabled = true;
     updateDownload.disabled = true;
-    setUpdateStatus("Download senza verifica dello SHA-256…", "warning");
+    setUpdateStatus("Download senza firma…", "warning");
     send({ type: "update.download", confirm: true });
   });
 

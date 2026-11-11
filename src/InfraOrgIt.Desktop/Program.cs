@@ -294,14 +294,14 @@ internal static class Program
             releaseName = result.ReleaseName,
             releaseNotes = result.ReleaseNotes,
             downloadAssetName = result.DownloadAsset?.Name,
-            checksumAvailable = result.ChecksumAvailable
+            signatureAvailable = result.SignatureAvailable
         }));
     }
 
     /// <summary>
-    /// Downloads the archive selected by the last check, verifies its
-    /// checksum when published and opens the download folder. Nothing is
-    /// executed: installation stays manual.
+    /// Downloads the archive selected by the last check, verifies its signed
+    /// checksum manifest when published and opens the download folder. Nothing
+    /// is executed: installation stays manual.
     /// </summary>
     private static async Task DownloadUpdateAsync(bool confirmed)
     {
@@ -357,7 +357,7 @@ internal static class Program
             succeeded = result.Succeeded,
             message,
             path = result.FilePath,
-            checksumVerified = result.ChecksumVerified,
+            signatureVerified = result.SignatureVerified,
             requiresConfirmation = result.RequiresConfirmation,
             installMode
         }));
@@ -365,9 +365,9 @@ internal static class Program
 
     /// <summary>
     /// Installs the last successful download. The installer re-checks the
-    /// SHA-256 flag, so an unverified archive is rejected even if the UI sends
-    /// the message. On macOS the app closes after the detached helper starts;
-    /// the window closing handler stops the tunnels.
+    /// signed manifest flag, so an unsigned archive is rejected even if the UI
+    /// sends the message. On macOS the app closes after the detached helper
+    /// starts; the window closing handler stops the tunnels.
     /// </summary>
     private static async Task InstallUpdateAsync()
     {

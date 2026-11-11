@@ -49,14 +49,19 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
   browser and `Scarica aggiornamento` downloads the archive for the current
-  RID, verifies the published SHA-256 and opens the download folder. After a
-  verified download the card offers `Installa e riavvia` when the app can
-  self-replace (macOS bundle, published Linux folder or published Windows
-  folder) or `Apri installer` otherwise. Installation starts only after that
-  explicit click and only for a verified SHA-256; nothing is installed
-  automatically.
-- Still to do: platform signature verification of the downloaded archive
-  beyond the SHA-256 check.
+  RID, verifies the RSA/SHA-256 signature of the published checksum manifest
+  with the public key embedded in the app and checks the archive hash against
+  that signed manifest. After a verified download the card offers
+  `Installa e riavvia` when the app can self-replace (macOS bundle, published
+  Linux folder or published Windows folder) or `Apri installer` otherwise.
+  Installation starts only after that explicit click and only for an archive
+  whose signature and hash were verified; nothing is installed automatically.
+  An unsigned release can still be downloaded after an explicit confirmation,
+  but automatic installation stays blocked and the download folder opens for a
+  manual install.
+- Still to do: the updater does not inspect the platform code signature of the
+  downloaded app; macOS notarization and Windows Authenticode signing are
+  produced by `publish.yml` when the secrets exist.
 
 ## Run
 
@@ -137,27 +142,39 @@ the archive for the current runtime identifier (`osx-arm64`, `osx-x64`,
 - The archive URL must be `https://github.com/...`; anything else is rejected
   before a request. GitHub redirects the download to its object storage, which
   `HttpClient` follows internally.
-- The app looks for `<archive>.sha256` in the same release, downloads the
-  archive to `<archive>.part`, compares the SHA-256 and only then renames it.
-  A mismatch deletes the file and reports the error in Italian.
-- When the checksum asset is missing, the UI shows a warning and requires the
-  explicit `Scarica senza verifica` confirmation before downloading.
+- The release publishes a signed checksum manifest,
+  `InfraOrgIT-Desktop-<version>-sha256.txt`, and its detached signature
+  `...-sha256.txt.sig`. The app downloads both, verifies the RSA/SHA-256
+  signature with the public key embedded in the binary and only then reads the
+  expected hash for the archive. A SHA-256 file published next to an unsigned
+  release is never trusted on its own.
+- The archive must be listed in the signed manifest and its SHA-256 must match
+  byte for byte. The app downloads to `<archive>.part`, compares the hash and
+  only then renames it; a mismatch deletes the file and reports the error in
+  Italian.
+- When the manifest or the signature is missing, invalid, not downloadable or
+  does not list the archive, the UI shows a warning and requires the explicit
+  `Scarica senza firma` confirmation. The archive can still be downloaded for a
+  manual install, but `Installa e riavvia` stays blocked and the card offers
+  `Apri installer` only.
 - Files go to `~/Downloads/InfraOrgIT Desktop`, or a temporary folder when the
   home folder is unknown. After a successful download the app opens the
   containing folder and shows the full path. The download itself never
   executes the archive; installation starts only from the explicit install
   action.
-- Network, HTTP and checksum failures come back as UI messages instead of
-  exceptions. Tests use a fake `HttpMessageHandler`, so no test touches the
-  network.
+- Network, HTTP, signature and checksum failures come back as UI messages
+  instead of exceptions. Tests use a fake `HttpMessageHandler`, so no test
+  touches the network.
 
 ### Installation
 
-The download result carries the archive path and `ChecksumVerified`. The
-install button appears only after a successful download with
-`ChecksumVerified=true`. The backend re-checks that flag when it receives
-`update.install`, so a missing or mismatched checksum can never start an
-install, even if the UI is bypassed.
+The download result carries the archive path and `SignatureVerified`. The
+install button appears only after a successful download; `Installa e riavvia`
+requires `SignatureVerified=true`, otherwise the action opens the download
+folder. The backend re-checks that flag when it receives `update.install`, so a
+missing signature or a hash mismatch can never start an install, even if the UI
+is bypassed. The refusal message is
+`Installazione bloccata: firma aggiornamento non valida/mancante.`
 
 - macOS: when the process runs from a `.app` (`AppContext.BaseDirectory`
   contains `Contents/MacOS`), `Installa e riavvia` unpacks the zip with
@@ -197,14 +214,27 @@ install, even if the UI is bypassed.
   be diagnosed. The app only closes after the helper process has started.
 
 `publish.yml` writes a `<archive>.sha256` next to every archive after signing
-and notarization and uploads both the archives and the checksum files to the
-workflow artifacts and the GitHub Release.
+and notarization. After all four RIDs are packaged, a `Signed checksum manifest`
+job hashes the uploaded archives again, writes the deterministic
+`InfraOrgIT-Desktop-<version>-sha256.txt` manifest and signs it with
+`UPDATE_SIGNING_KEY` into `...-sha256.txt.sig`. The manifest and signature are
+uploaded to the workflow artifacts and to the GitHub Release together with the
+archives and their per-archive checksums. Without the secret the job logs a
+warning and uploads the manifest unsigned; the app then requires a manual
+install.
 
 ## Test
 
 ```bash
 dotnet test InfraOrgITDesktop.slnx
 ```
+
+Update tests generate an ephemeral RSA-3072 test keypair and sign their own
+manifest, so the production private key is never present in the repository or
+in CI. The embedded production public key is only asserted to parse. The
+signature tests cover a valid signature and hash, an invalid signature, a
+missing signature, an archive that the signed manifest does not list and a
+checksum mismatch; none of them starts an install.
 
 ### Platform integration tests
 
@@ -366,9 +396,12 @@ write the build outside `dist/` (the real-bundle self-install test uses it).
 Run it manually (`version` input, default `0.1.0`) to upload the workflow
 artifacts only. Pushing a `v*` tag (created manually from `main`, never by the
 workflow) uses the tag without the leading `v` and also creates or updates a
-GitHub Release with the same archives and their `.sha256` files. Each artifact
-holds the zip or tar.gz from `scripts/publish.sh` plus the checksum generated
-after any signing or notarization step.
+GitHub Release with the same archives, their `.sha256` files and the signed
+manifest. Each package artifact holds the zip or tar.gz from
+`scripts/publish.sh` plus the checksum generated after any signing or
+notarization step; a final `Signed checksum manifest` job adds
+`InfraOrgIT-Desktop-<version>-sha256.txt` and, when `UPDATE_SIGNING_KEY` is
+configured, its `.sig`.
 
 ### Signing and notarization
 
@@ -385,6 +418,7 @@ and forks keep working.
 | `APPLE_APP_PASSWORD` | App-specific password for `notarytool` (appleid.apple.com) |
 | `WINDOWS_CERTIFICATE` | Base64 `.pfx` with the Authenticode code-signing certificate and private key |
 | `WINDOWS_CERTIFICATE_PASSWORD` | Password of that `.pfx` |
+| `UPDATE_SIGNING_KEY` | RSA private key in PEM used to sign the update checksum manifest |
 
 macOS needs all five macOS/Apple secrets; Windows needs both `.pfx` secrets.
 Encode the files with `base64 -i certificate.p12 | pbcopy` on macOS or
@@ -403,6 +437,46 @@ With the secrets configured:
 - Linux stays unsigned.
 
 The `contents: write` permission is granted only to the release job.
+
+### Update manifest key
+
+The update manifest is signed with an RSA-3072 key kept outside the repository.
+Only the public key is versioned, at
+`src/InfraOrgIt.Desktop/Update/update-public.pem`; the project embeds it as
+`InfraOrgIt.Desktop.Update.update-public.pem`. Its SHA-256 fingerprint over the
+DER SubjectPublicKeyInfo is
+`cdb5ec1e5892cecc119f361ba451c3431a1c486461f2ad64665a5ad386254ca1`.
+
+Generate a workstation key (macOS or Linux; on Windows use WSL):
+
+```bash
+mkdir -p ~/.config/infraorgit
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+  -out ~/.config/infraorgit/update-signing-key.pem
+chmod 600 ~/.config/infraorgit/update-signing-key.pem
+openssl pkey -in ~/.config/infraorgit/update-signing-key.pem \
+  -pubout -out src/InfraOrgIt.Desktop/Update/update-public.pem
+openssl pkey -pubin -in src/InfraOrgIt.Desktop/Update/update-public.pem \
+  -outform DER | openssl dgst -sha256
+```
+
+Commit only the public key. Store the private key in
+`~/.config/infraorgit/update-signing-key.pem` (mode `600`), back it up outside
+the repository and configure the `UPDATE_SIGNING_KEY` repository secret with the
+whole PEM file:
+
+```bash
+gh secret set UPDATE_SIGNING_KEY --repo SenseiKiritof/InfraOrgITDesktop \
+  < ~/.config/infraorgit/update-signing-key.pem
+```
+
+In GitHub it is Settings -> Secrets and variables -> Actions -> New repository
+secret, name `UPDATE_SIGNING_KEY`, value the full PEM text. Never print, paste
+or commit the private key; `publish.yml` writes it to `$RUNNER_TEMP` with
+`umask 077`, signs the manifest, verifies the signature with the derived public
+key and deletes the file. Rotating the key needs a release that ships the new
+public key first, because clients only trust the key embedded in the copy they
+already run.
 
 ### Manual release
 
@@ -427,8 +501,9 @@ The `contents: write` permission is granted only to the release job.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
   port allocation, process tracking and the saved tunnel state.
 - `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison,
-  asset selection, archive download, SHA-256 verification and the verified
-  install helpers (macOS, Windows and Linux).
+  signed checksum manifest verification (`UpdateSignature`), archive download,
+  the embedded public key and the verified install helpers (macOS, Windows and
+  Linux).
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
 
 ## Decisions
