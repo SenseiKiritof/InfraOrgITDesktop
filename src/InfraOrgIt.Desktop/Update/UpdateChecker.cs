@@ -129,11 +129,21 @@ public sealed class UpdateChecker(
         {
             var assets = ParseAssets(root);
             var download = PickDownloadAsset(assets, _runtimeIdentifier);
-            var checksum = download is null
+            var manifestName = AssetPrefix + latestVersion + "-sha256.txt";
+            var manifest = download is null
+                ? null
+                : assets.FirstOrDefault(asset => string.Equals(
+                      asset.Name, manifestName, StringComparison.OrdinalIgnoreCase)) ??
+                  assets.FirstOrDefault(asset =>
+                      asset.Name.StartsWith(
+                          AssetPrefix, StringComparison.OrdinalIgnoreCase) &&
+                      asset.Name.EndsWith(
+                          "-sha256.txt", StringComparison.OrdinalIgnoreCase));
+            var signature = manifest is null
                 ? null
                 : assets.FirstOrDefault(asset => string.Equals(
                     asset.Name,
-                    download.Name + ".sha256",
+                    manifest.Name + ".sig",
                     StringComparison.OrdinalIgnoreCase));
 
             return new UpdateCheckResult(
@@ -146,7 +156,8 @@ public sealed class UpdateChecker(
                 ReleaseName: OptionalString(root, "name"),
                 ReleaseNotes: CapNotes(OptionalString(root, "body")),
                 DownloadAsset: download,
-                ChecksumAsset: checksum);
+                ManifestAsset: manifest,
+                SignatureAsset: signature);
         }
 
         return new UpdateCheckResult(
@@ -357,10 +368,15 @@ public sealed record UpdateCheckResult(
     string? ReleaseName = null,
     string? ReleaseNotes = null,
     UpdateAsset? DownloadAsset = null,
-    UpdateAsset? ChecksumAsset = null)
+    UpdateAsset? ManifestAsset = null,
+    UpdateAsset? SignatureAsset = null)
 {
-    /// <summary>True when the release publishes the archive's SHA-256 file.</summary>
-    public bool ChecksumAvailable => ChecksumAsset is not null;
+    /// <summary>
+    /// True when the release publishes both the checksum manifest and its
+    /// detached signature. Only that pair can make an archive installable.
+    /// </summary>
+    public bool SignatureAvailable =>
+        ManifestAsset is not null && SignatureAsset is not null;
 
     internal static UpdateCheckResult Failure(string current, string message) =>
         new(current, null, IsNewer: false, Failed: true, message);

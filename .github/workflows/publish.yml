@@ -3,6 +3,9 @@ name: publish
 # Packages the desktop app for all four RIDs. macOS signing/notarization and
 # Windows signing run only when the repository secrets are configured;
 # without them the workflow logs a warning and keeps the unsigned artifact.
+# The SHA-256 checksum manifest is signed with UPDATE_SIGNING_KEY; without the
+# secret the manifest is uploaded unsigned with a warning and the desktop app
+# blocks automatic installation.
 # A v* tag publishes or updates a GitHub Release from the tag that already
 # exists: the workflow never creates tags. Manual runs only upload workflow
 # artifacts.
@@ -284,9 +287,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  manifest:
+    name: Signed checksum manifest
+    needs: [version, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create and sign the SHA-256 manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(
+            find release -maxdepth 1 -type f \
+              \( -name '*.zip' -o -name '*.tar.gz' \) | LC_ALL=C sort
+          )
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "No archives found to checksum." >&2
+            exit 1
+          fi
+
+          manifest="release/InfraOrgIT-Desktop-$VERSION-sha256.txt"
+          : > "$manifest"
+          for archive in "${archives[@]}"; do
+            hash="$(sha256sum "$archive" | awk '{print $1}')"
+            printf '%s  %s\n' "$hash" "$(basename "$archive")" >> "$manifest"
+          done
+          cat "$manifest"
+
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not configured; the update manifest is unsigned and the desktop app will require a manual install."
+            exit 0
+          fi
+
+          key="$RUNNER_TEMP/update-signing-key.pem"
+          public_key="$RUNNER_TEMP/update-signing-public.pem"
+          (umask 077 && printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
+          openssl dgst -sha256 -sign "$key" -out "$manifest.sig" "$manifest"
+          openssl pkey -in "$key" -pubout -out "$public_key"
+          openssl dgst -sha256 -verify "$public_key" \
+            -signature "$manifest.sig" "$manifest"
+          rm -f "$key" "$public_key"
+          echo "Signed manifest: $manifest.sig"
+
+      - name: Upload signed manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: InfraOrgIT-Desktop-${{ needs.version.outputs.version }}-manifest
+          path: |
+            release/InfraOrgIT-Desktop-*-sha256.txt
+            release/InfraOrgIT-Desktop-*-sha256.txt.sig
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: GitHub Release
-    needs: [version, package]
+    needs: [version, package, manifest]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -306,5 +369,9 @@ jobs:
             release/*.zip
             release/*.tar.gz
             release/*.sha256
-          fail_on_unmatched_files: true
+            release/*-sha256.txt
+            release/*-sha256.txt.sig
+          # The .sig file is absent when UPDATE_SIGNING_KEY is not configured,
+          # and the manifest job already fails if no manifest was produced.
+          fail_on_unmatched_files: false
           generate_release_notes: true
