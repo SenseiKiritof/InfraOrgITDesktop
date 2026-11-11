@@ -22,7 +22,8 @@ public sealed class TunnelManager(
     DeviceAuthClient? auth = null,
     ITokenStore? tokenStore = null,
     TimeSpan? heartbeatInterval = null,
-    Func<TimeSpan, CancellationToken, Task>? delay = null)
+    Func<TimeSpan, CancellationToken, Task>? delay = null,
+    TimeSpan? reconnectDelay = null)
 {
     /// <summary>Refresh this long before the access token expires.</summary>
     internal static readonly TimeSpan RefreshWindow = TimeSpan.FromSeconds(60);
@@ -30,6 +31,19 @@ public sealed class TunnelManager(
     /// <summary>How often an active tunnel refreshes its live session.</summary>
     internal static readonly TimeSpan DefaultHeartbeatInterval =
         TimeSpan.FromSeconds(30);
+
+    /// <summary>Wait between automatic reconnect attempts.</summary>
+    internal static readonly TimeSpan DefaultReconnectDelay =
+        TimeSpan.FromSeconds(5);
+
+    /// <summary>Maximum automatic reconnect attempts per failure chain.</summary>
+    internal const int MaxReconnectAttempts = 3;
+
+    /// <summary>
+    /// A tunnel that stayed up this long starts a fresh reconnect budget.
+    /// </summary>
+    private static readonly TimeSpan ReconnectResetAfter =
+        TimeSpan.FromMinutes(1);
 
     private const int SessionDetailLength = 200;
 
@@ -44,6 +58,8 @@ public sealed class TunnelManager(
 
     private readonly TimeSpan _heartbeatInterval =
         heartbeatInterval ?? DefaultHeartbeatInterval;
+    private readonly TimeSpan _reconnectDelay =
+        reconnectDelay ?? DefaultReconnectDelay;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay =
         delay ?? ((time, cancellationToken) => Task.Delay(time, cancellationToken));
     private readonly DeviceAuthClient _auth = auth ?? new DeviceAuthClient(http);
@@ -55,11 +71,14 @@ public sealed class TunnelManager(
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TunnelProcess> _active =
         new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RetryEntry> _retries =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _refreshTokens =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _verificationUrls =
         new(StringComparer.Ordinal);
     private CancellationTokenSource? _loginCancellation;
+    private bool _stopping;
 
     /// <summary>Test seam: the default starts a real ssh process.</summary>
     internal Func<ProcessStartInfo, ISshProcess> SshProcessFactory { get; init; } =
@@ -88,6 +107,7 @@ public sealed class TunnelManager(
                 case "tunnels.list":
                     var listUrl = RequiredString(root, "url");
                     var listName = RequiredString(root, "name");
+                    CancelRetriesExcept(listUrl);
                     ApplyAutoStart(root);
                     if (OptionalString(root, "token") is { Length: > 0 } token)
                     {
@@ -100,9 +120,11 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.restore":
+                    var restoreUrl = RequiredString(root, "url");
+                    CancelRetriesExcept(restoreUrl);
                     ApplyAutoStart(root);
                     await RestoreSessionAsync(
-                        RequiredString(root, "url"),
+                        restoreUrl,
                         RequiredString(root, "name"));
                     break;
 
@@ -111,14 +133,20 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.login":
+                    var loginUrl = RequiredString(root, "url");
+                    CancelRetriesExcept(loginUrl);
                     ApplyAutoStart(root);
                     await LoginWithDeviceCodeAsync(
-                        RequiredString(root, "url"),
+                        loginUrl,
                         RequiredString(root, "name"));
                     break;
 
                 case "tunnels.login.cancel":
                     CancelLogin();
+                    break;
+
+                case "tunnels.retries.cancel":
+                    CancelRetries(RequiredString(root, "url"));
                     break;
 
                 case "tunnels.start":
@@ -262,6 +290,7 @@ public sealed class TunnelManager(
     /// </summary>
     public async Task RestoreSessionAsync(string url, string name)
     {
+        CancelRetries(url);
         RefreshedTokens? refreshed;
         await _refreshGate.WaitAsync();
         try
@@ -437,6 +466,10 @@ public sealed class TunnelManager(
             Send(new { type = "tunnels.error", message = "Inserisci il token personale." });
             return;
         }
+
+        // A reload replaces the allowlist and may autoStart the service
+        // again: drop a pending reconnect first so it cannot start twice.
+        CancelRetries(url);
 
         using var result = await SendTargetsAsync(
             url, token, expiresAt, issuer, canRefresh, cancellationToken);
@@ -686,6 +719,34 @@ public sealed class TunnelManager(
             return;
         }
 
+        if (activeSpec.Service is { } retryingService)
+            CancelRetries(session.Url, retryingService.Id);
+
+        await StartTunnelAsync(session, activeSpec, automatic);
+    }
+
+    /// <summary>
+    /// Starts one ssh process for an already validated spec and publishes the
+    /// start event, the live projection and the active state. Returns the new
+    /// process, or null when the spawn failed or the service is already up.
+    /// </summary>
+    private async Task<TunnelProcess?> StartTunnelAsync(
+        Session session,
+        TunnelStartSpec spec,
+        bool automatic,
+        int reconnectAttempt = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return null;
+
+        if (spec.Service is { } activeService &&
+            IsServiceActive(session.Url, activeService.Id))
+        {
+            SendLog($"Il servizio \"{activeService.Name}\" è già attivo.");
+            return null;
+        }
+
         var id = Guid.NewGuid().ToString("N");
         var correlationId = Guid.NewGuid().ToString("N");
         ISshProcess? process = null;
@@ -693,9 +754,9 @@ public sealed class TunnelManager(
         try
         {
             process = SshProcessFactory(
-                SshTunnel.BuildStartInfo(server, activeSpec));
+                SshTunnel.BuildStartInfo(spec.Server, spec));
             tunnel = new TunnelProcess(
-                id, session, activeSpec, correlationId, process);
+                id, session, spec, correlationId, process, reconnectAttempt);
             process.ErrorLine += tunnel.AppendError;
             process.Start();
         }
@@ -703,28 +764,49 @@ public sealed class TunnelManager(
         {
             process?.Dispose();
             await SendEventAsync(
-                session, activeSpec, "error", correlationId,
+                session, spec, "error", correlationId,
                 "spawn_failed", ShortErrorDetail(exception.Message));
             ReportStartFailure(
                 $"Avvio di ssh non riuscito: {exception.Message}", automatic);
-            return;
+            return null;
         }
 
+        var cancelled = false;
         lock (_gate)
         {
-            _active[id] = tunnel;
+            if (_stopping || cancellationToken.IsCancellationRequested)
+                cancelled = true;
+            else
+                _active[id] = tunnel;
+        }
+
+        if (cancelled)
+        {
+            tunnel.StopRequested = true;
+            try
+            {
+                process.Kill();
+            }
+            catch (InvalidOperationException)
+            {
+                // The process already exited before the cancel arrived.
+            }
+            process.Dispose();
+            tunnel.Heartbeat.Dispose();
+            return null;
         }
 
         await SendEventAsync(
-            session, activeSpec, "start", correlationId, null, null);
+            session, spec, "start", correlationId, null, null);
         var projectionActive = await SendSessionAsync(
             tunnel, "active", null, null, CancellationToken.None);
         Send(new { type = "tunnels.state", items = ActiveItems() });
-        SendLog(ActiveMessage(activeSpec));
+        SendLog(ActiveMessage(spec));
 
         if (projectionActive)
             tunnel.HeartbeatTask = HeartbeatAsync(tunnel);
         _ = MonitorAsync(tunnel);
+        return tunnel;
     }
 
     private void ReportStartFailure(string message, bool automatic)
@@ -755,6 +837,9 @@ public sealed class TunnelManager(
             tunnel.StopRequested = true;
         }
 
+        if (tunnel.Spec.Service is { } service)
+            CancelRetries(tunnel.Session.Url, service.Id);
+
         try
         {
             tunnel.Process.Kill();
@@ -773,10 +858,13 @@ public sealed class TunnelManager(
         TunnelProcess[] tunnels;
         lock (_gate)
         {
+            _stopping = true;
             tunnels = _active.Values.ToArray();
             foreach (var tunnel in tunnels)
                 tunnel.StopRequested = true;
         }
+
+        CancelRetries();
 
         foreach (var tunnel in tunnels)
         {
@@ -819,7 +907,7 @@ public sealed class TunnelManager(
             _active.Remove(tunnel.Id);
         }
 
-        await SendSessionAsync(
+        var projectionUsable = await SendSessionAsync(
             tunnel, stopped ? "stopped" : "error",
             stopped ? null : "ssh_exit", detail, CancellationToken.None);
         await SendEventAsync(
@@ -835,11 +923,14 @@ public sealed class TunnelManager(
         Send(new
         {
             type = "tunnels.log",
-            message = error is null ? closed : $"{closed} Dettaglio: {error}"
+            message = error is null ? closed : $"{closed} Dettaglio: {detail}"
         });
 
         tunnel.Heartbeat.Dispose();
         tunnel.Process.Dispose();
+
+        if (!stopped && projectionUsable)
+            ScheduleReconnect(tunnel);
     }
 
     private static string ClosedMessage(TunnelStartSpec spec) =>
@@ -850,6 +941,264 @@ public sealed class TunnelManager(
                 $"Tunnel {spec.Name} sulla porta remota {spec.RemotePort} chiuso.",
             _ => $"Tunnel {spec.Name} su 127.0.0.1:{spec.LocalPort} chiuso."
         };
+
+    /// <summary>
+    /// Cancels pending reconnect delays, for one instance or all of them.
+    /// Active tunnels keep running; only the automatic retries stop.
+    /// </summary>
+    public void CancelRetries(string? url = null)
+    {
+        List<CancellationTokenSource> cancelled = [];
+        lock (_gate)
+        {
+            foreach (var (key, entry) in _retries.ToArray())
+            {
+                if (url is null ||
+                    string.Equals(entry.Url, url, StringComparison.OrdinalIgnoreCase))
+                {
+                    _retries.Remove(key);
+                    cancelled.Add(entry.Cancellation);
+                }
+            }
+        }
+
+        foreach (var cancellation in cancelled)
+            cancellation.Cancel();
+    }
+
+    private void CancelRetriesExcept(string url)
+    {
+        List<CancellationTokenSource> cancelled = [];
+        lock (_gate)
+        {
+            foreach (var (key, entry) in _retries.ToArray())
+            {
+                if (!string.Equals(
+                        entry.Url, url, StringComparison.OrdinalIgnoreCase))
+                {
+                    _retries.Remove(key);
+                    cancelled.Add(entry.Cancellation);
+                }
+            }
+        }
+
+        foreach (var cancellation in cancelled)
+            cancellation.Cancel();
+    }
+
+    private void CancelRetries(string url, int serviceId)
+    {
+        CancellationTokenSource? cancelled = null;
+        lock (_gate)
+        {
+            var key = RetryKey(url, serviceId);
+            if (_retries.Remove(key, out var entry))
+                cancelled = entry.Cancellation;
+        }
+
+        cancelled?.Cancel();
+    }
+
+    /// <summary>
+    /// Schedules a reconnect only for an autoStart service that ended without
+    /// a user stop and still exists in the current allowlist. Deployment
+    /// tunnels and manual one-shot services never reconnect.
+    /// </summary>
+    private void ScheduleReconnect(TunnelProcess tunnel)
+    {
+        if (tunnel.Spec.Service is not { AutoStart: true, Enabled: true } service)
+            return;
+
+        if (!IsRetryEligible(tunnel, out var blocked))
+        {
+            if (blocked is not null)
+                SendLog(blocked);
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (_stopping)
+                return;
+        }
+
+        var attempt = DateTimeOffset.UtcNow - tunnel.StartedAt >= ReconnectResetAfter
+            ? 1
+            : tunnel.ReconnectAttempt + 1;
+        if (attempt > MaxReconnectAttempts)
+        {
+            SendLog(ReconnectGiveUpMessage(tunnel.Spec));
+            return;
+        }
+
+        var entry = GetOrCreateRetryEntry(tunnel.Session.Url, service.Id);
+        _ = ReconnectAsync(tunnel, attempt, entry);
+    }
+
+    private async Task ReconnectAsync(
+        TunnelProcess failed, int attempt, RetryEntry entry)
+    {
+        var cancellationToken = entry.Cancellation.Token;
+        while (true)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                return;
+
+            if (!IsRetryEligible(failed, out var blocked))
+            {
+                if (blocked is not null)
+                    SendLog(blocked);
+                return;
+            }
+
+            SendLog(ReconnectScheduledMessage(failed.Spec, attempt));
+            try
+            {
+                await _delay(_reconnectDelay, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested ||
+                !IsRetryEligible(failed, out blocked))
+            {
+                if (blocked is not null)
+                    SendLog(blocked);
+                return;
+            }
+
+            if (!TryReconnectSpec(failed.Spec, out var spec, out var portError))
+            {
+                SendLog(portError!);
+                return;
+            }
+
+            if (spec.LocalPort != failed.Spec.LocalPort)
+            {
+                SendLog(
+                    $"Servizio \"{spec.Name}\": porta locale " +
+                    $"{failed.Spec.LocalPort} occupata, uso {spec.LocalPort}.");
+            }
+
+            var tunnel = await StartTunnelAsync(
+                failed.Session, spec, automatic: true,
+                reconnectAttempt: attempt,
+                cancellationToken: cancellationToken);
+            if (tunnel is not null)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    await StopAsync(tunnel.Id);
+                    return;
+                }
+
+                SendLog(ReconnectSuccessMessage(spec, attempt));
+                return;
+            }
+
+            attempt++;
+            if (attempt > MaxReconnectAttempts)
+            {
+                SendLog(ReconnectGiveUpMessage(failed.Spec));
+                return;
+            }
+        }
+    }
+
+    private bool IsRetryEligible(TunnelProcess tunnel, out string? blocked)
+    {
+        blocked = null;
+        lock (_gate)
+        {
+            if (tunnel.Session.AuthFailed)
+                return false;
+
+            if (!_sessions.TryGetValue(tunnel.Session.Url, out var current) ||
+                !ReferenceEquals(current, tunnel.Session))
+            {
+                return false;
+            }
+
+            var service = current.Targets
+                .Where(x => x.ServerId == tunnel.Spec.Server.ServerId)
+                .SelectMany(x => x.Services ?? [])
+                .SingleOrDefault(x => x.Id == tunnel.Spec.Service!.Id);
+            if (service is { Enabled: true, AutoStart: true })
+                return true;
+
+            blocked =
+                $"Servizio \"{tunnel.Spec.Name}\": non è più abilitato " +
+                "per l'avvio automatico; riconnessione interrotta.";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Reuses the same spec except for an auto-allocated local port. A fixed
+    /// service port that is now busy stops the retry with a clear message.
+    /// </summary>
+    private static bool TryReconnectSpec(
+        TunnelStartSpec failed,
+        out TunnelStartSpec spec,
+        out string? error)
+    {
+        spec = failed;
+        error = null;
+
+        if (failed.Mode == TunnelMode.Remote || failed.LocalPort is not int port)
+            return true;
+
+        if (PortAllocator.IsFree(port))
+            return true;
+
+        if (failed.Service?.LocalPort is not null)
+        {
+            error =
+                $"Servizio \"{failed.Name}\": la porta locale {port} è già " +
+                "in uso; riconnessione interrotta.";
+            return false;
+        }
+
+        spec = failed with { LocalPort = PortAllocator.FindFree() };
+        return true;
+    }
+
+    private RetryEntry GetOrCreateRetryEntry(string url, int serviceId)
+    {
+        lock (_gate)
+        {
+            var key = RetryKey(url, serviceId);
+            if (_retries.TryGetValue(key, out var existing) &&
+                !existing.Cancellation.IsCancellationRequested)
+            {
+                return existing;
+            }
+
+            var entry = new RetryEntry(
+                url, new CancellationTokenSource());
+            _retries[key] = entry;
+            return entry;
+        }
+    }
+
+    private string ReconnectScheduledMessage(TunnelStartSpec spec, int attempt) =>
+        $"Servizio \"{spec.Name}\" interrotto in modo inatteso. " +
+        $"Riconnessione tra {_reconnectDelay.TotalSeconds:0.###} secondi " +
+        $"(tentativo {attempt}/{MaxReconnectAttempts}).";
+
+    private static string ReconnectSuccessMessage(
+        TunnelStartSpec spec, int attempt) =>
+        $"Servizio \"{spec.Name}\" riconnesso " +
+        $"(tentativo {attempt}/{MaxReconnectAttempts}).";
+
+    private static string ReconnectGiveUpMessage(TunnelStartSpec spec) =>
+        $"Servizio \"{spec.Name}\": riconnessione non riuscita dopo " +
+        $"{MaxReconnectAttempts} tentativi. Avvia di nuovo il servizio manualmente.";
+
+    private static string RetryKey(string url, int serviceId) =>
+        $"{url}\u001f{serviceId}";
 
     /// <summary>
     /// Keeps the central live projection fresh while ssh runs. Every failure
@@ -893,14 +1242,25 @@ public sealed class TunnelManager(
             using var response = await SendSessionWithRefreshAsync(
                 tunnel, status, errorCode, detail, cancellationToken);
             if (response is null)
+            {
+                MarkAuthFailure(tunnel.Session);
                 return false;
+            }
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
+                MarkAuthFailure(tunnel.Session);
                 SendAuthError(
                     tunnel.Session.Url,
                     "Sessione non più valida. Accedi di nuovo.",
                     requiresLogin: true);
+                return false;
+            }
+
+            if (response.StatusCode == HttpStatusCode.Forbidden)
+            {
+                MarkAuthFailure(tunnel.Session);
+                SendLog("Permessi tunnel non più validi (403).");
                 return false;
             }
 
@@ -1024,10 +1384,20 @@ public sealed class TunnelManager(
             {
                 // Keep "Accedi di nuovo" as the final message instead of a
                 // generic 401 log line that would overwrite it in the panel.
+                MarkAuthFailure(session);
                 SendAuthError(
                     session.Url,
                     "Sessione non più valida. Accedi di nuovo.",
                     requiresLogin: true);
+            }
+            else if (response.StatusCode == HttpStatusCode.Forbidden)
+            {
+                MarkAuthFailure(session);
+                Send(new
+                {
+                    type = "tunnels.log",
+                    message = "Evento tunnel non registrato (403)."
+                });
             }
             else if (!response.IsSuccessStatusCode)
             {
@@ -1181,6 +1551,14 @@ public sealed class TunnelManager(
         }
     }
 
+    private void MarkAuthFailure(Session session)
+    {
+        lock (_gate)
+        {
+            session.AuthFailed = true;
+        }
+    }
+
     private async Task<RefreshedTokens?> RefreshTokensForUrlAsync(
         string url, string? issuer, CancellationToken cancellationToken)
     {
@@ -1279,6 +1657,7 @@ public sealed class TunnelManager(
 
     private async Task ClearSessionAsync(string url)
     {
+        CancelRetries(url);
         lock (_gate)
         {
             _sessions.Remove(url);
@@ -1400,12 +1779,17 @@ public sealed class TunnelManager(
         public DateTimeOffset? ExpiresAt { get; set; } = expiresAt;
         public string? Issuer { get; set; } = issuer;
         public bool CanRefresh { get; } = canRefresh;
+        public bool AuthFailed { get; set; }
         public IReadOnlyList<TunnelServer> Targets { get; } = targets;
         public string EventUrl => Url.TrimEnd('/') + "/api/tunnels/events";
         public string SessionUrl => Url.TrimEnd('/') + "/api/tunnels/sessions";
     }
 
     private sealed record RefreshedTokens(DeviceTokens Tokens, string Issuer);
+
+    private sealed record RetryEntry(
+        string Url,
+        CancellationTokenSource Cancellation);
 
     private sealed record AuthorizedResponse(
         HttpResponseMessage Response,
@@ -1421,7 +1805,8 @@ public sealed class TunnelManager(
         Session session,
         TunnelStartSpec spec,
         string correlationId,
-        ISshProcess process)
+        ISshProcess process,
+        int reconnectAttempt)
     {
         private readonly Lock _errorGate = new();
         private readonly StringBuilder _error = new();
@@ -1431,6 +1816,8 @@ public sealed class TunnelManager(
         public TunnelStartSpec Spec { get; } = spec;
         public string CorrelationId { get; } = correlationId;
         public ISshProcess Process { get; } = process;
+        public int ReconnectAttempt { get; } = reconnectAttempt;
+        public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
         public bool StopRequested { get; set; }
         public CancellationTokenSource Heartbeat { get; } = new();
         public Task HeartbeatTask { get; set; } = Task.CompletedTask;
