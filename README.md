@@ -51,11 +51,12 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   browser and `Scarica aggiornamento` downloads the archive for the current
   RID, verifies the published SHA-256 and opens the download folder. After a
   verified download the card offers `Installa e riavvia` when the app can
-  self-replace (macOS bundle or published Linux folder) or `Apri installer`
-  otherwise. Installation starts only after that explicit click and only for a
-  verified SHA-256; nothing is installed automatically.
+  self-replace (macOS bundle, published Linux folder or published Windows
+  folder) or `Apri installer` otherwise. Installation starts only after that
+  explicit click and only for a verified SHA-256; nothing is installed
+  automatically.
 - Still to do: platform signature verification of the downloaded archive
-  beyond the SHA-256 check, and self-replace on Windows.
+  beyond the SHA-256 check.
 
 ## Run
 
@@ -169,18 +170,30 @@ install, even if the UI is bypassed.
   if the copy fails. The app closes after the helper starts. A `dotnet run`
   build, an invalid archive or a non-writable install folder is refused with
   an Italian message and the download folder opens for a manual install.
-- Windows: self-replace is not implemented. `Apri installer` opens the folder
-  with the verified zip; close the app, extract the zip over the installation
-  folder and start the exe again. The checksum rule still applies.
+- Windows: for a published folder (apphost `InfraOrgIt.Desktop.exe`, no
+  managed `.dll` next to it), `Installa e riavvia` starts a detached
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File` helper. The
+  installer reads the zip directory and requires exactly one top-level folder
+  with `InfraOrgIt.Desktop.exe` directly inside it; rooted or `..` entries are
+  refused. The helper waits for the app PID, expands the zip into a fresh temp
+  folder, moves the current app folder aside, copies the new payload into
+  place, restores the old folder when the copy fails, starts the new exe and
+  cleans temp and old folder. Every path is passed as an argument and read
+  with `-LiteralPath`; no user-controlled string is written into the script
+  body. A `dotnet run` build (managed `.dll` present) or a missing exe is
+  refused with an Italian message and `Apri installer` opens the download
+  folder. The helper is not executed in CI: the tests only check the generated
+  arguments and script content.
 - Linux: for a published folder (apphost binary, no managed `.dll`), the same
   `Installa e riavvia` starts a helper that waits for the PID, extracts the
   tar.gz into a temp directory, moves the current app folder aside, copies the
   new payload with `cp -a`, and execs the new binary; a failed copy restores
   the old folder. A non-writable folder, `dotnet run` or an invalid archive
   falls back to `Apri installer`.
-- Helpers write `install.log` in `$TMPDIR/infraorgit-install-*` so a failed
-  replacement can be diagnosed. The app only closes after the helper process
-  has started.
+- Helpers write a log next to their temp work folder (`install.log` in
+  `$TMPDIR/infraorgit-install-*` on macOS and Linux,
+  `%TEMP%\infraorgit-install-<id>.log` on Windows) so a failed replacement can
+  be diagnosed. The app only closes after the helper process has started.
 
 `publish.yml` writes a `<archive>.sha256` next to every archive after signing
 and notarization and uploads both the archives and the checksum files to the

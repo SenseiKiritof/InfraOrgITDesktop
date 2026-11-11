@@ -234,15 +234,104 @@ public sealed class UpdateInstallerTests
     }
 
     [Fact]
-    public void Windows_install_opens_the_folder_and_never_runs_a_helper()
+    public void Windows_unverified_download_never_reaches_the_helper()
     {
         using var directory = new TempDirectory();
-        var archive = directory.WriteFile("update.zip", [1, 2, 3]);
+        var app = directory.CreateWindowsApp();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "InfraOrgIT-Desktop-0.2.0-win-x64");
         var process = new FakeProcess();
         var environment = new FakeEnvironment
         {
             Platform = UpdateInstallPlatform.Windows,
-            BaseDirectory = Path.Combine(directory.Root, "app"),
+            BaseDirectory = app,
+            TempDirectory = Path.Combine(directory.Root, "tmp"),
+        };
+        var installer = new UpdateInstaller(environment, process);
+        var download = Download(archive, checksumVerified: false);
+
+        Assert.Equal(UpdateInstallMode.None, installer.GetMode(download));
+        var result = installer.Install(download);
+
+        Assert.Equal(UpdateInstallStatus.Rejected, result.Status);
+        Assert.Contains("SHA-256", result.Message);
+        Assert.Empty(process.Detached);
+        Assert.Empty(environment.OpenedFolders);
+    }
+
+    [Fact]
+    public void Windows_install_starts_a_powershell_helper_for_a_published_layout()
+    {
+        using var directory = new TempDirectory();
+        var app = directory.CreateWindowsApp();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "InfraOrgIT-Desktop-0.2.0-win-x64");
+        var process = new FakeProcess();
+        var environment = new FakeEnvironment
+        {
+            Platform = UpdateInstallPlatform.Windows,
+            BaseDirectory = app + Path.DirectorySeparatorChar,
+            ProcessPath = Path.Combine(app, UpdateInstaller.WindowsExecutableName),
+            TempDirectory = Path.Combine(directory.Root, "tmp"),
+            ProcessId = 5150,
+        };
+        var installer = new UpdateInstaller(environment, process);
+        var download = Download(archive, checksumVerified: true);
+
+        Assert.Equal(UpdateInstallMode.Restart, installer.GetMode(download));
+
+        var result = installer.Install(download);
+
+        Assert.Equal(UpdateInstallStatus.Launched, result.Status);
+        Assert.True(result.Launched);
+        Assert.Empty(process.Runs);
+        var helper = Assert.Single(process.Detached);
+        Assert.Equal("powershell.exe", helper.FileName);
+        Assert.Equal(
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"],
+            helper.Arguments.Take(4));
+        Assert.Contains(archive, helper.Arguments);
+        Assert.Contains(app, helper.Arguments);
+        Assert.Contains("InfraOrgIT-Desktop-0.2.0-win-x64", helper.Arguments);
+        Assert.Contains("5150", helper.Arguments);
+
+        var log = helper.Arguments[Array.IndexOf(
+            helper.Arguments.ToArray(), "-LogPath") + 1];
+        Assert.StartsWith(Path.Combine(directory.Root, "tmp"), log);
+        Assert.EndsWith(".log", log);
+        Assert.StartsWith("infraorgit-install-", Path.GetFileName(log));
+
+        var script = helper.Arguments[4];
+        Assert.True(File.Exists(script));
+        var content = File.ReadAllText(script);
+        Assert.Contains("Get-Process -Id $AppProcessId", content);
+        Assert.Contains("Expand-Archive -LiteralPath \"$ArchivePath\"", content);
+        Assert.Contains("Move-Item -LiteralPath \"$TargetDirectory\"", content);
+        Assert.Contains("Copy-Item -Destination \"$TargetDirectory\"", content);
+        Assert.Contains("Start-Process -FilePath \"$newExe\"", content);
+        Assert.Contains("Move-Item -LiteralPath \"$oldDir\" -Destination \"$TargetDirectory\"", content);
+        Assert.DoesNotContain(directory.Root, content);
+        Assert.DoesNotContain(archive, content);
+        Assert.DoesNotContain(app, content);
+    }
+
+    [Fact]
+    public void Windows_install_refuses_dotnet_run_and_opens_the_folder()
+    {
+        using var directory = new TempDirectory();
+        var app = Path.Combine(directory.Root, "bin", "Debug", "net10.0");
+        Directory.CreateDirectory(app);
+        File.WriteAllText(
+            Path.Combine(app, UpdateInstaller.WindowsExecutableName), "apphost");
+        File.WriteAllText(Path.Combine(app, "InfraOrgIt.Desktop.dll"), "managed");
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "InfraOrgIT-Desktop-0.2.0-win-x64");
+        var process = new FakeProcess();
+        var environment = new FakeEnvironment
+        {
+            Platform = UpdateInstallPlatform.Windows,
+            BaseDirectory = app,
+            ProcessPath = Path.Combine(app, UpdateInstaller.WindowsExecutableName),
             TempDirectory = Path.Combine(directory.Root, "tmp"),
         };
         var installer = new UpdateInstaller(environment, process);
@@ -253,10 +342,129 @@ public sealed class UpdateInstallerTests
         var result = installer.Install(download);
 
         Assert.Equal(UpdateInstallStatus.Manual, result.Status);
-        Assert.Contains("Windows", result.Message);
+        Assert.Contains("installazione pubblicata", result.Message);
+        Assert.Contains("dotnet run", result.Message);
         Assert.Equal(directory.Root, Assert.Single(environment.OpenedFolders));
-        Assert.Empty(process.Runs);
         Assert.Empty(process.Detached);
+    }
+
+    [Fact]
+    public void Windows_install_refuses_when_the_published_exe_is_missing()
+    {
+        using var directory = new TempDirectory();
+        var app = Path.Combine(directory.Root, "app");
+        Directory.CreateDirectory(app);
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "InfraOrgIT-Desktop-0.2.0-win-x64");
+        var process = new FakeProcess();
+        var environment = new FakeEnvironment
+        {
+            Platform = UpdateInstallPlatform.Windows,
+            BaseDirectory = app,
+            ProcessPath = Path.Combine(app, UpdateInstaller.WindowsExecutableName),
+            TempDirectory = Path.Combine(directory.Root, "tmp"),
+        };
+        var installer = new UpdateInstaller(environment, process);
+        var download = Download(archive, checksumVerified: true);
+
+        Assert.Equal(UpdateInstallMode.Open, installer.GetMode(download));
+        var result = installer.Install(download);
+
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Empty(process.Detached);
+    }
+
+    [Fact]
+    public void Windows_install_rejects_an_archive_with_two_top_level_folders()
+    {
+        using var directory = new TempDirectory();
+        var app = directory.CreateWindowsApp();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "payload", extraTopLevelFolder: true);
+        var process = new FakeProcess();
+        var installer = new UpdateInstaller(
+            WindowsEnvironment(directory, app), process);
+
+        var result = installer.Install(Download(archive, checksumVerified: true));
+
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Contains("una sola cartella", result.Message);
+        Assert.Empty(process.Detached);
+    }
+
+    [Fact]
+    public void Windows_install_rejects_an_archive_without_the_executable()
+    {
+        using var directory = new TempDirectory();
+        var app = directory.CreateWindowsApp();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        CreateWindowsZip(archive, "payload", includeExecutable: false);
+        var process = new FakeProcess();
+        var installer = new UpdateInstaller(
+            WindowsEnvironment(directory, app), process);
+
+        var result = installer.Install(Download(archive, checksumVerified: true));
+
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Contains(UpdateInstaller.WindowsExecutableName, result.Message);
+        Assert.Empty(process.Detached);
+    }
+
+    [Fact]
+    public void Windows_install_rejects_an_executable_at_the_archive_root()
+    {
+        using var directory = new TempDirectory();
+        var app = directory.CreateWindowsApp();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        using (var zip = ZipFile.Open(archive, ZipArchiveMode.Create))
+        {
+            var entry = zip.CreateEntry(UpdateInstaller.WindowsExecutableName);
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("binary");
+        }
+
+        var process = new FakeProcess();
+        var installer = new UpdateInstaller(
+            WindowsEnvironment(directory, app), process);
+
+        var result = installer.Install(Download(archive, checksumVerified: true));
+
+        Assert.Equal(UpdateInstallStatus.Manual, result.Status);
+        Assert.Empty(process.Detached);
+    }
+
+    [Fact]
+    public void Install_guard_allows_one_install_at_a_time()
+    {
+        var guard = new UpdateInstallGuard();
+
+        Assert.True(guard.TryEnter());
+        Assert.False(guard.TryEnter());
+        guard.Release();
+        Assert.True(guard.TryEnter());
+    }
+
+    [Theory]
+    [InlineData("payload/../evil.txt")]
+    [InlineData("/evil.txt")]
+    [InlineData("payload//evil.txt")]
+    [InlineData("other/evil.txt")]
+    public void Windows_payload_validation_rejects_unsafe_or_extra_entries(
+        string entryName)
+    {
+        using var directory = new TempDirectory();
+        var archive = Path.Combine(directory.Root, "update.zip");
+        using (var zip = ZipFile.Open(archive, ZipArchiveMode.Create))
+        {
+            zip.CreateEntry("payload");
+            var executable = zip.CreateEntry(
+                "payload/" + UpdateInstaller.WindowsExecutableName);
+            using (var writer = new StreamWriter(executable.Open()))
+                writer.Write("binary");
+            zip.CreateEntry(entryName);
+        }
+
+        Assert.Null(UpdateInstaller.FindWindowsPayloadFolder(archive));
     }
 
     [Fact]
@@ -366,6 +574,36 @@ public sealed class UpdateInstallerTests
             Message: "Download completato.",
             FilePath: path,
             ChecksumVerified: checksumVerified);
+
+    private static FakeEnvironment WindowsEnvironment(
+        TempDirectory directory, string app) => new()
+        {
+            Platform = UpdateInstallPlatform.Windows,
+            BaseDirectory = app,
+            ProcessPath = Path.Combine(app, UpdateInstaller.WindowsExecutableName),
+            TempDirectory = Path.Combine(directory.Root, "tmp"),
+        };
+
+    private static void CreateWindowsZip(
+        string zipPath,
+        string rootName,
+        bool includeExecutable = true,
+        bool extraTopLevelFolder = false)
+    {
+        using var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+        zip.CreateEntry(rootName + "/");
+        zip.CreateEntry(rootName + "/ui/manager.html");
+        if (includeExecutable)
+        {
+            var entry = zip.CreateEntry(
+                rootName + "/" + UpdateInstaller.WindowsExecutableName);
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write("new binary");
+        }
+
+        if (extraTopLevelFolder)
+            zip.CreateEntry("other/readme.txt");
+    }
 
     private static UpdateProcessResult Unzip(IReadOnlyList<string> arguments)
     {
@@ -493,6 +731,16 @@ public sealed class UpdateInstallerTests
                 Path.Combine(bundle, "Contents", "Info.plist"),
                 UpdateInstallerTests.InfoPlist(UpdateInstaller.MacBundleIdentifier));
             return bundle;
+        }
+
+        public string CreateWindowsApp()
+        {
+            var app = Path.Combine(Root, "app");
+            Directory.CreateDirectory(app);
+            File.WriteAllText(
+                Path.Combine(app, UpdateInstaller.WindowsExecutableName), "old binary");
+            File.WriteAllText(Path.Combine(app, "InfraOrgIT.Desktop.runtimeconfig.json"), "{}");
+            return app;
         }
 
         public string WriteFile(string name, byte[] content)
