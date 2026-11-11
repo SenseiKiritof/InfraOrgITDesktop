@@ -30,6 +30,10 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
 - `Instances/InstanceStore` and `Tunnels/TunnelsStateStore` are the only file
   persistence: keep saves atomic, validate every value, and never write tokens,
   hosts or secrets to `tunnels.json`.
+- `Instances/Instance.TryCreate` accepts `https` for every host and `http` only
+  for loopback (`localhost`, `127.0.0.1`, `[::1]`). Never weaken the scheme
+  check itself; `INFRAORGIT_ALLOW_INSECURE_HTTP=1` is the development-only
+  override for a remote plain-http instance.
 - `Tunnels/SshTunnel` builds `ArgumentList`, never a shell string; keep
   `BatchMode` and host-key verification on.
 - `Tunnels/TunnelManager` owns tokens, targets, processes and the live tunnel
