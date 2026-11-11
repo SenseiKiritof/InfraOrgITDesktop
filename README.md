@@ -49,10 +49,13 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
   the assembly informational version and shows the current version. When a
   newer stable release exists, `Apri release` opens its page in the default
   browser and `Scarica aggiornamento` downloads the archive for the current
-  RID, verifies the published SHA-256 and opens the download folder. Nothing
-  is executed automatically and installation remains user-confirmed/manual.
-- Still to do: automatic install (self-replace), and platform signature
-  verification of the downloaded archive beyond the SHA-256 check.
+  RID, verifies the published SHA-256 and opens the download folder. After a
+  verified download the card offers `Installa e riavvia` when the app can
+  self-replace (macOS bundle or published Linux folder) or `Apri installer`
+  otherwise. Installation starts only after that explicit click and only for a
+  verified SHA-256; nothing is installed automatically.
+- Still to do: platform signature verification of the downloaded archive
+  beyond the SHA-256 check, and self-replace on Windows.
 
 ## Run
 
@@ -140,11 +143,44 @@ the archive for the current runtime identifier (`osx-arm64`, `osx-x64`,
   explicit `Scarica senza verifica` confirmation before downloading.
 - Files go to `~/Downloads/InfraOrgIT Desktop`, or a temporary folder when the
   home folder is unknown. After a successful download the app opens the
-  containing folder and shows the full path. It never executes or installs the
-  archive; the user installs it manually.
+  containing folder and shows the full path. The download itself never
+  executes the archive; installation starts only from the explicit install
+  action.
 - Network, HTTP and checksum failures come back as UI messages instead of
   exceptions. Tests use a fake `HttpMessageHandler`, so no test touches the
   network.
+
+### Installation
+
+The download result carries the archive path and `ChecksumVerified`. The
+install button appears only after a successful download with
+`ChecksumVerified=true`. The backend re-checks that flag when it receives
+`update.install`, so a missing or mismatched checksum can never start an
+install, even if the UI is bypassed.
+
+- macOS: when the process runs from a `.app` (`AppContext.BaseDirectory`
+  contains `Contents/MacOS`), `Installa e riavvia` unpacks the zip with
+  `ditto -x -k` in a fresh temp directory, requires exactly one `*.app`, and
+  checks `Contents/Info.plist` for
+  `CFBundleIdentifier=it.infraorgit.desktop`. A detached `sh` helper receives
+  every path as an argument (no shell-string interpolation), waits for the app
+  PID, moves the old bundle aside, copies the new one with `ditto`, removes
+  `com.apple.quarantine`, relaunches with `open`, and restores the old bundle
+  if the copy fails. The app closes after the helper starts. A `dotnet run`
+  build, an invalid archive or a non-writable install folder is refused with
+  an Italian message and the download folder opens for a manual install.
+- Windows: self-replace is not implemented. `Apri installer` opens the folder
+  with the verified zip; close the app, extract the zip over the installation
+  folder and start the exe again. The checksum rule still applies.
+- Linux: for a published folder (apphost binary, no managed `.dll`), the same
+  `Installa e riavvia` starts a helper that waits for the PID, extracts the
+  tar.gz into a temp directory, moves the current app folder aside, copies the
+  new payload with `cp -a`, and execs the new binary; a failed copy restores
+  the old folder. A non-writable folder, `dotnet run` or an invalid archive
+  falls back to `Apri installer`.
+- Helpers write `install.log` in `$TMPDIR/infraorgit-install-*` so a failed
+  replacement can be diagnosed. The app only closes after the helper process
+  has started.
 
 `publish.yml` writes a `<archive>.sha256` next to every archive after signing
 and notarization and uploads both the archives and the checksum files to the
@@ -284,7 +320,8 @@ The `contents: write` permission is granted only to the release job.
 - `src/InfraOrgIt.Desktop/Tunnels/`: allowlist client, ssh argument builder,
   port allocation, process tracking and the saved tunnel state.
 - `src/InfraOrgIt.Desktop/Update/`: GitHub release check, semver comparison,
-  asset selection, archive download and SHA-256 verification.
+  asset selection, archive download, SHA-256 verification and the verified
+  install helpers (macOS and Linux).
 - `src/InfraOrgIt.Desktop/ui/`: local manager page (Italian copy).
 
 ## Decisions
