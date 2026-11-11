@@ -65,12 +65,19 @@
           <span id="update-current" class="count">Versione —</span>
         </div>
         <p class="hint">
-          Il controllo legge l'ultima release GitHub. Download e installazione
-          restano manuali.
+          Il controllo legge l'ultima release GitHub. Il download verifica lo
+          SHA-256 quando pubblicato e salva l'archivio: l'installazione resta
+          manuale.
         </p>
         <div class="update-actions">
           <button type="button" id="update-check">
             Controlla aggiornamenti
+          </button>
+          <button type="button" id="update-download" class="secondary" hidden>
+            Scarica aggiornamento
+          </button>
+          <button type="button" id="update-confirm" class="secondary" hidden>
+            Scarica senza verifica
           </button>
           <button type="button" id="update-open" class="secondary" hidden>
             Apri release
@@ -84,6 +91,7 @@
         ></p>
         <p id="update-release" class="update-release" hidden></p>
         <p id="update-notes" class="update-notes" hidden></p>
+        <p id="update-path" class="update-path" hidden></p>
       </section>
 
       <section id="tunnel-panel" class="card" hidden aria-labelledby="tunnel-title">

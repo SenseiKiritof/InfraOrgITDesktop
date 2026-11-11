@@ -184,6 +184,103 @@ public sealed class UpdateCheckerTests
         Assert.EndsWith("…", result.ReleaseNotes);
     }
 
+    [Fact]
+    public async Task Check_picks_the_archive_for_the_current_runtime_identifier()
+    {
+        var assets = string.Join(",", new[]
+        {
+            Asset(
+                "InfraOrgIT-Desktop-0.1.1-osx-x64.zip",
+                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-x64.zip"),
+            Asset(
+                "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip",
+                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-arm64.zip",
+                1234),
+            Asset(
+                "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip.sha256",
+                "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-arm64.zip.sha256",
+                65)
+        });
+        var handler = new FakeHandler(
+            _ => Json(HttpStatusCode.OK, Release("v0.1.1", assets: assets)));
+        var checker = new UpdateChecker(
+            new HttpClient(handler), "0.1.0", "osx-arm64");
+
+        var result = await checker.CheckAsync();
+
+        Assert.True(result.IsNewer);
+        Assert.Equal(
+            "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip",
+            result.DownloadAsset!.Name);
+        Assert.Equal(1234, result.DownloadAsset.Size);
+        Assert.True(result.ChecksumAvailable);
+        Assert.Equal(
+            "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip.sha256",
+            result.ChecksumAsset!.Name);
+    }
+
+    [Theory]
+    [InlineData("osx-arm64", "osx-x64", "zip")]
+    [InlineData("win-arm64", "win-x64", "zip")]
+    [InlineData("linux-arm64", "linux-x64", "tar.gz")]
+    public async Task Check_falls_back_to_another_architecture_of_the_same_os(
+        string runtimeIdentifier,
+        string fallbackRid,
+        string extension)
+    {
+        var name = $"InfraOrgIT-Desktop-0.1.1-{fallbackRid}.{extension}";
+        var url =
+            "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/" +
+            name;
+        var handler = new FakeHandler(
+            _ => Json(
+                HttpStatusCode.OK,
+                Release("v0.1.1", assets: Asset(name, url))));
+        var checker = new UpdateChecker(
+            new HttpClient(handler), "0.1.0", runtimeIdentifier);
+
+        var result = await checker.CheckAsync();
+
+        Assert.True(result.IsNewer);
+        Assert.Equal(name, result.DownloadAsset!.Name);
+        Assert.False(result.ChecksumAvailable);
+    }
+
+    [Fact]
+    public async Task Check_reports_a_release_without_an_archive_for_the_platform()
+    {
+        var assets = Asset(
+            "InfraOrgIT-Desktop-0.1.1-osx-arm64.zip",
+            "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/osx-arm64.zip");
+        var handler = new FakeHandler(
+            _ => Json(HttpStatusCode.OK, Release("v0.1.1", assets: assets)));
+        var checker = new UpdateChecker(
+            new HttpClient(handler), "0.1.0", "linux-x64");
+
+        var result = await checker.CheckAsync();
+
+        Assert.True(result.IsNewer);
+        Assert.Null(result.DownloadAsset);
+        Assert.False(result.ChecksumAvailable);
+    }
+
+    [Fact]
+    public async Task Check_reports_a_release_without_a_checksum_asset()
+    {
+        var assets = Asset(
+            "InfraOrgIT-Desktop-0.1.1-linux-x64.tar.gz",
+            "https://github.com/SenseiKiritof/InfraOrgITDesktop/releases/download/v0.1.1/linux-x64.tar.gz");
+        var handler = new FakeHandler(
+            _ => Json(HttpStatusCode.OK, Release("v0.1.1", assets: assets)));
+        var checker = new UpdateChecker(
+            new HttpClient(handler), "0.1.0", "linux-x64");
+
+        var result = await checker.CheckAsync();
+
+        Assert.NotNull(result.DownloadAsset);
+        Assert.False(result.ChecksumAvailable);
+    }
+
     [Theory]
     [InlineData("0.1.0", "v0.1.1", true)]
     [InlineData("0.1.0", "0.2.0", true)]
@@ -226,7 +323,8 @@ public sealed class UpdateCheckerTests
         string tag,
         string? notes = "Note della release",
         bool prerelease = false,
-        string? url = TagUrl) =>
+        string? url = TagUrl,
+        string? assets = null) =>
         $$"""
         {
           "tag_name": "{{tag}}",
@@ -234,7 +332,17 @@ public sealed class UpdateCheckerTests
           "html_url": "{{url}}",
           "body": "{{notes}}",
           "prerelease": {{(prerelease ? "true" : "false")}},
-          "draft": false
+          "draft": false,
+          "assets": [{{assets ?? ""}}]
+        }
+        """;
+
+    private static string Asset(string name, string url, long size = 100) =>
+        $$"""
+        {
+          "name": "{{name}}",
+          "browser_download_url": "{{url}}",
+          "size": {{size}}
         }
         """;
 

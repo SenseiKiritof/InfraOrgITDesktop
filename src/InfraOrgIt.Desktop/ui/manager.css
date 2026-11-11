@@ -8,6 +8,7 @@
   --accent: #0b6bcb;
   --accent-text: #ffffff;
   --danger: #b42318;
+  --warning: #8a5a00;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -20,6 +21,7 @@
     --accent: #4c9aff;
     --accent-text: #08111d;
     --danger: #ff8a80;
+    --warning: #f2c46d;
   }
 }
 
@@ -154,6 +156,10 @@ button:disabled {
   color: var(--danger);
 }
 
+.status.warning {
+  color: var(--warning);
+}
+
 .section-header {
   display: flex;
   align-items: baseline;
@@ -244,6 +250,14 @@ button:disabled {
   color: var(--muted);
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+.update-path {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 #tunnel-panel {
