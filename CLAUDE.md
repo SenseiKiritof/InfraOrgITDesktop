@@ -23,10 +23,11 @@ Desktop shell for InfraOrgIT (.NET 10 + Photino.NET). Sibling of
   `ssh`/agent and only allowlisted targets returned by the instance API.
 - Personal and device-flow access tokens live only in memory
   (`TunnelManager`). The refresh token is stored through `Auth/ITokenStore`,
-  keyed by instance URL: Keychain on macOS, Credential Manager on Windows,
-  `secret-tool` on Linux. Never write tokens to `instances.json` or logs. If
-  the platform store fails, `FallbackTokenStore` keeps the session in memory
-  and warns in the UI.
+  keyed by instance URL: the native Keychain (Security.framework P/Invoke) on
+  macOS, Credential Manager on Windows, `secret-tool` on Linux. The macOS
+  token never goes through `/usr/bin/security` or any child process argument
+  list. Never write tokens to `instances.json` or logs. If the platform store
+  fails, `FallbackTokenStore` keeps the session in memory and warns in the UI.
 - `Instances/InstanceStore` and `Tunnels/TunnelsStateStore` are the only file
   persistence: keep saves atomic, validate every value, and never write tokens,
   hosts or secrets to `tunnels.json`.
