@@ -1,17 +1,21 @@
 using System.Globalization;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace InfraOrgIt.Desktop.Update;
 
 /// <summary>
-/// Reads the latest stable GitHub release and compares it with the running
-/// version. It never downloads or installs anything: the manager page only
-/// offers the release page. Failures come back as a result, so the UI thread
-/// never sees an unhandled exception.
+/// Reads the latest stable GitHub release, compares it with the running
+/// version and selects the archive for the current platform. Download and
+/// checksum verification live in <see cref="UpdateDownloader"/>. Failures come
+/// back as a result, so the UI thread never sees an unhandled exception.
 /// </summary>
-public sealed class UpdateChecker(HttpClient http, string? currentVersion = null)
+public sealed class UpdateChecker(
+    HttpClient http,
+    string? currentVersion = null,
+    string? runtimeIdentifier = null)
 {
     internal const string RepositoryOwner = "SenseiKiritof";
     internal const string RepositoryName = "InfraOrgITDesktop";
@@ -21,9 +25,15 @@ public sealed class UpdateChecker(HttpClient http, string? currentVersion = null
     internal const string ReleasesPageUrl =
         "https://github.com/" + RepositoryOwner + "/" + RepositoryName + "/releases";
     internal const string UserAgent = "InfraOrgIT-Desktop";
+    internal const string AssetPrefix = "InfraOrgIT-Desktop-";
 
     /// <summary>Release notes are shown in a small card, so they are capped.</summary>
     internal const int NotesLimit = 600;
+
+    private readonly string _runtimeIdentifier =
+        string.IsNullOrWhiteSpace(runtimeIdentifier)
+            ? RuntimeInformation.RuntimeIdentifier
+            : runtimeIdentifier!;
 
     /// <summary>Version read from the assembly informational version.</summary>
     public string CurrentVersion { get; } =
@@ -117,6 +127,15 @@ public sealed class UpdateChecker(HttpClient http, string? currentVersion = null
         var latestVersion = $"{latest.Major}.{latest.Minor}.{latest.Build}";
         if (IsNewerVersion(CurrentVersion, latestVersion))
         {
+            var assets = ParseAssets(root);
+            var download = PickDownloadAsset(assets, _runtimeIdentifier);
+            var checksum = download is null
+                ? null
+                : assets.FirstOrDefault(asset => string.Equals(
+                    asset.Name,
+                    download.Name + ".sha256",
+                    StringComparison.OrdinalIgnoreCase));
+
             return new UpdateCheckResult(
                 CurrentVersion,
                 latestVersion,
@@ -125,7 +144,9 @@ public sealed class UpdateChecker(HttpClient http, string? currentVersion = null
                 Message: $"Nuova versione disponibile: {latestVersion}.",
                 ReleaseUrl: ReleaseUri(OptionalString(root, "html_url")),
                 ReleaseName: OptionalString(root, "name"),
-                ReleaseNotes: CapNotes(OptionalString(root, "body")));
+                ReleaseNotes: CapNotes(OptionalString(root, "body")),
+                DownloadAsset: download,
+                ChecksumAsset: checksum);
         }
 
         return new UpdateCheckResult(
@@ -134,6 +155,83 @@ public sealed class UpdateChecker(HttpClient http, string? currentVersion = null
             IsNewer: false,
             Failed: false,
             Message: $"Hai già l'ultima versione ({CurrentVersion}).");
+    }
+
+    /// <summary>
+    /// Picks the release archive for a runtime identifier. The exact RID wins;
+    /// otherwise the same OS with any architecture is accepted, which is the
+    /// documented fallback when a runner does not publish the user's RID:
+    /// macOS and Windows ship a zip, Linux a tar.gz.
+    /// </summary>
+    internal static UpdateAsset? PickDownloadAsset(
+        IReadOnlyList<UpdateAsset> assets,
+        string? runtimeIdentifier)
+    {
+        if (string.IsNullOrWhiteSpace(runtimeIdentifier))
+            return null;
+
+        var rid = runtimeIdentifier.Trim();
+        var exact = assets.FirstOrDefault(asset => IsArchiveForRid(asset.Name, rid));
+        if (exact is not null)
+            return exact;
+
+        var os = OperatingSystemFromRid(rid);
+        if (os is null)
+            return null;
+
+        var extension = os == "linux" ? ".tar.gz" : ".zip";
+        return assets.FirstOrDefault(asset =>
+            asset.Name.StartsWith(AssetPrefix, StringComparison.OrdinalIgnoreCase) &&
+            asset.Name.Contains($"-{os}-", StringComparison.OrdinalIgnoreCase) &&
+            asset.Name.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsArchiveForRid(string name, string rid) =>
+        name.StartsWith(AssetPrefix, StringComparison.OrdinalIgnoreCase) &&
+        (name.EndsWith($"-{rid}.zip", StringComparison.OrdinalIgnoreCase) ||
+         name.EndsWith($"-{rid}.tar.gz", StringComparison.OrdinalIgnoreCase));
+
+    private static string? OperatingSystemFromRid(string rid)
+    {
+        var os = rid.Split('-')[0].ToLowerInvariant();
+        return os is "osx" or "win" or "linux" ? os : null;
+    }
+
+    private static List<UpdateAsset> ParseAssets(JsonElement root)
+    {
+        var assets = new List<UpdateAsset>();
+        if (!root.TryGetProperty("assets", out var array) ||
+            array.ValueKind != JsonValueKind.Array)
+        {
+            return assets;
+        }
+
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var name = OptionalString(item, "name");
+            if (string.IsNullOrWhiteSpace(name) ||
+                !Uri.TryCreate(
+                    OptionalString(item, "browser_download_url"),
+                    UriKind.Absolute,
+                    out var url) ||
+                url.Scheme != Uri.UriSchemeHttps)
+            {
+                continue;
+            }
+
+            var size =
+                item.TryGetProperty("size", out var sizeElement) &&
+                sizeElement.ValueKind == JsonValueKind.Number &&
+                sizeElement.TryGetInt64(out var value)
+                    ? value
+                    : 0;
+            assets.Add(new UpdateAsset(name, url, size));
+        }
+
+        return assets;
     }
 
     /// <summary>
@@ -257,11 +355,19 @@ public sealed record UpdateCheckResult(
     string Message,
     Uri? ReleaseUrl = null,
     string? ReleaseName = null,
-    string? ReleaseNotes = null)
+    string? ReleaseNotes = null,
+    UpdateAsset? DownloadAsset = null,
+    UpdateAsset? ChecksumAsset = null)
 {
+    /// <summary>True when the release publishes the archive's SHA-256 file.</summary>
+    public bool ChecksumAvailable => ChecksumAsset is not null;
+
     internal static UpdateCheckResult Failure(string current, string message) =>
         new(current, null, IsNewer: false, Failed: true, message);
 
     internal static UpdateCheckResult Unavailable(string current, string message) =>
         new(current, null, IsNewer: false, Failed: false, message);
 }
+
+/// <summary>A GitHub release asset, as listed by the release API.</summary>
+public sealed record UpdateAsset(string Name, Uri Url, long Size);
