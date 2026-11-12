@@ -78,6 +78,28 @@ internal static class Program
         _fileDownloads = new DownloadManager(
             CreateHttpClient(TimeSpan.FromMinutes(30)));
 
+        // The main desktop view is the instance SPA; the manager stays behind
+        // for instance/update settings. Open the first configured instance
+        // once the manager native window exists.
+        var firstInstance = SafeLoad(store).FirstOrDefault();
+        if (firstInstance is not null)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(700);
+                try
+                {
+                    _manager?.Invoke(() =>
+                        OpenInstance(_manager, firstInstance, children));
+                }
+                catch (Exception exception) when (
+                    exception is ApplicationException or InvalidOperationException)
+                {
+                    // The manager may have been closed before the delay.
+                }
+            });
+        }
+
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
 #endif
