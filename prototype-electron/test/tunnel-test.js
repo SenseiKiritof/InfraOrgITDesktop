@@ -63,6 +63,7 @@ const manager = new TunnelManager(() => {});
 const started = manager.start({
   id: "test-1",
   url: "https://localhost:8443",
+  instanceName: "Locale",
   server,
   target,
   service: null,
@@ -72,6 +73,20 @@ assert.strictEqual(manager.list().length, 1);
 assert.strictEqual(manager.list()[0].status, "Active");
 assert.strictEqual(started.localPort, 8081);
 
+assert.throws(
+  () =>
+    manager.start({
+      id: "test-duplicate",
+      url: "https://localhost:8443",
+      instanceName: "Locale",
+      server,
+      target,
+      service: null,
+      localPort: 8081,
+    }),
+  /già usata/,
+);
+
 setTimeout(() => {
   try {
     const lines = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
@@ -80,6 +95,9 @@ setTimeout(() => {
     assert(received.includes("-L"));
     assert(received.includes("127.0.0.1:8081:127.0.0.1:8081"));
     manager.stop("test-1");
+    assert.strictEqual(manager.list().length, 1);
+    assert.strictEqual(manager.list()[0].status, "Stopped");
+    manager.forget("test-1");
     assert.strictEqual(manager.list().length, 0);
     console.log("TUNNEL_RESULT PASS");
     console.log("SSH_ARGS", received.join(" "));

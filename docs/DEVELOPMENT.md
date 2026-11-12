@@ -9,6 +9,56 @@ webview and manages local SSH tunnels with the user's SSH agent.
 Built with .NET 10 and [Photino.NET](https://www.tryphotino.io/); no browser
 runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
 
+## Electron rework
+
+`prototype-electron/` is the production-intent Electron shell on the
+`feat/electron-rework` branch. It is not packaged or released; the Photino app
+above remains the shipped desktop until the rework is accepted. See
+[`../prototype-electron/README.md`](../prototype-electron/README.md) for the
+user-facing notes and screenshots.
+
+- One main window: a local control-room manager (landing, instance tabs,
+  command palette, tunnel drawer) plus one `WebContentsView` per instance.
+  Each URL uses `persist:instance-<hash>`, so cookies and the BFF login are
+  isolated. `Apri all’avvio` persists in `instances.json`; the landing page is
+  always one click away with **Istanze**.
+- Silent auth: OAuth device flow with `infraorgit-mcp-desktop` and scopes
+  `openid profile email offline_access mcp:read tunnels:operate`; only the
+  refresh token is persisted (`safeStorage`, `desktop-auth.bin`). Startup
+  refreshes Keycloak and calls `POST /auth/desktop-session` with the instance
+  partition's `session.fetch`; failure falls back to `/auth/login`. Renderers
+  never receive access, refresh or CSRF tokens.
+- Theme: `GET /api/session` supplies the account theme; the topbar switch
+  writes it with `PATCH /api/session/theme` and mirrors it to the Web
+  `infraorgit-theme` localStorage. `settings.json` keeps the offline fallback.
+- Tunnels: the manager owns the SSH processes; the Web `/tunnels` panel stays
+  the per-instance detail. The drawer groups every instance by server, shows
+  the local port and active/stopped state, and enforces a duplicate local-port
+  guard before spawning `ssh`.
+- Server anagrafica: the manage dialog lists servers through the instance BFF
+  session and opens `/servers/{id}`; the Tunnel services form remains in the
+  Web app.
+
+Commands:
+
+```bash
+cd prototype-electron
+npm install
+npm start
+npm run test:unit    # fake-fetch device/session, stores, tunnel rules
+npm test             # unit + Electron shell test against https://localhost:8443
+npm run tunnel-test  # fake SSH arguments and lifecycle
+```
+
+`npm test` needs the local full stack (`make full`) and Playwright is not
+involved. `DESKTOP_USER_DATA=/tmp/dir` isolates all app files;
+`DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is the explicit development override for
+the self-signed Caddy certificate in a packaged build. The running stack may
+not yet serve `/auth/desktop-session`: the shell then exercises the login
+fallback, while fake-fetch tests cover the session exchange. Native
+Keychain/Credential Manager glue is the next hardening step beyond
+`safeStorage`.
+
 ## Status
 
 - Multi-instance manager: add, remove and open installations; the list is

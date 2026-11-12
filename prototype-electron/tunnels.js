@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 function sshTarget(server) {
   const host = server.sshHost || server.ipAddress || server.hostname;
   if (!host) throw new Error("Server senza host SSH.");
+  if (!server.username) throw new Error("Server senza utente SSH.");
   return `${server.username}@${host}`;
 }
 
@@ -13,7 +14,10 @@ function jumpArgument(server) {
       ? [server.jump]
       : [];
   if (jumps.length === 0) return [];
-  return ["-J", jumps.map((jump) => `${jump.username}@${jump.host}:${jump.port}`).join(",")];
+  return [
+    "-J",
+    jumps.map((jump) => `${jump.username}@${jump.host}:${jump.port}`).join(","),
+  ];
 }
 
 function buildSshArgs(server, target, service, localPort) {
@@ -36,10 +40,7 @@ function buildSshArgs(server, target, service, localPort) {
   } else if (mode === "Remote") {
     const remotePort = service?.remotePort;
     if (!remotePort) throw new Error("Servizio remoto senza porta remota.");
-    args.push(
-      "-R",
-      `${remotePort}:${service.targetHost}:${service.targetPort}`,
-    );
+    args.push("-R", `${remotePort}:${service.targetHost}:${service.targetPort}`);
   } else {
     const targetHost = service?.targetHost || target?.targetHost || "127.0.0.1";
     const targetPort = service?.targetPort || target?.targetPort;
@@ -52,41 +53,120 @@ function buildSshArgs(server, target, service, localPort) {
   return args;
 }
 
+function serverHost(server) {
+  return server.sshHost || server.ipAddress || server.hostname || "";
+}
+
 function publicTunnel(row) {
   return {
     id: row.id,
     url: row.url,
-    instanceName: row.server.serverName,
+    instanceName: row.instanceName || row.server.serverName,
+    environmentLabel: row.server.environmentLabel || "",
+    serverId: row.server.serverId ?? null,
     serverName: row.server.serverName,
+    ip: serverHost(row.server),
     application: row.service?.name || row.target?.application || "Tunnel",
+    source: row.service?.name || row.target?.application || "Tunnel",
     serviceId: row.service?.id || null,
-    mode: row.service?.mode || "Local",
-    kind: row.service?.kind || "Tcp",
+    targetId: row.target?.serverApplicationId || null,
+    mode: row.service?.mode || row.mode || "Local",
+    kind: row.service?.kind || row.target?.kind || "Tcp",
     targetHost: row.service?.targetHost || row.target?.targetHost || "127.0.0.1",
     targetPort: row.service?.targetPort || row.target?.targetPort || null,
     localPort: row.localPort,
     remotePort: row.service?.remotePort || null,
     openUrl: row.openUrl,
-    status: row.process && !row.process.killed ? "Active" : "Stopped",
+    status: row.status,
+    startedAt: row.startedAt,
+    stoppedAt: row.stoppedAt || null,
+    error: row.error || null,
   };
 }
 
+function samePort(left, right) {
+  return left !== null && right !== null && Number(left) === Number(right);
+}
+
+/**
+ * Owns SSH processes for every instance in one window. Definitions are kept
+ * after a stop so the global drawer can show active and stopped rows and
+ * restart them scoped to the owning instance.
+ */
 class TunnelManager {
-  constructor(onState) {
+  constructor(onState = () => {}) {
     this.onState = onState;
-    this.active = new Map();
-    this.ssh = process.env.SSH_BIN || "ssh";
+    this.rows = new Map();
+    this.ssh = process.env.DESKTOP_SSH_BIN || process.env.SSH_BIN || "ssh";
   }
 
   list() {
-    return [...this.active.values()].map(publicTunnel);
+    return [...this.rows.values()]
+      .sort((left, right) => {
+        const active = Number(right.status === "Active") - Number(left.status === "Active");
+        return active || String(right.startedAt).localeCompare(String(left.startedAt));
+      })
+      .map(publicTunnel);
   }
 
-  start({ id, url, server, target, service, localPort }) {
-    const mode = service?.mode || "Local";
-    const requested = Number(localPort) || service?.localPort || target?.suggestedLocalPort || target?.targetPort;
-    if (mode !== "Remote" && (!requested || requested < 1024 || requested > 65535))
-      throw new Error("Porta locale tra 1024 e 65535.");
+  active(url) {
+    return this.list().filter(
+      (row) => row.status === "Active" && (!url || row.url === url),
+    );
+  }
+
+  get(id) {
+    const row = this.rows.get(id);
+    return row ? publicTunnel(row) : null;
+  }
+
+  duplicatePort(localPort, exceptId = null) {
+    if (localPort === null || localPort === undefined) return null;
+    return (
+      this.list().find(
+        (row) =>
+          row.status === "Active" &&
+          row.id !== exceptId &&
+          samePort(row.localPort, localPort),
+      ) || null
+    );
+  }
+
+  start({
+    id,
+    url,
+    instanceName,
+    server,
+    target,
+    service,
+    localPort,
+    mode,
+  }) {
+    if (!id) throw new Error("Identificativo tunnel mancante.");
+    if (!url) throw new Error("Istanza del tunnel mancante.");
+    if (!server) throw new Error("Server del tunnel mancante.");
+    const existing = this.rows.get(id);
+    if (existing?.status === "Active") throw new Error("Questo tunnel è già attivo.");
+
+    const tunnelMode = service?.mode || mode || "Local";
+    const requested =
+      tunnelMode === "Remote"
+        ? null
+        : Number(localPort) ||
+          Number(service?.localPort) ||
+          Number(target?.suggestedLocalPort) ||
+          Number(target?.targetPort);
+    if (tunnelMode !== "Remote") {
+      if (!requested || requested < 1024 || requested > 65535)
+        throw new Error("La porta locale deve essere tra 1024 e 65535.");
+      const duplicate = this.duplicatePort(requested, id);
+      if (duplicate) {
+        throw new Error(
+          `La porta locale ${requested} è già usata da ${duplicate.instanceName} · ${duplicate.serverName}.`,
+        );
+      }
+    }
+
     const args = buildSshArgs(server, target, service, requested);
     const processHandle = spawn(this.ssh, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -94,42 +174,95 @@ class TunnelManager {
     const row = {
       id,
       url,
+      instanceName: instanceName || server.serverName,
       server,
-      target,
-      service,
-      localPort: mode === "Remote" ? null : requested,
+      target: target || null,
+      service: service || null,
+      mode: tunnelMode,
+      localPort: tunnelMode === "Remote" ? null : requested,
       openUrl:
-        mode === "Local" &&
+        tunnelMode === "Local" &&
         (service?.kind === "Http" || service?.kind === "Https")
           ? `http://127.0.0.1:${requested}${service.openPath || ""}`
           : null,
       process: processHandle,
       args,
+      status: "Active",
+      startedAt: new Date().toISOString(),
+      stoppedAt: null,
+      error: null,
     };
-    processHandle.stderr.on("data", (chunk) => {
-      const text = String(chunk).trim();
-      if (text) console.error("ssh", id, text);
+
+    let stderr = "";
+    processHandle.stderr?.on("data", (chunk) => {
+      stderr = String(chunk).trim().slice(-400);
+      if (stderr) console.error("ssh", id, stderr);
     });
-    processHandle.on("exit", (code, signal) => {
-      console.log("ssh exited", id, code, signal);
-      this.active.delete(id);
+    processHandle.once("error", (error) => {
+      row.process = null;
+      row.status = "Stopped";
+      row.stoppedAt = new Date().toISOString();
+      row.error = `ssh non avviato: ${error.message}`;
       this.onState(this.list());
     });
-    this.active.set(id, row);
+    processHandle.once("exit", (code, signal) => {
+      row.process = null;
+      row.status = "Stopped";
+      row.stoppedAt = new Date().toISOString();
+      if (!row.stopping && code !== 0) {
+        row.error =
+          stderr ||
+          `ssh terminato (${signal || `codice ${code}`}).`;
+      }
+      this.onState(this.list());
+    });
+
+    this.rows.set(id, row);
     this.onState(this.list());
-    return row;
+    return publicTunnel(row);
   }
 
-  stop(id) {
-    const row = this.active.get(id);
-    if (!row) return;
-    row.process.kill();
-    this.active.delete(id);
+  /** Stops only the tunnel with this id; the owning tab cannot be crossed. */
+  stop(id, instanceUrl = null) {
+    const row = this.rows.get(id);
+    if (!row || (instanceUrl && row.url !== instanceUrl)) return false;
+    if (row.status !== "Active") return false;
+    row.stopping = true;
+    row.process?.kill();
+    row.process = null;
+    row.status = "Stopped";
+    row.stoppedAt = new Date().toISOString();
     this.onState(this.list());
+    return true;
+  }
+
+  restart(id, instanceUrl = null) {
+    const row = this.rows.get(id);
+    if (!row || (instanceUrl && row.url !== instanceUrl))
+      throw new Error("Tunnel non trovato per questa istanza.");
+    if (row.status === "Active") throw new Error("Questo tunnel è già attivo.");
+    return this.start({
+      id: row.id,
+      url: row.url,
+      instanceName: row.instanceName,
+      server: row.server,
+      target: row.target,
+      service: row.service,
+      localPort: row.localPort,
+      mode: row.mode,
+    });
   }
 
   stopAll() {
-    for (const id of [...this.active.keys()]) this.stop(id);
+    for (const row of [...this.rows.values()]) {
+      if (row.status === "Active") this.stop(row.id);
+    }
+  }
+
+  forget(id) {
+    const row = this.rows.get(id);
+    if (!row || row.status === "Active") return false;
+    return this.rows.delete(id);
   }
 }
 
