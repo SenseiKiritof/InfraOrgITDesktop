@@ -12,7 +12,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
 ## What you can do
 
 - **Several instances, separate windows.** Keep production, staging and a lab
-  open at the same time; each window has its own session and cookies.
+  open at the same time. Each window keeps its own navigation and session
+  state; on Windows each instance also gets a separate webview data folder.
+  macOS and Linux still share the webview data store, so two instances on the
+  same host can share the login cookie.
 - **Tunnels with your SSH agent.** Open `ssh -L` (local), `-D` (SOCKS) and
   `-R` (remote) forwards, including jump-host chains supplied by the instance.
 - **Services per server.** The tunnel panel lists the server's deployments and
