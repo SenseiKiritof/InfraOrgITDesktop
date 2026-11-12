@@ -1,56 +1,143 @@
 <!doctype html>
-<html lang="it">
+<html lang="it" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>InfraOrgIT Desktop</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'"
+    />
+    <title>InfraOrgIT</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
-    <header>
-      <p class="eyebrow">Prototipo Electron</p>
-      <h1>InfraOrgIT Desktop</h1>
-      <p class="subtitle">
-        Istanze separate, webview Chromium e tunnel SSH con l’agente di sistema.
-      </p>
-    </header>
+  <body data-drawer="closed" data-view="landing">
+    <div class="app">
+      <header class="topbar" id="topbar">
+        <button class="home-button" id="home-button" type="button" title="Istanze (Ctrl/Cmd+0)">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span class="home-label">Istanze</span>
+        </button>
 
-    <main>
-      <section class="card" aria-labelledby="add-title">
-        <h2 id="add-title">Aggiungi un’istanza</h2>
-        <form id="add-form">
-          <label>
-            Nome
-            <input id="name" maxlength="80" placeholder="Produzione" required />
-          </label>
-          <label>
-            URL
-            <input id="url" type="url" placeholder="https://infra.example.com" required />
-          </label>
-          <button type="submit">Aggiungi</button>
-        </form>
-        <p id="status" class="status" role="status" aria-live="polite"></p>
-      </section>
+        <div class="tab-strip" id="tabs" role="tablist" aria-label="Istanze aperte"></div>
+        <button class="tab-add" id="tab-add" type="button" title="Nuova istanza" aria-label="Nuova istanza">+</button>
 
-      <section aria-labelledby="instances-title">
-        <div class="section-header">
-          <h2 id="instances-title">Istanze</h2>
-          <span id="count" class="count"></span>
+        <div class="topbar-actions">
+          <button class="palette-trigger" id="palette-trigger" type="button" title="Command palette">
+            <span class="palette-icon" aria-hidden="true"></span>
+            <span class="palette-text">Cerca</span>
+            <kbd data-shortcut>⌘K</kbd>
+          </button>
+          <button class="icon-button" id="theme-toggle" type="button" title="Tema scuro" aria-label="Cambia tema">
+            <span class="theme-icon" aria-hidden="true"></span>
+          </button>
+          <button class="tunnel-button" id="tunnel-toggle" type="button" aria-expanded="false" aria-controls="drawer">
+            <span class="tunnel-icon" aria-hidden="true"></span>
+            <span>Tunnel</span>
+            <span class="badge" id="tunnel-badge" hidden>0</span>
+          </button>
         </div>
-        <p id="empty" class="empty" hidden>Nessuna istanza configurata.</p>
-        <ul id="instances" class="instances"></ul>
-      </section>
+      </header>
 
-      <section class="card">
-        <h2>Tunnel e multi-server</h2>
-        <p class="hint">
-          Apri un’istanza e vai su <strong>Tunnel attivi</strong> per caricare
-          il token personale, vedere i server dell’allowlist e avviare tunnel
-          Local/Dynamic/Remote. Ogni istanza ha cookie e sessione separati.
+      <main class="landing" id="landing">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Desktop control room</p>
+            <h1>Le tue istanze</h1>
+            <p class="subtitle">
+              Una finestra, sessioni isolate e tunnel SSH con l’agente di sistema.
+            </p>
+          </div>
+          <button class="primary" id="new-instance" type="button">
+            <span aria-hidden="true">+</span> Nuova istanza
+          </button>
+        </section>
+
+        <section class="summary" id="summary" aria-label="Riepilogo"></section>
+
+        <section class="card-grid" id="instances" aria-live="polite"></section>
+
+        <button class="new-card" id="new-instance-card" type="button">
+          <span class="new-card-plus" aria-hidden="true">+</span>
+          <span class="new-card-title">Nuova istanza</span>
+          <span class="new-card-hint">Aggiungi un’installazione InfraOrgIT</span>
+        </button>
+
+        <p class="empty" id="empty" hidden>
+          Nessuna istanza configurata. Aggiungi la prima installazione per iniziare.
         </p>
-      </section>
-    </main>
+      </main>
 
+      <div class="stage-backdrop" id="stage-backdrop" hidden>
+        <div class="stage-backdrop-inner">
+          <p class="eyebrow">Istanza attiva</p>
+          <p class="stage-backdrop-name" id="stage-backdrop-name"></p>
+          <p class="muted">La pagina dell’istanza resta in esecuzione dietro questa finestra.</p>
+        </div>
+      </div>
+
+      <div class="instance-slot" id="instance-slot" aria-hidden="true"></div>
+
+      <aside class="drawer" id="drawer" aria-labelledby="drawer-title" aria-hidden="true">
+        <header class="drawer-header">
+          <div>
+            <p class="eyebrow">Vista globale</p>
+            <h2 id="drawer-title">Tunnel</h2>
+          </div>
+          <div class="drawer-header-actions">
+            <button class="icon-button" id="drawer-refresh" type="button" title="Aggiorna tunnel" aria-label="Aggiorna tunnel">
+              <span class="refresh-icon" aria-hidden="true"></span>
+            </button>
+            <button class="icon-button" id="drawer-close" type="button" title="Chiudi" aria-label="Chiudi tunnel">×</button>
+          </div>
+        </header>
+        <p class="drawer-hint">
+          Tutte le istanze in un’unica vista. Il dettaglio del singolo server resta
+          nella pagina <strong>/tunnels</strong> dell’istanza.
+        </p>
+        <div class="drawer-body" id="drawer-body"></div>
+      </aside>
+
+      <div class="palette-backdrop" id="palette" hidden>
+        <div class="palette" role="dialog" aria-modal="true" aria-labelledby="palette-label">
+          <label class="visually-hidden" id="palette-label" for="palette-input">Comando</label>
+          <div class="palette-search">
+            <span class="palette-icon" aria-hidden="true"></span>
+            <input
+              id="palette-input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Cerca istanze, tunnel, comandi…"
+            />
+            <kbd>Esc</kbd>
+          </div>
+          <ul class="palette-list" id="palette-list" role="listbox" aria-label="Comandi"></ul>
+          <footer class="palette-footer">
+            <span><kbd>↑</kbd><kbd>↓</kbd> naviga</span>
+            <span><kbd>↵</kbd> esegui</span>
+            <span id="palette-hint">Istanze, tunnel e preferenze</span>
+          </footer>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="modal" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" id="modal-dialog">
+          <header class="modal-header">
+            <div>
+              <p class="eyebrow" id="modal-eyebrow">Istanza</p>
+              <h2 id="modal-title"></h2>
+            </div>
+            <button class="icon-button" id="modal-close" type="button" title="Chiudi" aria-label="Chiudi">×</button>
+          </header>
+          <div class="modal-body" id="modal-body"></div>
+          <footer class="modal-footer" id="modal-footer"></footer>
+        </div>
+      </div>
+
+      <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    </div>
     <script src="manager.js"></script>
   </body>
 </html>

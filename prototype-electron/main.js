@@ -1,138 +1,685 @@
-const { app, BrowserWindow, ipcMain, net, session, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  WebContentsView,
+  ipcMain,
+  Menu,
+  nativeTheme,
+  net,
+  safeStorage,
+  session,
+  shell,
+} = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { TunnelManager, publicTunnel } = require("./tunnels");
 
-const DEFAULT_INSTANCE = {
-  name: "Locale",
-  url: process.env.PROTO_URL || "https://localhost:8443",
-};
+const { DeviceAuthClient } = require("./auth/device-client");
+const { RefreshTokenStore } = require("./auth/refresh-store");
+const { DesktopAuth } = require("./auth/desktop-auth");
+const { InstanceStore } = require("./shell/instances");
+const { SettingsStore, THEMES } = require("./shell/settings");
+const { TunnelManager } = require("./tunnels");
+
+const IS_TEST = process.env.PROTO_TEST === "1";
+const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
+const MANAGER_PRELOAD = path.join(__dirname, "manager-preload.js");
 
 const windows = new Map();
+const runtime = new Map();
 const tokens = new Map();
+let tabOrder = [];
+let activeUrl = null;
+let mainWindow = null;
+let attachedUrl = null;
+let contentBounds = null;
+let instanceStore = null;
+let settingsStore = null;
+let tokenStore = null;
+let desktopAuth = null;
+let tunnels = null;
+let themeTouched = false;
+let quitting = false;
 
-// Local Caddy uses its own CA; allow it only for loopback in this prototype.
-// Production installs use a publicly trusted certificate and never hit this.
-app.on("certificate-error", (event, _webContents, url, _error, _certificate, callback) => {
+if (process.env.DESKTOP_USER_DATA) {
+  app.setPath("userData", path.resolve(process.env.DESKTOP_USER_DATA));
+}
+
+app.setName("InfraOrgIT");
+
+if (IS_TEST && !process.env.DESKTOP_USER_DATA) {
+  const testData = path.join(__dirname, "test", ".run", "user-data");
+  if (process.env.PROTO_CLEAN === "1") fs.rmSync(testData, { recursive: true, force: true });
+  app.setPath("userData", testData);
+}
+
+const allowLoopbackCertificates =
+  process.env.DESKTOP_ALLOW_INSECURE_LOCALHOST !== "0" &&
+  (!app.isPackaged || process.env.DESKTOP_ALLOW_INSECURE_LOCALHOST === "1");
+
+function isLoopback(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function allowLocalCertificate(url) {
   try {
     const target = new URL(url);
-    const local =
-      target.hostname === "localhost" ||
-      target.hostname === "127.0.0.1" ||
-      target.hostname === "::1";
-    if (local && process.env.PROTO_ALLOW_INSECURE_LOCALHOST !== "0") {
+    return isLoopback(target.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function applyLoopbackPolicy(targetSession) {
+  if (!allowLoopbackCertificates) return;
+  targetSession.setCertificateVerifyProc((request, callback) => {
+    const hostname = request.hostname || "";
+    callback(isLoopback(hostname) ? 0 : -3);
+  });
+}
+
+app.on(
+  "certificate-error",
+  (event, _webContents, url, _error, _certificate, callback) => {
+    if (allowLoopbackCertificates && allowLocalCertificate(url)) {
       event.preventDefault();
       callback(true);
       return;
     }
-  } catch {
-    // fall through to Chromium
-  }
-  callback(false);
-});
+    callback(false);
+  },
+);
 
 const partitionFor = (url) =>
-  `persist:instance-${crypto.createHash("sha256").update(url).digest("hex").slice(0, 16)}`;
+  `persist:instance-${crypto
+    .createHash("sha256")
+    .update(url)
+    .digest("hex")
+    .slice(0, 16)}`;
 
-const tunnels = new TunnelManager((items) => {
-  for (const window of windows.values()) {
-    if (!window.isDestroyed())
-      window.webContents.send("desktop-message", JSON.stringify({
-        type: "tunnels.state",
-        items,
-      }));
-  }
-});
-
-let managerWindow = null;
-let instancesFile = null;
-
-function loadInstances() {
-  try {
-    const value = JSON.parse(fs.readFileSync(instancesFile, "utf8"));
-    if (Array.isArray(value) && value.length > 0) return value;
-  } catch {
-    // first run or damaged file
-  }
-  return [DEFAULT_INSTANCE];
-}
-
-function saveInstances(items) {
-  const directory = path.dirname(instancesFile);
-  fs.mkdirSync(directory, { recursive: true });
-  fs.writeFileSync(instancesFile, JSON.stringify(items, null, 2));
-}
-
-function createInstanceWindow(instance, options = {}) {
+function sessionFor(instance) {
   const partition = partitionFor(instance.url);
-  const existing = windows.get(partition);
-  if (existing && !existing.isDestroyed()) {
-    existing.focus();
-    return existing;
-  }
-
-  const window = new BrowserWindow({
-    width: options.width || 1280,
-    height: options.height || 860,
-    show: options.show !== false,
-    title: `InfraOrgIT — ${instance.name}`,
-    webPreferences: {
-      partition,
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  windows.set(partition, window);
-  window.on("closed", () => windows.delete(partition));
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://"))
-      void shell.openExternal(url);
-    return { action: "deny" };
-  });
-  window.webContents.on("did-fail-load", (_event, code, description, url) => {
-    console.error("window load failed", instance.name, code, description, url);
-  });
-  window.webContents.on("did-finish-load", () => {
-    console.log("loaded", instance.name, window.webContents.getURL());
-  });
-  window.loadURL(instance.url);
-  return window;
+  const target = session.fromPartition(partition);
+  applyLoopbackPolicy(target);
+  return { partition, session: target };
 }
 
-function createManagerWindow() {
-  managerWindow = new BrowserWindow({
-    width: 520,
-    height: 560,
-    title: "InfraOrgIT Desktop",
-    webPreferences: {
-      preload: path.join(__dirname, "manager-preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  managerWindow.loadFile("manager.html");
-  managerWindow.on("closed", () => {
-    managerWindow = null;
-  });
+function sessionFetch(targetSession) {
+  return (input, init) => targetSession.fetch(input, init);
 }
 
-function senderUrl(sender) {
+function recordFor(url) {
+  return windows.get(url) || null;
+}
+
+function sameOrigin(left, right) {
   try {
-    return new URL(sender.getURL()).origin;
+    return new URL(left).origin === new URL(right).origin;
   } catch {
+    return false;
+  }
+}
+
+function runtimeFor(url) {
+  if (!runtime.has(url)) {
+    runtime.set(url, {
+      serverCount: null,
+      sessionTunnelCount: null,
+      targets: null,
+      targetsAt: 0,
+      targetsError: null,
+      loading: false,
+      prepared: false,
+      accountLoaded: false,
+      lastAuthSent: "",
+      lastCountAt: 0,
+    });
+  }
+  return runtime.get(url);
+}
+
+function themeState() {
+  const preference = settingsStore?.theme || "system";
+  const resolved =
+    preference === "system"
+      ? nativeTheme.shouldUseDarkColors
+        ? "dark"
+        : "light"
+      : preference;
+  return { preference, resolved };
+}
+
+function authSnapshot(url) {
+  return desktopAuth?.snapshot(url) || {
+    status: "unknown",
+    requiresLogin: true,
+    tunnelAccess: false,
+    saved: false,
+  };
+}
+
+function localTunnelCount(url) {
+  return tunnels ? tunnels.active(url).length : 0;
+}
+
+function publicTargets(url) {
+  const data = runtimeFor(url);
+  return data.targets;
+}
+
+function publicState() {
+  const instances = instanceStore.list().map((instance) => {
+    const data = runtimeFor(instance.url);
+    const localCount = localTunnelCount(instance.url);
+    return {
+      ...instance,
+      active: instance.url === activeUrl,
+      hasTab: windows.has(instance.url),
+      loading: data.loading,
+      serverCount: data.serverCount,
+      localTunnelCount: localCount,
+      sessionTunnelCount: data.sessionTunnelCount,
+      tunnelCount: localCount + (data.sessionTunnelCount || 0),
+      targetsError: data.targetsError,
+      auth: authSnapshot(instance.url),
+    };
+  });
+  const targets = {};
+  for (const [url, data] of runtime.entries()) {
+    if (data.targets) targets[url] = data.targets;
+  }
+  return {
+    instances,
+    tabs: tabOrder
+      .filter((url) => windows.has(url))
+      .map((url) => {
+        const instance = instanceStore.get(url);
+        const data = runtimeFor(url);
+        return {
+          url,
+          name: instance?.name || url,
+          environment: instance?.environment || "",
+          active: url === activeUrl,
+          loading: data.loading,
+          auth: authSnapshot(url),
+        };
+      }),
+    activeUrl,
+    theme: themeState(),
+    platform: process.platform,
+    tunnels: tunnels ? tunnels.list() : [],
+    targets,
+    version: app.getVersion(),
+  };
+}
+
+function sendState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("shell:state", publicState());
+}
+
+function sendCommand(command) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("shell:command", command);
+}
+
+function sendToView(url, message) {
+  const record = recordFor(url);
+  if (!record || record.view.webContents.isDestroyed()) return;
+  record.view.webContents.send("desktop-message", JSON.stringify(message));
+}
+
+function activeTunnels() {
+  return tunnels.list().filter((tunnel) => tunnel.status === "Active");
+}
+
+function broadcastTunnels() {
+  const items = activeTunnels();
+  for (const url of windows.keys()) {
+    sendToView(url, { type: "tunnels.state", items });
+  }
+  sendState();
+}
+
+function webAuthStatus(url) {
+  const snapshot = authSnapshot(url);
+  if (snapshot.status === "pending") return "pending";
+  if (snapshot.status === "restoring") return "restoring";
+  if (snapshot.status === "error") return "error";
+  if (snapshot.tunnelAccess) return "restored";
+  return "none";
+}
+
+function sendWebAuth(url, { forcedStatus = null, message = null } = {}) {
+  const snapshot = authSnapshot(url);
+  const status = forcedStatus || webAuthStatus(url);
+  sendToView(url, {
+    type: "tunnels.auth",
+    url,
+    status,
+    requiresLogin: snapshot.requiresLogin,
+    saved: snapshot.saved,
+    userCode: snapshot.userCode,
+    verificationUri: snapshot.verificationUri,
+    verificationUriComplete: snapshot.verificationUriComplete,
+    expiresIn: snapshot.expiresIn,
+    message: message || snapshot.message || null,
+  });
+}
+
+function sendWebTargets(url) {
+  const targetList = publicTargets(url);
+  if (!targetList) return false;
+  sendToView(url, { type: "tunnels.targets", url, items: targetList });
+  return true;
+}
+
+async function loadTargets(instance, { force = false } = {}) {
+  const data = runtimeFor(instance.url);
+  if (!authSnapshot(instance.url).tunnelAccess) return null;
+  if (!force && data.targets && Date.now() - data.targetsAt < 60_000)
+    return data.targets;
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  try {
+    const items = await desktopAuth.fetchTargets(
+      instance.url,
+      sessionFetch(ses),
+    );
+    data.targets = items;
+    data.targetsAt = Date.now();
+    data.targetsError = null;
+    sendWebTargets(instance.url);
+    sendState();
+    return items;
+  } catch (error) {
+    data.targetsError = error.message;
+    sendToView(instance.url, {
+      type: "tunnels.error",
+      url: instance.url,
+      message: error.message,
+    });
+    sendState();
     return null;
   }
 }
 
-async function fetchTargets(url, token) {
-  if (!token || !token.trim()) throw new Error("Token personale richiesto.");
-  const response = await net.fetch(`${url.replace(/\/$/, "")}/api/tunnels/targets`, {
-    headers: { Authorization: `Bearer ${token.trim()}` },
+async function primeInstanceCounts(instance) {
+  const data = runtimeFor(instance.url);
+  if (data.serverCount !== null) return;
+  if (Date.now() - data.lastCountAt < 5000) return;
+  data.lastCountAt = Date.now();
+  const ses = recordFor(instance.url)?.session || sessionFor(instance).session;
+  const counts = await desktopAuth.fetchCounts(
+    instance.url,
+    sessionFetch(ses),
+  );
+  data.serverCount = counts.serverCount;
+  data.sessionTunnelCount = counts.sessionTunnelCount;
+  sendState();
+}
+
+function primeLandingCounts() {
+  for (const instance of instanceStore.list()) {
+    if (!recordFor(instance.url)) void primeInstanceCounts(instance);
+  }
+}
+
+async function refreshInstanceData(instance) {
+  const data = runtimeFor(instance.url);
+  const record = recordFor(instance.url);
+  if (!record) return;
+  if (Date.now() - data.lastCountAt < 1500) return;
+  data.lastCountAt = Date.now();
+  const fetcher = sessionFetch(record.session);
+
+  if (!data.accountLoaded) {
+    const account = await desktopAuth.readAccount(
+      instance.url,
+      fetcher,
+      { emit: false },
+    );
+    if (account) {
+      data.accountLoaded = true;
+      let preference = null;
+      if (account.theme) preference = account.theme;
+      else {
+        try {
+          const stored = await record.view.webContents.executeJavaScript(
+            'localStorage.getItem("infraorgit-theme")',
+          );
+          if (THEMES.includes(stored)) preference = stored;
+        } catch {
+          // The SPA may still be on a login or error page.
+        }
+      }
+      if (preference && !themeTouched) {
+        settingsStore.setTheme(preference);
+        applyThemeToManager();
+        for (const url of windows.keys())
+          syncThemeToView(url, preference);
+      }
+      if (themeTouched && settingsStore.theme !== account.theme) {
+        void desktopAuth
+          .setTheme(instance.url, fetcher, settingsStore.theme)
+          .catch(() => false);
+      }
+      desktopAuth.emit(instance.url, {});
+    } else {
+      try {
+        const stored = await record.view.webContents.executeJavaScript(
+          'localStorage.getItem("infraorgit-theme")',
+        );
+        if (stored && THEMES.includes(stored) && !themeTouched) {
+          settingsStore.setTheme(stored);
+          applyThemeToManager();
+        }
+      } catch {
+        // Offline fallback stays on the desktop setting.
+      }
+    }
+  }
+
+  const counts = await desktopAuth.fetchCounts(instance.url, fetcher);
+  data.serverCount = counts.serverCount;
+  data.sessionTunnelCount = counts.sessionTunnelCount;
+  syncThemeToView(instance.url);
+  sendState();
+
+  if (authSnapshot(instance.url).tunnelAccess) void loadTargets(instance);
+}
+
+function applyThemeToManager() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  sendState();
+}
+
+function syncThemeToView(url, preference = settingsStore.theme) {
+  const record = recordFor(url);
+  if (!record || record.view.webContents.isDestroyed()) return;
+  if (!sameOrigin(record.view.webContents.getURL(), url)) return;
+  const resolved =
+    preference === "system"
+      ? nativeTheme.shouldUseDarkColors
+        ? "dark"
+        : "light"
+      : preference;
+  const script = `(() => {
+    try { localStorage.setItem("infraorgit-theme", ${JSON.stringify(preference)}); } catch {}
+    document.documentElement.classList.toggle("dark", ${resolved === "dark"});
+    document.documentElement.style.colorScheme = ${JSON.stringify(resolved)};
+  })()`;
+  record.view.webContents.executeJavaScript(script).catch(() => {});
+}
+
+function applyThemePreference(preference) {
+  if (!THEMES.includes(preference)) throw new Error("Tema non valido.");
+  themeTouched = true;
+  settingsStore.setTheme(preference);
+  applyThemeToManager();
+  for (const url of windows.keys()) syncThemeToView(url, preference);
+  void persistThemeToAccounts(preference);
+}
+
+async function persistThemeToAccounts(preference) {
+  for (const url of windows.keys()) {
+    const snapshot = authSnapshot(url);
+    if (!snapshot.tunnelAccess && snapshot.status !== "ready") continue;
+    const record = recordFor(url);
+    if (!record) continue;
+    await desktopAuth
+      .setTheme(url, sessionFetch(record.session), preference)
+      .catch(() => false);
+    syncThemeToView(url, preference);
+  }
+}
+
+function applyViewLayout() {
+  if (!mainWindow || mainWindow.isDestroyed() || !activeUrl) {
+    hideAttachedView();
+    return;
+  }
+  const record = recordFor(activeUrl);
+  if (!record || !contentBounds?.visible) {
+    hideAttachedView();
+    return;
+  }
+  const bounds = {
+    x: Math.max(0, Math.round(contentBounds.x)),
+    y: Math.max(0, Math.round(contentBounds.y)),
+    width: Math.max(0, Math.round(contentBounds.width)),
+    height: Math.max(0, Math.round(contentBounds.height)),
+  };
+  if (bounds.width < 2 || bounds.height < 2) {
+    hideAttachedView();
+    return;
+  }
+  record.view.setBounds(bounds);
+  if (attachedUrl !== activeUrl) {
+    hideAttachedView();
+    mainWindow.contentView.addChildView(record.view);
+    attachedUrl = activeUrl;
+  }
+}
+
+function hideAttachedView() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    attachedUrl = null;
+    return;
+  }
+  if (attachedUrl) {
+    const record = recordFor(attachedUrl);
+    if (record) {
+      try {
+        mainWindow.contentView.removeChildView(record.view);
+      } catch {
+        // already detached
+      }
+    }
+    attachedUrl = null;
+  }
+}
+
+function createInstanceView(instance) {
+  const existing = recordFor(instance.url);
+  if (existing) return existing;
+
+  const { partition, session: targetSession } = sessionFor(instance);
+  const view = new WebContentsView({
+    webPreferences: {
+      partition,
+      preload: INSTANCE_PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      additionalArguments: [`--infraorgit-instance=${new URL(instance.url).origin}`],
+    },
+  });
+  view.setBackgroundColor("#0b0e13");
+
+  const record = {
+    url: instance.url,
+    partition,
+    session: targetSession,
+    view,
+    prepared: false,
+    loaded: false,
+    loading: false,
+    lastError: null,
+  };
+  windows.set(instance.url, record);
+  tabOrder.push(instance.url);
+  runtimeFor(instance.url);
+
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://"))
+      void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  view.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("https://") && !url.startsWith("http://")) {
+      event.preventDefault();
+      return;
+    }
+    if (url.startsWith("http://") && !allowLocalCertificate(url)) {
+      event.preventDefault();
+      void shell.openExternal(url);
+    }
+  });
+  view.webContents.on("did-fail-load", (_event, code, description, url) => {
+    if (code === -3) return;
+    record.lastError = `${description} (${code})`;
+    console.error("window load failed", instance.name, code, description, url);
+    sendState();
+  });
+  view.webContents.on("did-finish-load", () => {
+    record.loaded = true;
+    record.loading = false;
+    record.lastError = null;
+    const current = view.webContents.getURL();
+    if (sameOrigin(current, instance.url)) {
+      void refreshInstanceData(instanceStore.get(instance.url) || instance);
+    }
+    sendState();
+  });
+  view.webContents.on("page-title-updated", (_event, title) => {
+    if (mainWindow && !mainWindow.isDestroyed() && instance.url === activeUrl)
+      mainWindow.setTitle(title ? `${title} — InfraOrgIT` : "InfraOrgIT");
+  });
+  view.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const modifier = process.platform === "darwin" ? input.meta : input.control;
+    if (!modifier) return;
+    const key = String(input.key || "").toLowerCase();
+    if (key === "k") {
+      event.preventDefault();
+      sendCommand("palette");
+    } else if (key === "0") {
+      event.preventDefault();
+      showLanding();
+    } else if (key === "t" && input.shift) {
+      event.preventDefault();
+      sendCommand("toggle-drawer");
+    }
+  });
+  return record;
+}
+
+function prepareInstance(instance) {
+  const record = recordFor(instance.url);
+  if (!record || record.prepared) return;
+  record.prepared = true;
+  const data = runtimeFor(instance.url);
+  data.loading = true;
+  record.loading = true;
+  sendState();
+
+  void (async () => {
+    let mode = "none";
+    try {
+      mode = await Promise.race([
+        desktopAuth.restore(instance, sessionFetch(record.session), record.session.cookies),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ mode: "timeout" }), 9000),
+        ),
+      ]);
+    } catch {
+      mode = { mode: "error" };
+    }
+    data.loading = false;
+    record.loading = false;
+    sendState();
+    if (record.view.webContents.isDestroyed()) return;
+    const target = record.pendingUrl || instance.url;
+    record.pendingUrl = null;
+    record.view.webContents.loadURL(target).catch((error) => {
+      record.lastError = error.message;
+      sendState();
+    });
+    if (mode.mode === "silent") {
+      // The BFF cookie is in the partition; the SPA loads without Keycloak.
+      console.log("desktop auth silent", instance.url);
+    } else if (mode.mode === "fallback" || mode.mode === "error") {
+      console.log("desktop auth fallback", instance.url);
+    }
+  })();
+}
+
+function openTab(url, { activate = false } = {}) {
+  const instance = instanceStore.get(url);
+  if (!instance) return null;
+  const record = createInstanceView(instance);
+  if (activate) {
+    if (activeUrl && activeUrl !== url) hideAttachedView();
+    activeUrl = url;
+    instanceStore.touch(url);
+    prepareInstance(instance);
+    applyViewLayout();
+  }
+  sendState();
+  return record;
+}
+
+function showLanding() {
+  hideAttachedView();
+  activeUrl = null;
+  if (mainWindow && !mainWindow.isDestroyed())
+    mainWindow.setTitle("InfraOrgIT");
+  primeLandingCounts();
+  sendState();
+}
+
+function activateTab(url) {
+  const instance = instanceStore.get(url);
+  if (!instance) throw new Error("Istanza non trovata.");
+  openTab(url, { activate: true });
+}
+
+function closeTab(url) {
+  const record = recordFor(url);
+  if (!record) return;
+  if (activeUrl === url) showLanding();
+  try {
+    record.view.webContents.close();
+  } catch {
+    // already gone
+  }
+  windows.delete(url);
+  tabOrder = tabOrder.filter((item) => item !== url);
+  if (attachedUrl === url) attachedUrl = null;
+  sendState();
+}
+
+function removeInstance(url) {
+  const record = recordFor(url);
+  const partitionSession =
+    record?.session || sessionFor({ url }).session;
+  if (record) closeTab(url);
+  desktopAuth.logout(url).catch(() => {});
+  partitionSession?.clearStorageData().catch(() => {});
+  runtime.delete(url);
+  tokens.delete(url);
+  instanceStore.remove(url);
+  sendState();
+}
+
+function safeExternal(url) {
+  const target = new URL(String(url));
+  if (target.protocol !== "https:" && target.protocol !== "http:")
+    throw new Error("Protocollo non consentito.");
+  return shell.openExternal(target.toString());
+}
+
+async function fetchTargetsWithToken(instanceUrl, token) {
+  const record = recordFor(instanceUrl);
+  const ses = record?.session || sessionFor({ url: instanceUrl }).session;
+  const base = instanceUrl.replace(/\/$/, "");
+  const response = await sessionFetch(ses)(`${base}/api/tunnels/targets`, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -143,6 +690,283 @@ async function fetchTargets(url, token) {
   return Array.isArray(body.items) ? body.items : [];
 }
 
+function tunnelSelection(targetList, serverId, targetId, serviceId) {
+  const server = targetList.find((item) => item.serverId === serverId);
+  if (!server) throw new Error("Server non presente nell'allowlist.");
+  const target = targetId
+    ? server.targets?.find((item) => item.serverApplicationId === targetId)
+    : null;
+  const service = serviceId
+    ? server.services?.find((item) => item.id === serviceId)
+    : null;
+  if (targetId && !target) throw new Error("Applicazione non presente nell'allowlist.");
+  if (serviceId && !service)
+    throw new Error("Servizio tunnel non presente nell'allowlist.");
+  if (!target && !service) throw new Error("Scegli un'applicazione o un servizio.");
+  return { server, target, service };
+}
+
+async function startTunnelForInstance(instance, input) {
+  const targetList = await loadTargets(instance, { force: true });
+  if (!targetList)
+    throw new Error("Accedi all'istanza per caricare i server dei tunnel.");
+  const selection = tunnelSelection(
+    targetList,
+    Number(input.serverId),
+    input.targetId ? Number(input.targetId) : null,
+    input.serviceId ? Number(input.serviceId) : null,
+  );
+  const id = input.id || `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+  return tunnels.start({
+    id,
+    url: instance.url,
+    instanceName: instance.name,
+    server: selection.server,
+    target: selection.target,
+    service: selection.service,
+    localPort: input.localPort,
+  });
+}
+
+function registerIpc() {
+  const assertManager = (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents)
+      throw new Error("Richiesta non autorizzata.");
+  };
+  const handle = (channel, listener) => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        assertManager(event);
+        return {
+          __managerIpc: true,
+          ok: true,
+          value: await listener(...args),
+        };
+      } catch (error) {
+        return {
+          __managerIpc: true,
+          ok: false,
+          error: error?.message || "Operazione non riuscita.",
+        };
+      }
+    });
+  };
+
+  ipcMain.on("manager:content-bounds", (event, bounds) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) return;
+    if (!bounds || typeof bounds !== "object") return;
+    const size = mainWindow.getContentBounds();
+    const finite = (value) => Number.isFinite(value);
+    if (
+      !finite(bounds.x) ||
+      !finite(bounds.y) ||
+      !finite(bounds.width) ||
+      !finite(bounds.height)
+    )
+      return;
+    contentBounds = {
+      x: Math.min(Math.max(0, bounds.x), size.width),
+      y: Math.min(Math.max(0, bounds.y), size.height),
+      width: Math.min(Math.max(0, bounds.width), size.width),
+      height: Math.min(Math.max(0, bounds.height), size.height),
+      visible: bounds.visible === true,
+    };
+    applyViewLayout();
+  });
+
+  handle("manager:state", () => publicState());
+  handle("manager:list", () => instanceStore.list());
+  handle("manager:add", (value) => {
+    instanceStore.add(value);
+    sendState();
+    return publicState();
+  });
+  handle("manager:update", (url, value) => {
+    instanceStore.update(url, value || {});
+    sendState();
+    return publicState();
+  });
+  handle("manager:remove", (url) => {
+    removeInstance(url);
+    return publicState();
+  });
+  handle("manager:open", (url) => {
+    activateTab(url);
+    return publicState();
+  });
+  handle("manager:activate", (url) => {
+    activateTab(url);
+    return publicState();
+  });
+  handle("manager:home", () => {
+    showLanding();
+    return publicState();
+  });
+  handle("manager:close-tab", (url) => {
+    closeTab(url);
+    return publicState();
+  });
+  handle("manager:reload", (url) => {
+    const target = url || activeUrl;
+    if (!target) return publicState();
+    const record = recordFor(target);
+    if (record) record.view.webContents.reload();
+    return publicState();
+  });
+  handle("manager:refresh", async (url) => {
+    const target = url || activeUrl;
+    if (!target) return publicState();
+    const instance = instanceStore.get(target);
+    if (instance && recordFor(target)) await refreshInstanceData(instance);
+    return publicState();
+  });
+  handle("manager:theme-set", (preference) => {
+    applyThemePreference(preference);
+    return publicState();
+  });
+  handle("manager:open-external", (url) => safeExternal(url));
+
+  handle("manager:auth-start", (url) => {
+    const instance = instanceStore.get(url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    const record = recordFor(url);
+    const ses = record?.session || sessionFor(instance).session;
+    openTab(url, { activate: true });
+    void desktopAuth
+      .login(instance, sessionFetch(ses), ses.cookies)
+      .then((snapshot) => {
+        if (snapshot.status === "ready") {
+          const current = recordFor(url);
+          if (current?.prepared) current.view.webContents.reload();
+          void loadTargets(instance, { force: true });
+        }
+      });
+    return authSnapshot(url);
+  });
+  handle("manager:auth-cancel", (url) => desktopAuth.cancel(url));
+  handle("manager:auth-logout", async (url) => {
+    await desktopAuth.logout(url);
+    const data = runtimeFor(url);
+    data.targets = null;
+    data.targetsAt = 0;
+    sendWebAuth(url, { forcedStatus: "logout", message: "Sessione tunnel dimenticata." });
+    sendToView(url, { type: "tunnels.state", items: activeTunnels() });
+    sendState();
+    return authSnapshot(url);
+  });
+  handle("manager:auth-open-verification", async (url) => {
+    const snapshot = authSnapshot(url);
+    const target =
+      snapshot.verificationUriComplete || snapshot.verificationUri;
+    if (!target) throw new Error("Nessuna verifica di accesso in corso.");
+    await safeExternal(target);
+  });
+
+  handle("manager:start-tunnel", async (input) => {
+    const instance = instanceStore.get(input?.url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    const started = await startTunnelForInstance(instance, input || {});
+    sendWebAuth(instance.url);
+    sendWebTargets(instance.url);
+    return started;
+  });
+  handle("manager:stop-tunnel", (id, url) => {
+    const stopped = tunnels.stop(
+      String(id),
+      url ? String(url) : null,
+    );
+    if (!stopped) throw new Error("Tunnel non trovato o già fermo.");
+    return publicState();
+  });
+  handle("manager:restart-tunnel", async (id, url) => {
+    tunnels.restart(String(id), url ? String(url) : null);
+    return publicState();
+  });
+  handle("manager:forget-tunnel", (id) => {
+    if (!tunnels.forget(String(id)))
+      throw new Error("Ferma il tunnel prima di rimuoverlo.");
+    return publicState();
+  });
+
+  handle("manager:open-tunnels-page", async (url) => {
+    const instance = instanceStore.get(url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    openTab(url, { activate: true });
+    const record = recordFor(url);
+    const target = `${instance.url}/tunnels`;
+    if (!record.prepared) {
+      record.pendingUrl = target;
+      prepareInstance(instance);
+      return publicState();
+    }
+    await record.view.webContents.loadURL(target);
+    return publicState();
+  });
+  handle("manager:open-server-page", async (url, serverId) => {
+    const instance = instanceStore.get(url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    const id = Number(serverId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("Server non valido.");
+    openTab(url, { activate: true });
+    const record = recordFor(url);
+    const target = `${instance.url}/servers/${id}`;
+    if (!record.prepared) {
+      record.pendingUrl = target;
+      prepareInstance(instance);
+      return publicState();
+    }
+    await record.view.webContents.loadURL(target);
+    void focusTunnelServices(record, id);
+    return publicState();
+  });
+  handle("manager:server-list", async (url) => {
+    const instance = instanceStore.get(url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    const record = recordFor(url);
+    const ses = record?.session || sessionFor(instance).session;
+    const response = await sessionFetch(ses)(
+      `${instance.url}/api/servers?pageSize=200&sort=name`,
+      { headers: { Accept: "application/json" }, credentials: "include" },
+    ).catch(() => null);
+    if (!response || response.status === 401 || response.status === 403)
+      return { authenticated: false, items: [], message: "Accedi all'istanza per vedere i server." };
+    if (!response.ok)
+      return { authenticated: false, items: [], message: `API server: HTTP ${response.status}` };
+    const body = await response.json().catch(() => ({}));
+    return {
+      authenticated: true,
+      items: Array.isArray(body.items)
+        ? body.items.map((server) => ({
+            id: server.id,
+            name: server.name,
+            environmentLabel: server.providerEnvironmentLabel,
+            ipAddress: server.ipAddress,
+            hostname: server.hostname,
+            sshPort: server.sshPort,
+          }))
+        : [],
+      message: null,
+    };
+  });
+}
+
+async function focusTunnelServices(record, serverId) {
+  try {
+    const found = await record.view.webContents.executeJavaScript(`(() => {
+      const headings = [...document.querySelectorAll("h2, h3")];
+      const target = headings.find((heading) =>
+        ["Tunnel", "Tunnels"].includes(heading.textContent.trim())
+      );
+      if (!target) return false;
+      target.scrollIntoView({ block: "center" });
+      return true;
+    })()`);
+    if (found) console.log("focused tunnel services", serverId);
+  } catch {
+    // The page may still be rendering; linking to the server page is enough.
+  }
+}
+
 async function handleDesktopMessage(sender, raw) {
   let message;
   try {
@@ -150,205 +974,438 @@ async function handleDesktopMessage(sender, raw) {
   } catch {
     return;
   }
-  const type = message?.type;
-  const origin = senderUrl(sender);
+  if (!message || typeof message.type !== "string") return;
 
-  if (type === "desktop.capabilities") {
-    sender.send("desktop-message", JSON.stringify({
-      type: "desktop.capabilities",
-      downloadMode: "native",
-      nativeDownload: true,
-    }));
+  const record = [...windows.values()].find(
+    (item) => item.view.webContents.id === sender.id,
+  );
+  if (!record) return;
+  let origin;
+  try {
+    origin = new URL(sender.getURL()).origin;
+  } catch {
     return;
   }
+  if (origin !== new URL(record.url).origin) return;
+  const instance = instanceStore.get(record.url);
+  if (!instance) return;
 
-  if (type === "tunnels.restore") {
-    sender.send("desktop-message", JSON.stringify({
-      type: "tunnels.auth",
-      status: "none",
-      url: origin,
-    }));
-    sender.send("desktop-message", JSON.stringify({
-      type: "tunnels.state",
-      items: tunnels.list(),
-    }));
-    return;
-  }
+  switch (message.type) {
+    case "desktop.capabilities":
+      sender.send(
+        "desktop-message",
+        JSON.stringify({
+          type: "desktop.capabilities",
+          downloadMode: "native",
+          nativeDownload: true,
+        }),
+      );
+      return;
 
-  if (type === "tunnels.logout") {
-    tokens.delete(origin);
-    sender.send("desktop-message", JSON.stringify({
-      type: "tunnels.auth",
-      status: "logout",
-      url: origin,
-    }));
-    return;
-  }
-
-  if (type === "tunnels.login") {
-    sender.send("desktop-message", JSON.stringify({
-      type: "tunnels.auth",
-      status: "error",
-      url: origin,
-      message: "Il prototipo usa il token personale; il device flow arriva dopo.",
-      requiresLogin: false,
-    }));
-    return;
-  }
-
-  if (type === "tunnels.login.cancel") return;
-
-  if (type === "tunnels.list" || type === "tunnels.refresh") {
-    const token = message.token || tokens.get(origin);
-    if (message.token) tokens.set(origin, message.token);
-    try {
-      const items = await fetchTargets(origin, token);
-      sender.send("desktop-message", JSON.stringify({
-        type: "tunnels.targets",
-        url: origin,
-        items,
-      }));
-    } catch (error) {
-      sender.send("desktop-message", JSON.stringify({
-        type: "tunnels.error",
-        url: origin,
-        message: error.message,
-      }));
+    case "tunnels.restore": {
+      const snapshot = authSnapshot(instance.url);
+      if (snapshot.status === "pending") {
+        sendWebAuth(instance.url);
+      } else if (snapshot.tunnelAccess) {
+        sendWebAuth(instance.url, {
+          forcedStatus: snapshot.status === "ready" ? "restored" : webAuthStatus(instance.url),
+        });
+        void loadTargets(instance).then(() => sendWebTargets(instance.url));
+      } else {
+        sendWebAuth(instance.url, { forcedStatus: "none" });
+      }
+      sendToView(instance.url, { type: "tunnels.state", items: activeTunnels() });
+      return;
     }
-    return;
-  }
 
-  if (type === "tunnels.start") {
-    try {
-      const targetList = await fetchTargets(origin, tokens.get(origin));
-      const server = targetList.find((item) => item.serverId === message.serverId);
-      if (!server) throw new Error("Server non presente nell'allowlist.");
-      const target = message.targetId
-        ? server.targets.find((item) => item.serverApplicationId === message.targetId)
-        : null;
-      const service = message.serviceId
-        ? server.services.find((item) => item.id === message.serviceId)
-        : null;
-      const started = tunnels.start({
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        url: origin,
-        server,
-        target,
-        service,
-        localPort: message.localPort,
+    case "tunnels.list":
+    case "tunnels.refresh": {
+      const personalToken =
+        typeof message.token === "string" ? message.token.trim() : "";
+      try {
+        let items;
+        if (personalToken) {
+          tokens.set(instance.url, personalToken);
+          items = await fetchTargetsWithToken(instance.url, personalToken);
+        } else {
+          const existing = tokens.get(instance.url);
+          items = existing
+            ? await fetchTargetsWithToken(instance.url, existing)
+            : await desktopAuth.fetchTargets(
+                instance.url,
+                sessionFetch(record.session),
+              );
+        }
+        runtimeFor(instance.url).targets = items;
+        runtimeFor(instance.url).targetsAt = Date.now();
+        runtimeFor(instance.url).targetsError = null;
+        sendWebTargets(instance.url);
+        sendWebAuth(instance.url, { forcedStatus: "success" });
+        sendToView(instance.url, { type: "tunnels.state", items: activeTunnels() });
+        sendState();
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "tunnels.error",
+          url: instance.url,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "tunnels.login": {
+      void desktopAuth.login(
+        instance,
+        sessionFetch(record.session),
+        record.session.cookies,
+      );
+      return;
+    }
+
+    case "tunnels.login.cancel":
+      desktopAuth.cancel(instance.url);
+      return;
+
+    case "tunnels.logout":
+      void desktopAuth.logout(instance.url).then(() => {
+        const data = runtimeFor(instance.url);
+        data.targets = null;
+        data.targetsAt = 0;
+        tokens.delete(instance.url);
+        sendWebAuth(instance.url, {
+          forcedStatus: "logout",
+          message: "Sessione tunnel dimenticata.",
+        });
+        sendToView(instance.url, {
+          type: "tunnels.state",
+          items: activeTunnels(),
+        });
+        sendState();
       });
-      console.log("tunnel started", started.id, started.args.join(" "));
-      sender.send("desktop-message", JSON.stringify({
-        type: "tunnels.state",
-        items: tunnels.list(),
-      }));
-    } catch (error) {
-      sender.send("desktop-message", JSON.stringify({
-        type: "tunnels.error",
-        url: origin,
-        message: error.message,
-      }));
+      return;
+
+    case "tunnels.start": {
+      try {
+        const personalToken = tokens.get(instance.url);
+        const targetList = personalToken
+          ? await fetchTargetsWithToken(instance.url, personalToken)
+          : await loadTargets(instance, { force: true });
+        if (!targetList) throw new Error("Accedi per usare i tunnel.");
+        const selection = tunnelSelection(
+          targetList,
+          Number(message.serverId),
+          message.targetId ? Number(message.targetId) : null,
+          message.serviceId ? Number(message.serviceId) : null,
+        );
+        tunnels.start({
+          id: `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
+          url: instance.url,
+          instanceName: instance.name,
+          server: selection.server,
+          target: selection.target,
+          service: selection.service,
+          localPort: message.localPort,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "tunnels.error",
+          url: instance.url,
+          message: error.message,
+        });
+      }
+      return;
     }
-    return;
-  }
 
-  if (type === "tunnels.stop") {
-    tunnels.stop(message.id);
-    sender.send("desktop-message", JSON.stringify({
-      type: "tunnels.state",
-      items: tunnels.list(),
-    }));
-    return;
-  }
+    case "tunnels.stop":
+      tunnels.stop(String(message.id), instance.url);
+      sendToView(instance.url, { type: "tunnels.state", items: activeTunnels() });
+      return;
 
-  if (type === "tunnels.retries.cancel") return;
+    case "tunnels.retries.cancel":
+      return;
 
-  if (type === "desktop.openExternal") {
-    try {
-      const target = new URL(message.url);
-      if (target.protocol !== "https:" && target.protocol !== "http:")
-        throw new Error("Protocollo non consentito.");
-      await shell.openExternal(target.toString());
-    } catch (error) {
-      sender.send("desktop-message", JSON.stringify({
-        type: "tunnels.error",
-        url: origin,
-        message: `Apertura link non riuscita: ${error.message}`,
-      }));
-    }
+    case "desktop.openExternal":
+      try {
+        await safeExternal(message.url);
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "tunnels.error",
+          url: instance.url,
+          message: `Apertura link non riuscita: ${error.message}`,
+        });
+      }
+      return;
+
+    default:
+      return;
   }
 }
 
-ipcMain.on("desktop-message", (event, raw) => {
-  void handleDesktopMessage(event.sender, raw);
-});
-
-ipcMain.handle("manager:list", () => loadInstances());
-ipcMain.handle("manager:open", (_event, instance) => {
-  createInstanceWindow(instance);
-});
-ipcMain.handle("manager:add", (_event, value) => {
-  const name = String(value?.name || "").trim();
-  const url = String(value?.url || "").trim().replace(/\/$/, "");
-  const parsed = new URL(url);
-  if (!name || !["http:", "https:"].includes(parsed.protocol))
-    throw new Error("Nome e URL http/https sono obbligatori.");
-  const items = loadInstances().filter((item) => item.url !== url);
-  items.push({ name, url });
-  saveInstances(items);
-  return items;
-});
-ipcMain.handle("manager:remove", (_event, url) => {
-  const items = loadInstances().filter((item) => item.url !== url);
-  saveInstances(items);
-  return items;
-});
-
-app.whenReady().then(() => {
-  if (process.env.PROTO_ALLOW_INSECURE_LOCALHOST !== "0") {
-    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1380,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 680,
+    show: false,
+    backgroundColor: "#0b0e13",
+    title: "InfraOrgIT",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition:
+      process.platform === "darwin" ? { x: 18, y: 18 } : undefined,
+    webPreferences: {
+      preload: MANAGER_PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+    },
+  });
+  mainWindow.loadFile("manager.html");
+  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.on("resize", () => {
+    if (contentBounds) applyViewLayout();
+  });
+  mainWindow.on("closed", () => {
+    attachedUrl = null;
+    mainWindow = null;
+    for (const record of windows.values()) {
       try {
-        const target = new URL(
-          request.hostname
-            ? `https://${request.hostname}:${request.port || 443}`
-            : "",
-        );
-        if (
-          target.hostname === "localhost" ||
-          target.hostname === "127.0.0.1" ||
-          target.hostname === "::1"
-        ) {
-          callback(0);
-          return;
-        }
+        record.view.webContents.close();
       } catch {
-        // fall through to the default verifier
+        // already gone
       }
-      callback(-3);
-    });
-  }
-
-  instancesFile = path.join(app.getPath("userData"), "instances.json");
-  createManagerWindow();
-  const first = loadInstances()[0];
-  if (first) {
-    const window = createInstanceWindow(first);
-    if (process.env.PROTO_TEST === "1") {
-      runTest(first, window);
     }
-  }
-});
+    windows.clear();
+    tabOrder = [];
+    activeUrl = null;
+    tunnels?.stopAll();
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://"))
+      void shell.openExternal(url);
+    return { action: "deny" };
+  });
+}
 
-async function runTest(instance, window) {
+function openStartupTabs() {
+  const opens = instanceStore
+    .list()
+    .filter((instance) => instance.openAtStartup);
+  for (const instance of opens) openTab(instance.url, { activate: false });
+  if (opens.length > 0) activateTab(opens[0].url);
+  else showLanding();
+}
+
+function buildMenu() {
+  const isMac = process.platform === "darwin";
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "Nuova istanza",
+          accelerator: "CmdOrCtrl+N",
+          click: () => sendCommand("new-instance"),
+        },
+        { type: "separator" },
+        { role: "close" },
+      ],
+    },
+    { role: "editMenu" },
+    {
+      label: "Vista",
+      submenu: [
+        {
+          label: "Command palette",
+          accelerator: "CmdOrCtrl+K",
+          click: () => sendCommand("palette"),
+        },
+        {
+          label: "Istanze",
+          accelerator: "CmdOrCtrl+0",
+          click: () => showLanding(),
+        },
+        {
+          label: "Tunnel",
+          accelerator: "CmdOrCtrl+Shift+T",
+          click: () => sendCommand("toggle-drawer"),
+        },
+        { type: "separator" },
+        {
+          label: "Tema chiaro",
+          click: () => applyThemePreference("light"),
+        },
+        {
+          label: "Tema scuro",
+          click: () => applyThemePreference("dark"),
+        },
+        {
+          label: "Segui il sistema",
+          click: () => applyThemePreference("system"),
+        },
+        { type: "separator" },
+        { role: "reload" },
+        { role: "toggleDevTools" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  if (!isMac && mainWindow) mainWindow.setMenuBarVisibility(false);
+}
+
+function seedTestInstances() {
+  if (!IS_TEST || instanceStore.list().length > 0) return;
+  const base = process.env.PROTO_URL || "https://localhost:8443";
+  instanceStore.add({
+    name: "Produzione",
+    url: base,
+    environment: "Produzione",
+    openAtStartup: true,
+  });
+  instanceStore.add({
+    name: "Staging",
+    url: process.env.PROTO_SECOND_URL || "https://staging.example.com",
+    environment: "Staging",
+    openAtStartup: false,
+  });
+  instanceStore.add({
+    name: "Lab",
+    url: "https://lab.example.com",
+    environment: "Test",
+    openAtStartup: false,
+  });
+}
+
+function startTestTunnels() {
+  if (!IS_TEST) return;
+  process.env.SSH_BIN = path.join(__dirname, "test", "fake-ssh.js");
+  process.env.FAKE_SSH_LOG = path.join(__dirname, "test", ".run", "ssh.log");
+  fs.mkdirSync(path.dirname(process.env.FAKE_SSH_LOG), { recursive: true });
+  fs.writeFileSync(process.env.FAKE_SSH_LOG, "");
+  const instance = instanceStore.list()[0];
+  if (!instance) return;
+  const demoServer = (name, ip) => ({
+    serverId: name === "demo-app-01" ? 1 : 2,
+    serverName: name,
+    environmentLabel: "Demo / Produzione",
+    sshHost: ip,
+    ipAddress: ip,
+    sshPort: 22,
+    username: "demo",
+    jumps: [],
+    targets: [],
+    services: [],
+  });
   try {
-    await new Promise((resolve) => {
-      if (window.webContents.isLoading()) window.webContents.once("did-finish-load", resolve);
-      else resolve();
+    const first = tunnels.start({
+      id: "demo-tunnel-active",
+      url: instance.url,
+      instanceName: instance.name,
+      server: demoServer("demo-app-01", "10.0.0.10"),
+      target: {
+        serverApplicationId: 7,
+        application: "orders-api",
+        targetHost: "127.0.0.1",
+        targetPort: 8081,
+        suggestedLocalPort: 8081,
+      },
+      service: null,
+      localPort: 18081,
     });
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    if (window.webContents.getURL().includes("/realms/")) {
+    console.log("TEST_TUNNEL_ACTIVE", first.id);
+    tunnels.start({
+      id: "demo-tunnel-stopped",
+      url: instance.url,
+      instanceName: instance.name,
+      server: demoServer("demo-db-01", "10.0.0.20"),
+      target: null,
+      service: {
+        id: 9,
+        name: "postgres",
+        mode: "Local",
+        kind: "Tcp",
+        targetHost: "10.0.0.20",
+        targetPort: 5432,
+        localPort: 15432,
+      },
+      localPort: 15432,
+    });
+    setTimeout(() => tunnels.stop("demo-tunnel-stopped", instance.url), 300);
+  } catch (error) {
+    console.log("TEST_TUNNEL_SEED_FAIL", error.message);
+  }
+}
+
+async function waitFor(condition, timeout = 15_000, interval = 250) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    if (await condition()) return true;
+    await new Promise((resolve) => setTimeout(resolve, interval));
+  }
+  return false;
+}
+
+async function captureScreenshot(contents, name) {
+  const target = path.join(__dirname, "test", name);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const image = await contents.capturePage();
+      if (!image.isEmpty()) {
+        fs.writeFileSync(target, image.toPNG());
+        console.log("TEST_SCREENSHOT", target);
+        return true;
+      }
+    } catch {
+      // The compositor can be between frames; retry briefly.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  console.log("TEST_SCREENSHOT_SKIP", target);
+  return false;
+}
+
+async function runTest() {
+  let failed = false;
+  const check = (condition, label, detail = "") => {
+    if (condition) {
+      console.log("TEST_OK", label);
+      return true;
+    }
+    failed = true;
+    console.log("TEST_FAIL", label, detail);
+    return false;
+  };
+
+  try {
+    const first = instanceStore.list()[0];
+    const record = recordFor(first.url);
+    await waitFor(() => record?.loaded, 20_000);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const login = async () => {
+      const url = record.view.webContents.getURL();
+      if (!url.includes("/realms/")) return;
       console.log("TEST_LOGIN", "submitting local dev credentials");
-      await window.webContents.executeJavaScript(`(() => {
+      await record.view.webContents.executeJavaScript(`(() => {
         const user = document.querySelector("#username");
         const password = document.querySelector("#password");
         if (!user || !password) return false;
@@ -358,46 +1415,298 @@ async function runTest(instance, window) {
         return true;
       })()`);
       await new Promise((resolve) => setTimeout(resolve, 3500));
-    }
-    console.log("TEST_URL", window.webContents.getURL());
-    console.log("TEST_TITLE", window.getTitle());
-    const text = await window.webContents.executeJavaScript("document.body.innerText");
-    console.log("TEST_TEXT", text.slice(0, 240).replace(/\n/g, " | "));
-    if (!text.trim()) throw new Error("La pagina principale è vuota");
-    const image = await window.webContents.capturePage();
-    const screenshot = path.join(__dirname, "test", "screen.png");
-    fs.mkdirSync(path.dirname(screenshot), { recursive: true });
-    fs.writeFileSync(screenshot, image.toPNG());
-    console.log("TEST_SCREENSHOT", screenshot);
-    try {
-      const health = await net.fetch(`${instance.url.replace(/\/$/, "")}/health/live`);
-      console.log("TEST_NET_FETCH", health.status);
-    } catch (error) {
-      console.log("TEST_NET_FETCH_ERROR", error.message);
-    }
-
-    await window.loadURL(`${instance.url.replace(/\/$/, "")}/tunnels`);
+      await waitFor(
+        () => !record.view.webContents.getURL().includes("/realms/"),
+        15_000,
+      );
+    };
+    await login();
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const bridgeInfo = await window.webContents.executeJavaScript("({explicit: typeof window.infraorgitDesktop, legacy: typeof window.external, legacySend: typeof window.external?.sendMessage, explicitSend: typeof window.infraorgitDesktop?.sendMessage})");
-    console.log("TEST_BRIDGE", JSON.stringify(bridgeInfo));
-    const tunnelText = await window.webContents.executeJavaScript("document.body.innerText");
-    console.log("TEST_TUNNELS_TEXT", tunnelText.slice(0, 800).replace(/\n/g, " | "));
-    console.log("TEST_HAS_DESKTOP_PANEL", tunnelText.includes("Tunnel dal desktop"));
-    if (!tunnelText.includes("Tunnel")) throw new Error("Pannello tunnel non presente");
-    const tunnelImage = await window.webContents.capturePage();
-    fs.writeFileSync(path.join(__dirname, "test", "tunnels.png"), tunnelImage.toPNG());
-
-    const second = createInstanceWindow({ name: "Second", url: process.env.PROTO_SECOND_URL || `${instance.url}/login-error` });
+    await refreshInstanceData(first);
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    console.log("TEST_WINDOWS", BrowserWindow.getAllWindows().length);
-    console.log("TEST_PARTITIONS", [...windows.keys()].join(","));
-    console.log("TEST_SECOND_TEXT", (await second.webContents.executeJavaScript("document.body.innerText")).slice(0, 160).replace(/\n/g, " | "));
-    console.log("TEST_RESULT PASS");
+
+    const state = publicState();
+    check(state.instances.length === 3, "three demo instances", String(state.instances.length));
+    check(state.tabs.length >= 1, "startup tab opened", String(state.tabs.length));
+    check(state.instances[0].active === true, "landing tab active");
+    check(
+      state.instances[0].serverCount !== null,
+      "server count loaded",
+      String(state.instances[0].serverCount),
+    );
+    check(
+      record.view.webContents.getURL().includes("/"),
+      "instance loaded",
+      record.view.webContents.getURL(),
+    );
+
+    const bridgeInfo = await record.view.webContents.executeJavaScript(
+      "({explicit: typeof window.infraorgitDesktop, explicitSend: typeof window.infraorgitDesktop?.sendMessage, legacy: typeof window.external, legacySend: typeof window.external?.sendMessage, node: typeof window.require, process: typeof window.process})",
+    );
+    check(bridgeInfo.explicit === "object", "instance bridge exposed", JSON.stringify(bridgeInfo));
+    check(bridgeInfo.explicitSend === "function", "instance sendMessage exposed");
+    check(bridgeInfo.legacySend === "undefined", "no legacy desktop bridge");
+    check(bridgeInfo.node === "undefined", "no node require in renderer");
+    check(bridgeInfo.process === "undefined", "no process in renderer");
+
+    const managerBridge = await mainWindow.webContents.executeJavaScript(
+      "({manager: typeof window.desktopManager, node: typeof window.require, platform: window.desktopManager?.platform, shortcut: document.querySelector('[data-shortcut]')?.textContent})",
+    );
+    check(managerBridge.manager === "object", "manager bridge exposed", JSON.stringify(managerBridge));
+    check(managerBridge.node === "undefined", "no node in manager");
+    check(
+      process.platform === "darwin"
+        ? managerBridge.shortcut?.includes("⌘")
+        : managerBridge.shortcut?.includes("Ctrl"),
+      "platform command shortcut label",
+      String(managerBridge.shortcut),
+    );
+
+    const invalid = await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.addInstance({name:'Bad',url:'http://remote.example.com'}).then(() => 'accepted').catch((error) => error.message)",
+    );
+    check(invalid.includes("https"), "remote http rejected", invalid);
+
+    await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.setTheme('light')",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const lightState = publicState();
+    check(lightState.theme.resolved === "light", "theme switch light");
+    await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.setTheme('dark')",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    check(publicState().theme.resolved === "dark", "theme switch dark");
+
+    const palette = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", {key: "k", metaKey: ${process.platform === "darwin"}, ctrlKey: ${process.platform !== "darwin"}, bubbles: true}));
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return {visible: !document.querySelector("#palette")?.hidden, items: document.querySelectorAll("#palette-list [role=option]").length};
+    })()`);
+    check(palette.visible === true, "command palette opens");
+    check(palette.items > 2, "command palette has actions", String(palette.items));
+    await captureScreenshot(mainWindow.webContents, "palette.png");
+    await mainWindow.webContents.executeJavaScript(
+      "document.querySelector('#palette-input').dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))",
+    );
+
+    showLanding();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await captureScreenshot(mainWindow.webContents, "landing.png");
+
+    await captureScreenshot(record.view.webContents, "instance.png");
+
+    sendCommand("toggle-drawer");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const drawerState = await mainWindow.webContents.executeJavaScript(
+      "({open: document.body.dataset.drawer === 'open', rows: document.querySelectorAll('[data-tunnel-id]').length, groups: document.querySelectorAll('[data-instance-group]').length, port: document.querySelector('[data-tunnel-id] .context-port')?.textContent || ''})",
+    );
+    check(drawerState.open === true, "tunnel drawer open");
+    check(drawerState.rows >= 2, "drawer shows active and stopped rows", String(drawerState.rows));
+    check(drawerState.groups >= 1, "drawer groups by instance");
+    check(
+      drawerState.port.includes("18081") || drawerState.port.includes("15432"),
+      "drawer shows the local port",
+      drawerState.port,
+    );
+    await captureScreenshot(mainWindow.webContents, "drawer.png");
+
+    activateTab(first.url);
+    await record.view.webContents.loadURL(`${first.url}/tunnels`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const webTunnel = await record.view.webContents.executeJavaScript(
+      "({bridge: typeof window.infraorgitDesktop, panel: Boolean(document.querySelector('[data-testid=\"desktop-tunnels-panel\"]')), text: document.body.innerText.slice(0, 120)})",
+    );
+    check(webTunnel.bridge === "object", "web tunnel page bridge");
+    check(webTunnel.panel === true, "web /tunnels desktop panel", JSON.stringify(webTunnel));
+    await captureScreenshot(record.view.webContents, "web-tunnels.png");
+
+    const serverList = await mainWindow.webContents.executeJavaScript(
+      `window.desktopManager.serverList(${JSON.stringify(first.url)})`,
+    );
+    check(serverList.authenticated === true, "shell IPC server list authenticated");
+    check(serverList.items.length > 0, "shell IPC server list has rows", String(serverList.items.length));
+
+    const added = await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.addInstance({name:'Temporanea',url:'https://temp.example.com',environment:'Test'}).then((next) => next.instances.length)",
+    );
+    check(added === 4, "shell IPC adds an instance", String(added));
+    const duplicate = await mainWindow.webContents.executeJavaScript(
+      `window.desktopManager.addInstance({name:'Duplicata',url:${JSON.stringify(first.url)}}).then(() => 'accepted').catch((error) => error.message)`,
+    );
+    check(duplicate.includes("già presente"), "shell IPC rejects a duplicate", duplicate);
+    const removed = await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.removeInstance('https://temp.example.com').then((next) => next.instances.length)",
+    );
+    check(removed === 3, "shell IPC removes an instance", String(removed));
+
+    const newModal = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector("#new-instance").click();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const visible = !document.querySelector("#modal").hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      document.querySelector("#modal-close").click();
+      return {visible, title};
+    })()`);
+    check(newModal.visible === true, "new instance modal opens");
+    check(newModal.title === "Nuova istanza", "new instance modal title", newModal.title);
+
+    const manageModal = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const card = [...document.querySelectorAll(".instance-card")].find((item) => item.textContent.includes("Produzione"));
+      [...card.querySelectorAll("button")].find((button) => button.textContent === "Gestisci").click();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const visible = !document.querySelector("#modal").hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      const servers = document.querySelectorAll(".server-item").length;
+      document.querySelector("#modal-close").click();
+      return {visible, title, servers};
+    })()`);
+    check(manageModal.visible === true, "manage modal opens");
+    check(manageModal.title === "Produzione", "manage modal title", manageModal.title);
+    check(manageModal.servers > 0, "manage modal lists server anagrafica", String(manageModal.servers));
+
+    const secondTab = publicState().instances[1];
+    activateTab(secondTab.url);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    check(publicState().activeUrl === secondTab.url, "tab switch loads instance");
+    showLanding();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.setTheme('light')",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await captureScreenshot(mainWindow.webContents, "light.png");
+    await mainWindow.webContents.executeJavaScript(
+      "window.desktopManager.setTheme('dark')",
+    );
+
+    console.log(failed ? "TEST_RESULT FAIL" : "TEST_RESULT PASS");
   } catch (error) {
+    failed = true;
     console.log("TEST_RESULT FAIL", error.stack || error.message);
   } finally {
-    setTimeout(() => app.quit(), 500);
+    tunnels?.stopAll();
+    desktopAuth?.dispose();
+    setTimeout(() => app.exit(failed ? 1 : 0), 800);
   }
 }
 
-app.on("window-all-closed", () => app.quit());
+app.on("second-instance", () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+const hasLock = app.requestSingleInstanceLock();
+if (!hasLock) {
+  app.quit();
+} else {
+  app.whenReady().then(async () => {
+    if (allowLoopbackCertificates) applyLoopbackPolicy(session.defaultSession);
+
+    if (IS_TEST) {
+      process.env.SSH_BIN = path.join(__dirname, "test", "fake-ssh.js");
+      process.env.FAKE_SSH_LOG = path.join(__dirname, "test", ".run", "ssh.log");
+    }
+
+    instanceStore = new InstanceStore(
+      path.join(app.getPath("userData"), "instances.json"),
+    );
+    settingsStore = new SettingsStore(
+      path.join(app.getPath("userData"), "settings.json"),
+    );
+    tokenStore = new RefreshTokenStore({
+      file: path.join(app.getPath("userData"), "desktop-auth.bin"),
+      safeStorage,
+    });
+    await tokenStore.initialize();
+    tokenStore.load();
+
+    const deviceClient = new DeviceAuthClient({
+      fetchImpl: (input, init = {}) =>
+        net.fetch(input, {
+          ...init,
+          signal: init.signal || AbortSignal.timeout(15_000),
+        }),
+    });
+    desktopAuth = new DesktopAuth({
+      deviceClient,
+      tokenStore,
+      openExternal: (url) => shell.openExternal(url),
+      onChange: (url, snapshot) => {
+        if (snapshot.theme && !themeTouched) {
+          settingsStore.setTheme(snapshot.theme);
+          applyThemeToManager();
+          for (const openUrl of windows.keys())
+            syncThemeToView(openUrl, snapshot.theme);
+        }
+        const record = recordFor(url);
+        const fingerprint = JSON.stringify(snapshot);
+        if (record) {
+          const runtimeData = runtimeFor(url);
+          if (fingerprint !== runtimeData.lastAuthSent) {
+            const previous = runtimeData.lastAuthSent
+              ? JSON.parse(runtimeData.lastAuthSent)
+              : null;
+            runtimeData.lastAuthSent = fingerprint;
+            const justLoggedIn =
+              previous?.status === "pending" && snapshot.status === "ready";
+            sendWebAuth(url, {
+              forcedStatus: justLoggedIn ? "success" : null,
+            });
+            if (snapshot.status === "ready" && snapshot.tunnelAccess) {
+              const instance = instanceStore.get(url);
+              if (instance) void loadTargets(instance);
+            }
+          }
+        }
+        sendState();
+      },
+    });
+    tunnels = new TunnelManager(() => broadcastTunnels());
+
+    seedTestInstances();
+    startTestTunnels();
+    createMainWindow();
+    registerIpc();
+    buildMenu();
+
+    ipcMain.on("desktop-message", (event, raw) => {
+      void handleDesktopMessage(event.sender, raw);
+    });
+
+    nativeTheme.on("updated", () => {
+      if (settingsStore.theme === "system") {
+        applyThemeToManager();
+        for (const url of windows.keys()) syncThemeToView(url);
+      }
+    });
+
+    openStartupTabs();
+    setTimeout(() => primeLandingCounts(), 1200);
+
+    if (IS_TEST) {
+      if (!activeUrl) activateTab(instanceStore.list()[0]?.url);
+      setTimeout(() => void runTest(), 500);
+    }
+  });
+
+  app.on("before-quit", () => {
+    quitting = true;
+    tunnels?.stopAll();
+    desktopAuth?.dispose();
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin" || quitting) app.quit();
+  });
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+      openStartupTabs();
+    }
+  });
+}

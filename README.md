@@ -9,6 +9,10 @@ private key copied into the app.
 
 The screenshots use fictitious demo instances, servers and tunnels.
 
+> The Electron rework lives in [`prototype-electron/`](prototype-electron/README.md)
+> on `feat/electron-rework`. It is not packaged or shipped yet; this README
+> describes the released Photino app.
+
 ## What you can do
 
 - **Several instances, separate windows.** Keep production, staging and a lab
