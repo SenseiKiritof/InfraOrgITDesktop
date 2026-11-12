@@ -1,0 +1,6 @@
+# Build artifacts and the disposable harness output are local-only.
+build/
+dist/
+test/bin/
+test/obj/
+test/.run/

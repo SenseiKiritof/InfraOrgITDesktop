@@ -171,6 +171,11 @@ jobs:
           echo "identity=$identity" >> "$GITHUB_OUTPUT"
           echo "Signing with: $identity"
 
+      - name: Build the patched Photino native library (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./native/photino-download/build.sh
+
       - name: Publish and package
         shell: bash
         env:

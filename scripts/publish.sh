@@ -34,6 +34,19 @@ dotnet publish "$ROOT/src/InfraOrgIt.Desktop/InfraOrgIt.Desktop.csproj" \
   -p:Version="$VERSION" \
   -o "$OUT"
 
+# Optional patched Photino.Native for macOS WKDownload support. It is built by
+# native/photino-download/build.sh; when missing the app keeps the managed
+# bridge only.
+NATIVE_DYLIB="$ROOT/native/photino-download/dist/Photino.Native.dylib"
+if [ "$(uname -s)" = "Darwin" ] && [[ "$RID" == osx-* ]] && [ -f "$NATIVE_DYLIB" ]; then
+  mkdir -p "$OUT/native"
+  cp -f "$NATIVE_DYLIB" "$OUT/native/Photino.Native.dylib"
+  if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+    codesign --force --options runtime --timestamp \
+      --sign "$CODESIGN_IDENTITY" "$OUT/native/Photino.Native.dylib"
+  fi
+fi
+
 if [ "$(uname -s)" = "Darwin" ] && [[ "$RID" == osx-* ]]; then
   APP="$DIST_ROOT/InfraOrgIT Desktop.app"
   rm -rf "$APP"
