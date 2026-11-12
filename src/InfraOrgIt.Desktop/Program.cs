@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using InfraOrgIt.Desktop.Auth;
 using InfraOrgIt.Desktop.Downloads;
 using InfraOrgIt.Desktop.Instances;
@@ -38,7 +40,7 @@ internal static class Program
         _settings = _settingsStore.Load();
         DownloadManager.SetNativeDownloadAvailable(
             OperatingSystem.IsWindows() || NativeDownloadSupport.TryRegister());
-        var children = new List<PhotinoWindow>();
+        var children = new ConcurrentDictionary<PhotinoWindow, string>();
 
         _manager = new PhotinoWindow()
             .SetTitle("InfraOrgIT Desktop")
@@ -52,7 +54,7 @@ internal static class Program
             {
                 _fileDownloads?.CancelAll();
                 _tunnels?.StopAll();
-                foreach (var child in children.ToArray())
+                foreach (var child in children.Keys.ToArray())
                     child.Close();
                 return false;
             })
@@ -60,10 +62,10 @@ internal static class Program
 
         _tunnels = new TunnelManager(
             CreateHttpClient(),
-            payload => _manager?.Invoke(() => Send(_manager, payload)),
+            payload => DispatchTunnelNotification(payload, children),
             tokenStore: TokenStoreFactory.Create(message =>
-                _manager?.Invoke(() => Send(
-                    _manager, new { type = "tunnels.warning", message }))),
+                DispatchTunnelNotification(
+                    new { type = "tunnels.warning", message }, children)),
             state: new TunnelsStateStore(TunnelsStateStore.DefaultPath()));
 
         // GitHub checks use their own clients: the dev TLS override applies to
@@ -102,7 +104,7 @@ internal static class Program
         PhotinoWindow window,
         string message,
         InstanceStore store,
-        List<PhotinoWindow> children)
+        ConcurrentDictionary<PhotinoWindow, string> children)
     {
         try
         {
@@ -245,7 +247,10 @@ internal static class Program
     /// messages belong to the instance SPA and are deliberately ignored, so a
     /// child page can never drive the manager or arbitrary native actions.
     /// </summary>
-    private static void HandleInstanceMessage(PhotinoWindow child, string message)
+    private static void HandleInstanceMessage(
+        PhotinoWindow child,
+        string message,
+        string instanceUrl)
     {
         try
         {
@@ -265,6 +270,18 @@ internal static class Program
                             _settings.DownloadMode),
                         nativeDownload = DownloadManager.NativeDownloadAvailable
                     });
+                    break;
+
+                case "tunnels.list" or "tunnels.restore" or "tunnels.login" or
+                    "tunnels.login.cancel" or "tunnels.start" or
+                    "tunnels.stop" or "tunnels.retries.cancel" or
+                    "tunnels.logout":
+                    HandleChildTunnelMessage(
+                        child, instanceUrl, message, root);
+                    break;
+
+                case "desktop.openExternal":
+                    OpenChildExternal(child, instanceUrl, root);
                     break;
 
                 case "desktop.download":
@@ -288,6 +305,98 @@ internal static class Program
                 type = "desktop.download.status",
                 state = DownloadStates.Failed,
                 message = "Richiesta di download non valida."
+            });
+        }
+    }
+
+    /// <summary>
+    /// Forwards a tunnel message from an instance child window. The message URL
+    /// must be the child's own instance; messages without a URL inherit it.
+    /// The rewritten message always carries the URL, so stop and login-cancel
+    /// stay scoped to that instance inside the manager.
+    /// </summary>
+    private static void HandleChildTunnelMessage(
+        PhotinoWindow child,
+        string instanceUrl,
+        string message,
+        JsonElement root)
+    {
+        var messageUrl = OptionalString(root, "url");
+        var effectiveUrl = InstanceBridgePolicy.ResolveUrl(messageUrl, instanceUrl);
+        if (effectiveUrl is null)
+        {
+            TrySend(child, new
+            {
+                type = "tunnels.error",
+                url = instanceUrl,
+                message = "Istanza non valida per questo messaggio tunnel."
+            });
+            return;
+        }
+
+        var node = JsonNode.Parse(message)?.AsObject();
+        if (node is null)
+        {
+            TrySend(child, new
+            {
+                type = "tunnels.error",
+                url = instanceUrl,
+                message = "Messaggio tunnel non valido."
+            });
+            return;
+        }
+
+        node["url"] = effectiveUrl;
+        _tunnels?.Handle(node.ToJsonString());
+    }
+
+    /// <summary>
+    /// Opens the pending Keycloak verification page or the browser URL of an
+    /// active local tunnel. Any other URL is rejected: the instance SPA can
+    /// never launch an arbitrary address.
+    /// </summary>
+    private static void OpenChildExternal(
+        PhotinoWindow child,
+        string instanceUrl,
+        JsonElement root)
+    {
+        var value = OptionalString(root, "url");
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp &&
+             uri.Scheme != Uri.UriSchemeHttps) ||
+            (_tunnels?.IsVerificationUrl(uri.AbsoluteUri) != true &&
+             _tunnels?.IsTunnelOpenUrl(uri.AbsoluteUri, instanceUrl) != true))
+        {
+            TrySend(child, new
+            {
+                type = "tunnels.error",
+                url = instanceUrl,
+                message = "Link non valido: apri solo la pagina di accesso o un tunnel attivo."
+            });
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+            TrySend(child, new
+            {
+                type = "tunnels.log",
+                message = "Pagina aperta nel browser."
+            });
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or
+            System.ComponentModel.Win32Exception)
+        {
+            TrySend(child, new
+            {
+                type = "tunnels.error",
+                url = instanceUrl,
+                message = "Apertura del browser non riuscita."
             });
         }
     }
@@ -365,6 +474,74 @@ internal static class Program
         catch (Exception)
         {
             // Notifications are optional and may be unavailable.
+        }
+    }
+
+    /// <summary>
+    /// Routes one manager notification. The manager window always receives it;
+    /// an instance child receives only messages for its own URL, except the
+    /// live state, warnings and log lines that every window needs. The manager
+    /// page keeps its own tunnel panel updates because it is always a target.
+    /// </summary>
+    private static void DispatchTunnelNotification(
+        object payload,
+        ConcurrentDictionary<PhotinoWindow, string> children)
+    {
+        string json;
+        try
+        {
+            json = JsonSerializer.Serialize(payload, JsonOptions);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or NotSupportedException)
+        {
+            return;
+        }
+
+        string? type;
+        string? url;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            type = root.TryGetProperty("type", out var typeElement)
+                ? typeElement.GetString()
+                : null;
+            url = OptionalString(root, "url");
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+
+        if (_manager is not null)
+            _manager.Invoke(() => TrySendRaw(_manager, json));
+
+        var broadcast = type is "tunnels.state" or "tunnels.warning" or
+            "tunnels.log";
+        foreach (var (child, childUrl) in children)
+        {
+            if (!broadcast &&
+                (url is null ||
+                 InstanceBridgePolicy.ResolveUrl(url, childUrl) is null))
+            {
+                continue;
+            }
+
+            TrySendRaw(child, json);
+        }
+    }
+
+    private static void TrySendRaw(PhotinoWindow window, string json)
+    {
+        try
+        {
+            window.SendWebMessage(json);
+        }
+        catch (Exception exception) when (
+            exception is ApplicationException or InvalidOperationException)
+        {
+            // The instance window may close while a tunnel message is sent.
         }
     }
 
@@ -681,7 +858,7 @@ internal static class Program
     private static void OpenInstance(
         PhotinoWindow parent,
         Instance instance,
-        List<PhotinoWindow> children)
+        ConcurrentDictionary<PhotinoWindow, string> children)
     {
         var child = new PhotinoWindow(parent)
             .SetTitle($"InfraOrgIT — {instance.Name}")
@@ -696,10 +873,11 @@ internal static class Program
             // reports every state through the desktop.download.status message.
             .SetNotificationsEnabled(true)
             .RegisterWebMessageReceivedHandler((sender, message) =>
-                HandleInstanceMessage((PhotinoWindow)sender!, message))
-            .RegisterWindowClosingHandler((sender, _) =>
+                HandleInstanceMessage(
+                    (PhotinoWindow)sender!, message, instance.Url))
+            .RegisterWindowClosingHandler((sender, args) =>
             {
-                children.Remove((PhotinoWindow)sender);
+                children.TryRemove((PhotinoWindow)sender, out _);
                 return false;
             });
 
@@ -714,9 +892,8 @@ internal static class Program
         if (OperatingSystem.IsWindows())
             child.SetTemporaryFilesPath(InstanceDataPath(instance.Url));
 
+        children[child] = instance.Url;
         child.Load(instance.Url);
-
-        children.Add(child);
         child.WaitForClose();
     }
 
