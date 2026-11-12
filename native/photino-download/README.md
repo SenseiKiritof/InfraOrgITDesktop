@@ -32,16 +32,18 @@ Only `Photino.Mac.NavigationDelegate.{h,mm}` change. The code is compiled only
 with `-DPHOTINO_MAC_DOWNLOADS=1`; a normal `make mac-universal` build keeps the
 upstream behaviour (verified by compiling with the flag off).
 
-1. `webView:decidePolicyForNavigationAction:decisionHandler:`
-   returns `WKNavigationActionPolicyDownload` when WebKit marks the action as a
-   download (`shouldPerformDownload`, e.g. `<a download>`).
-2. `webView:decidePolicyForNavigationResponse:decisionHandler:`
+1. `webView:decidePolicyForNavigationResponse:decisionHandler:`
    returns the download policy for a **main-frame** response when:
    - `Content-Disposition` is `attachment` (case-insensitive, first token), or
    - the MIME type is `application/octet-stream`, or
    - `canShowMIMEType` is `NO`.
    Everything else returns `Allow`, so normal SPA navigation is unchanged.
-3. `webView:navigationAction:didBecomeDownload:` and
+   The navigation-action policy is deliberately not overridden: on macOS a
+   custom `decidePolicyForNavigationAction` broke child-window navigation in
+   the desktop shell. A normal `<a download>` may still be handled by WebKit's
+   response policy on newer macOS, but the reliable path is an attachment
+   response.
+2. `webView:navigationAction:didBecomeDownload:` and
    `webView:navigationResponse:didBecomeDownload:` attach a
    `WKDownloadDelegate`.
 4. The delegate picks a destination:
@@ -156,9 +158,7 @@ cd native/photino-download
 Expected output (excerpt from the real run):
 
 ```
-[photino-download] navigation action requests download
 [photino-download] saving inline.txt
-[photino-download] finished download
 [photino-download] attachment navigation response becomes download (report.txt)
 [photino-download] saving report.txt
 [photino-download] finished download
