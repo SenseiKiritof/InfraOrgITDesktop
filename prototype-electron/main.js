@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, net, session, shell } = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -131,7 +131,7 @@ function senderUrl(sender) {
 
 async function fetchTargets(url, token) {
   if (!token || !token.trim()) throw new Error("Token personale richiesto.");
-  const response = await fetch(`${url.replace(/\/$/, "")}/api/tunnels/targets`, {
+  const response = await net.fetch(`${url.replace(/\/$/, "")}/api/tunnels/targets`, {
     headers: { Authorization: `Bearer ${token.trim()}` },
   });
   const body = await response.json().catch(() => ({}));
@@ -305,6 +305,29 @@ ipcMain.handle("manager:remove", (_event, url) => {
 });
 
 app.whenReady().then(() => {
+  if (process.env.PROTO_ALLOW_INSECURE_LOCALHOST !== "0") {
+    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+      try {
+        const target = new URL(
+          request.hostname
+            ? `https://${request.hostname}:${request.port || 443}`
+            : "",
+        );
+        if (
+          target.hostname === "localhost" ||
+          target.hostname === "127.0.0.1" ||
+          target.hostname === "::1"
+        ) {
+          callback(0);
+          return;
+        }
+      } catch {
+        // fall through to the default verifier
+      }
+      callback(-3);
+    });
+  }
+
   instancesFile = path.join(app.getPath("userData"), "instances.json");
   createManagerWindow();
   const first = loadInstances()[0];
@@ -346,6 +369,12 @@ async function runTest(instance, window) {
     fs.mkdirSync(path.dirname(screenshot), { recursive: true });
     fs.writeFileSync(screenshot, image.toPNG());
     console.log("TEST_SCREENSHOT", screenshot);
+    try {
+      const health = await net.fetch(`${instance.url.replace(/\/$/, "")}/health/live`);
+      console.log("TEST_NET_FETCH", health.status);
+    } catch (error) {
+      console.log("TEST_NET_FETCH_ERROR", error.message);
+    }
 
     await window.loadURL(`${instance.url.replace(/\/$/, "")}/tunnels`);
     await new Promise((resolve) => setTimeout(resolve, 2000));
