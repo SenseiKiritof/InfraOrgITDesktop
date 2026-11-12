@@ -84,14 +84,14 @@ visible to the team on the instance's **Tunnels** page.
 The manager's **Download** setting chooses how files from an instance are
 saved:
 
-- **Automatico**: uses the native macOS webview when this build includes the
-  patched Photino library, otherwise the managed bridge.
+- **Automatico**: uses the native webview on Windows, or on macOS when the
+  patched Photino library is present; otherwise the managed bridge.
 - **Bridge**: asks the instance for a short-lived one-time ticket and downloads
   it in the desktop process. This works on every platform and keeps the app
   responsive while the server is slow.
-- **Nativo**: lets the macOS webview handle server attachments directly. It is
-  available only when the optional patched native library is present; generated
-  API results still use the bridge.
+- **Nativo**: lets Windows WebView2 or the patched macOS webview handle server
+  attachments directly. It is available only when the platform supports it;
+  generated API results still use the bridge.
 
 The desktop runs downloads in the background, shows queued/running/completed
 state and sends a native notification at the end. A slow server or a large file

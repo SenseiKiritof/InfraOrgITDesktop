@@ -4,10 +4,9 @@ using Photino.NET;
 namespace InfraOrgIt.Desktop.Downloads;
 
 /// <summary>
-/// Opt-in macOS Photino.Native replacement with WKDownload support. The
-/// patched universal dylib is built from native/photino-download and shipped
-/// next to the app; when it is absent the managed bridge remains the only
-/// download route.
+/// Registers the patched macOS Photino.Native for WKDownload support. Windows
+/// advertises native webview downloads separately; Linux keeps the managed
+/// bridge until its WebKitGTK path is verified.
 /// </summary>
 internal static class NativeDownloadSupport
 {

@@ -123,11 +123,10 @@ The desktop app now implements this opt-in path:
 
 - `NativeDownloadSupport.TryRegister()` loads
   `AppContext.BaseDirectory/native/Photino.Native.dylib` before the first
-  `PhotinoWindow` and returns false on Windows/Linux or when the file is
-  missing.
-- `DownloadManager.NativeDownloadAvailable` is set from that result; the
-  capability message therefore advertises native downloads only on a macOS
-  build that actually loaded the patch.
+  `PhotinoWindow`; it returns false on Linux or when the file is missing.
+- `DownloadManager.NativeDownloadAvailable` is set from that result, with
+  Windows WebView2 enabled separately; the capability message advertises native
+  downloads on Windows and on a macOS build that actually loaded the patch.
 - `scripts/publish.sh` copies the dylib into `native/` and signs it with the
   Developer ID before signing the app bundle.
 - `publish.yml` runs `native/photino-download/build.sh` on macOS.

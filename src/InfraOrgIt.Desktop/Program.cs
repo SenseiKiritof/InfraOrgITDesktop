@@ -37,7 +37,7 @@ internal static class Program
         _settingsStore = new SettingsStore(SettingsStore.DefaultPath());
         _settings = _settingsStore.Load();
         DownloadManager.SetNativeDownloadAvailable(
-            NativeDownloadSupport.TryRegister());
+            OperatingSystem.IsWindows() || NativeDownloadSupport.TryRegister());
         var children = new List<PhotinoWindow>();
 
         _manager = new PhotinoWindow()

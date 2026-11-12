@@ -98,10 +98,11 @@ advertises whether signed ticket URLs are enabled.
   `DownloadManager` streams the ticket URL to a temporary `.part` file and
   renames it. Downloads run in background tasks with at most two concurrent
   slots.
-- `native`: the macOS webview saves the attachment. It needs the patched
-  `Photino.Native` built from `native/photino-download`; the app registers it
-  through `NativeLibrary.SetDllImportResolver` only when the dylib is next to
-  the executable. The patch is opt-in (`PHOTINO_MAC_DOWNLOADS=1`) and does not
+- `native`: Windows WebView2 or the patched macOS webview saves the
+  attachment. On macOS it needs the patched `Photino.Native` built from
+  `native/photino-download`; the app registers it through
+  `NativeLibrary.SetDllImportResolver` only when the dylib is next to the
+  executable. The patch is opt-in (`PHOTINO_MAC_DOWNLOADS=1`) and does not
   cover blob URLs, so API results keep using the managed bridge.
 - `auto`: native when the patched library was registered, otherwise bridge.
 
