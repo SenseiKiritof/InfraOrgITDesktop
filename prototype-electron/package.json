@@ -1,0 +1,16 @@
+{
+  "name": "infraorgit-desktop-electron-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron prototype for the InfraOrgIT desktop shell",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "PROTO_TEST=1 electron . --disable-gpu",
+    "tunnel-test": "node test/tunnel-test.js"
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  }
+}
