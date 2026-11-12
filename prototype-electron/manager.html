@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>InfraOrgIT Desktop</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">Prototipo Electron</p>
+      <h1>InfraOrgIT Desktop</h1>
+      <p class="subtitle">
+        Istanze separate, webview Chromium e tunnel SSH con l’agente di sistema.
+      </p>
+    </header>
+
+    <main>
+      <section class="card" aria-labelledby="add-title">
+        <h2 id="add-title">Aggiungi un’istanza</h2>
+        <form id="add-form">
+          <label>
+            Nome
+            <input id="name" maxlength="80" placeholder="Produzione" required />
+          </label>
+          <label>
+            URL
+            <input id="url" type="url" placeholder="https://infra.example.com" required />
+          </label>
+          <button type="submit">Aggiungi</button>
+        </form>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section aria-labelledby="instances-title">
+        <div class="section-header">
+          <h2 id="instances-title">Istanze</h2>
+          <span id="count" class="count"></span>
+        </div>
+        <p id="empty" class="empty" hidden>Nessuna istanza configurata.</p>
+        <ul id="instances" class="instances"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Tunnel e multi-server</h2>
+        <p class="hint">
+          Apri un’istanza e vai su <strong>Tunnel attivi</strong> per caricare
+          il token personale, vedere i server dell’allowlist e avviare tunnel
+          Local/Dynamic/Remote. Ogni istanza ha cookie e sessione separati.
+        </p>
+      </section>
+    </main>
+
+    <script src="manager.js"></script>
+  </body>
+</html>
