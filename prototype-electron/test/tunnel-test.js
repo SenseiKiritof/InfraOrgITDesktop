@@ -33,6 +33,32 @@ assert(args.includes("127.0.0.1:8081:127.0.0.1:8081"));
 assert(args.includes("-J"));
 assert(args.includes("bastion@10.0.0.5:22"));
 
+const dynamic = buildSshArgs(
+  server,
+  null,
+  { id: 8, mode: "Dynamic", name: "socks", kind: "Tcp" },
+  1080,
+);
+assert(dynamic.includes("-D"));
+assert(dynamic.includes("127.0.0.1:1080"));
+
+const remote = buildSshArgs(
+  server,
+  null,
+  {
+    id: 9,
+    mode: "Remote",
+    name: "remote",
+    kind: "Tcp",
+    remotePort: 9000,
+    targetHost: "127.0.0.1",
+    targetPort: 8081,
+  },
+  null,
+);
+assert(remote.includes("-R"));
+assert(remote.includes("9000:127.0.0.1:8081"));
+
 const manager = new TunnelManager(() => {});
 const started = manager.start({
   id: "test-1",
