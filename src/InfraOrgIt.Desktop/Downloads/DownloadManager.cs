@@ -16,11 +16,14 @@ namespace InfraOrgIt.Desktop.Downloads;
 public sealed class DownloadManager : IDisposable
 {
     /// <summary>
-    /// Single feature switch for the native download bridge. A separate native
-    /// patch will expose <c>nativeDownload</c>; until then the app advertises
-    /// the managed bridge only.
+    /// True only when the macOS app loaded the patched Photino.Native with
+    /// WKDownload support. It stays false on Windows/Linux and on macOS when
+    /// the optional native library is absent.
     /// </summary>
-    public const bool NativeDownloadAvailable = false;
+    public static bool NativeDownloadAvailable { get; private set; }
+
+    internal static void SetNativeDownloadAvailable(bool available) =>
+        NativeDownloadAvailable = available;
 
     /// <summary>Small blobs are handed over as base64; larger files stream.</summary>
     public const int MaxBlobBytes = 8 * 1024 * 1024;
