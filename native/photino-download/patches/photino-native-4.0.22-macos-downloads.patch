@@ -15,10 +15,10 @@ index f0329ad..52a05a4 100644
 \ No newline at end of file
 +#endif
 diff --git a/Photino.Native/Photino.Mac.NavigationDelegate.mm b/Photino.Native/Photino.Mac.NavigationDelegate.mm
-index 9ae7f1c..8e5a466 100644
+index 9ae7f1c..0f75c5f 100644
 --- a/Photino.Native/Photino.Mac.NavigationDelegate.mm
 +++ b/Photino.Native/Photino.Mac.NavigationDelegate.mm
-@@ -1,8 +1,326 @@
+@@ -1,8 +1,307 @@
  #ifdef __APPLE__
  #import "Photino.Mac.NavigationDelegate.h"
  
@@ -30,8 +30,7 @@ index 9ae7f1c..8e5a466 100644
 +// file behaves exactly like upstream v4.0.22.
 +//
 +// Scope: top-level navigations whose response is a download (Content-
-+// Disposition: attachment, a MIME type WebKit cannot render, or a navigation
-+// action that WebKit marks as a download, e.g. <a download>).
++// Disposition: attachment or a MIME type WebKit cannot render).
 +//
 +// Blob URLs have no HTTP response, so a direct blob: navigation never becomes a
 +// WKDownload here. A blob URL used by an <a download> action can work (WebKit
@@ -283,24 +282,6 @@ index 9ae7f1c..8e5a466 100644
 +}
 +
 +- (void)webView:(WKWebView *)webView
-+        decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
-+        decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
-+{
-+    if (@available(macOS 11.3, *))
-+    {
-+        if (navigationAction.shouldPerformDownload)
-+        {
-+            // No URL in the log: it may be a signed ticket URL.
-+            PhotinoDownloadLog(@"navigation action requests download");
-+            decisionHandler(WKNavigationActionPolicyDownload);
-+            return;
-+        }
-+    }
-+
-+    decisionHandler(WKNavigationActionPolicyAllow);
-+}
-+
-+- (void)webView:(WKWebView *)webView
 +        decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
 +        decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
 +{
@@ -345,7 +326,7 @@ index 9ae7f1c..8e5a466 100644
      - (void)webView:(WKWebView *)webView 
          didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
          completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler {
-@@ -22,4 +340,4 @@ - (void)webView:(WKWebView *)webView
+@@ -22,4 +321,4 @@ - (void)webView:(WKWebView *)webView
          }
  
  @end
