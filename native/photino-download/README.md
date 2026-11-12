@@ -1,8 +1,9 @@
 # Photino.Native 4.0.22 — macOS downloads (option B)
 
-**Status: experimental, local-only native patch. Not wired into the desktop
-build and not enabled by default.** This directory exists so the desktop
-owner can review and opt in behind a macOS-only feature flag.
+**Status: opt-in macOS native patch, wired behind a runtime resolver. The app
+only advertises native downloads when the patched dylib is next to the
+executable; otherwise it keeps the managed bridge.** The dylib is built by
+`publish.yml` or by `native/photino-download/build.sh`; it is not committed.
 
 Upstream: [`tryphotino/Photino.Native`](https://github.com/tryphotino/Photino.Native)
 tag `v4.0.22`, commit `3ba4b937d6337b5c58344445db08a5a9a63f07c8`.
@@ -111,8 +112,35 @@ sha256: 7bd012e1cf9578b2e548bb0c9d6822c8e8d480bcd9e2b3f820341282ae05875e
 ```
 
 The SHA changes with the Xcode/SDK used; do not treat it as a release hash.
-The binary is intentionally not committed: the repo has no native-asset
-convention, and this is an experiment. `dist/` is ignored.
+The binary is intentionally not committed: `publish.yml` builds it on each
+macOS package job, and `scripts/publish.sh` copies and signs it into the app
+bundle. `dist/` is ignored. A local `dotnet run` uses the dylib only when
+`build.sh` has produced it.
+
+## Integration
+
+The desktop app now implements this opt-in path:
+
+- `NativeDownloadSupport.TryRegister()` loads
+  `AppContext.BaseDirectory/native/Photino.Native.dylib` before the first
+  `PhotinoWindow` and returns false on Windows/Linux or when the file is
+  missing.
+- `DownloadManager.NativeDownloadAvailable` is set from that result; the
+  capability message therefore advertises native downloads only on a macOS
+  build that actually loaded the patch.
+- `scripts/publish.sh` copies the dylib into `native/` and signs it with the
+  Developer ID before signing the app bundle.
+- `publish.yml` runs `native/photino-download/build.sh` on macOS.
+- The web app keeps using the blob bridge for generated API results; the
+  native route is for server attachment responses.
+
+### Remaining integration checks
+
+- Validate the interactive `NSSavePanel` on macOS 13/14/15.
+- Validate the x86_64 slice on Intel/Rosetta.
+- Rebuild and rerun the harness after every Photino.Native upgrade.
+- Signing/notarization must include the dylib; `codesign --verify --deep
+  --strict` and the notarization ticket are required on a clean machine.
 
 ## Test
 
@@ -164,62 +192,6 @@ stock NuGet native asset untouched, a
 loads this dylib from a local `native/` directory produced the same PASS. That
 is the recommended opt-in mechanism.
 
-## Integration note — opt-in, macOS only
-
-Do **not** flip the app's capability globally. The existing
-`DownloadManager.NativeDownloadAvailable` is a `const false` and is owned by the
-desktop agent; enabling it on Windows/Linux would advertise a route that this
-patch does not implement.
-
-1. Ship `Photino.Native.dylib` next to the macOS app (for example
-   `Contents/MacOS/native/Photino.Native.dylib` or a `native/` folder under the
-   publish directory). Keep it in the distribution only for macOS.
-2. Register a P/Invoke resolver before the first `PhotinoWindow` is created,
-   behind an explicit feature flag and platform check:
-
-   ```csharp
-   using System.Reflection;
-   using System.Runtime.InteropServices;
-   using Photino.NET;
-
-   internal static class PatchedPhotinoNative
-   {
-       public static bool TryRegister(string path)
-       {
-           if (!OperatingSystem.IsMacOS() || !File.Exists(path))
-               return false;
-
-           NativeLibrary.SetDllImportResolver(
-               typeof(PhotinoWindow).Assembly,
-               (name, _, _) => name == "Photino.Native"
-                   ? NativeLibrary.Load(path)
-                   : IntPtr.Zero);
-           return true;
-       }
-   }
-   ```
-
-   Call it once, before `new PhotinoWindow()`. `SetDllImportResolver` can only
-   be called once per assembly. The resolver rehearsal above verifies this path
-   with Photino.NET 4.0.16.
-3. Only when registration succeeded and the feature flag is on, advertise the
-   native route (`NativeDownloadAvailable` or a macOS-specific capability).
-   Keep `NativeDownloadAvailable = false` as the default. This is the only
-   change needed on the web side: `resolveDesktopDownloadRoute` already returns
-   `native` and `FileBrowserModal` already navigates to the URL.
-4. Keep the bridge route for blob/API result downloads. The native route saves
-   server attachments only.
-5. Signing: the locally built dylib is unsigned. When bundling, sign it with
-   the Developer ID and hardened runtime before the app is signed, then verify
-   with `codesign --verify --deep --strict` and notarize the whole app as
-   usual. `publish.sh` currently signs with `--deep`; adding an explicit dylib
-   signature is safer and reviewable.
-6. Single-file publish: the app uses
-   `PublishSingleFile`/`IncludeNativeLibrariesForSelfExtract`. The resolver
-   approach is deliberate: copying a file over the NuGet asset before bundling
-   requires removing the resolved native item from MSBuild and needs its own
-   publish verification. Copy the local dylib next to the executable instead.
-
 ### UX trade-off
 
 Downloads that take the native route show a native save panel and then save
@@ -270,8 +242,7 @@ native/photino-download/
 
 ## Next step
 
-Review the patch, run `build.sh` + `test/run.sh` on the desktop CI macOS image
-and on the oldest supported macOS, then decide whether to:
-1. ship the dylib + resolver behind a macOS-only flag and enable the native
-   route, or
-2. keep the managed bridge as the only route and archive this experiment.
+The patch is wired into the opt-in desktop path. Before release, run
+`build.sh` + `test/run.sh` and validate the interactive save panel on the
+oldest supported macOS and the x86_64 slice; then verify the signed/notarized
+bundle on a clean machine.
