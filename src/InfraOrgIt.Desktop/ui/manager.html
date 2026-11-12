@@ -51,7 +51,17 @@
       <section aria-labelledby="instances-title">
         <div class="section-header">
           <h2 id="instances-title">Istanze</h2>
-          <span id="count" class="count"></span>
+          <div class="header-tools">
+            <label class="inline-select" for="download-mode">
+              Download
+              <select id="download-mode">
+                <option value="auto">Automatico</option>
+                <option value="bridge">Bridge</option>
+                <option value="native">Nativo</option>
+              </select>
+            </label>
+            <span id="count" class="count"></span>
+          </div>
         </div>
         <p id="empty" class="empty" hidden>
           Nessuna istanza configurata. Aggiungine una per iniziare.

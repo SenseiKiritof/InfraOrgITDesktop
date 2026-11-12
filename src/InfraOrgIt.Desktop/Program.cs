@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
 using InfraOrgIt.Desktop.Auth;
+using InfraOrgIt.Desktop.Downloads;
 using InfraOrgIt.Desktop.Instances;
+using InfraOrgIt.Desktop.Settings;
 using InfraOrgIt.Desktop.Tunnels;
 using InfraOrgIt.Desktop.Update;
 using Photino.NET;
@@ -16,8 +18,11 @@ internal static class Program
     private static PhotinoWindow? _manager;
     private static TunnelManager? _tunnels;
     private static UpdateChecker? _updates;
-    private static UpdateDownloader? _downloads;
+    private static UpdateDownloader? _updateDownloads;
     private static UpdateInstaller? _installer;
+    private static DownloadManager? _fileDownloads;
+    private static SettingsStore? _settingsStore;
+    private static DesktopSettings _settings = new();
     private static UpdateCheckResult? _latestRelease;
     private static UpdateDownloadResult? _lastDownload;
     private static readonly UpdateInstallGuard _installGuard = new();
@@ -27,6 +32,8 @@ internal static class Program
     private static void Main()
     {
         var store = new InstanceStore(InstanceStore.DefaultPath());
+        _settingsStore = new SettingsStore(SettingsStore.DefaultPath());
+        _settings = _settingsStore.Load();
         var children = new List<PhotinoWindow>();
 
         _manager = new PhotinoWindow()
@@ -39,6 +46,7 @@ internal static class Program
                     (PhotinoWindow)sender!, message, store, children))
             .RegisterWindowClosingHandler((_, _) =>
             {
+                _fileDownloads?.CancelAll();
                 _tunnels?.StopAll();
                 foreach (var child in children.ToArray())
                     child.Close();
@@ -58,9 +66,11 @@ internal static class Program
         // instances, never to the release lookup or the download.
         _updates = new UpdateChecker(
             new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
-        _downloads = new UpdateDownloader(
+        _updateDownloads = new UpdateDownloader(
             new HttpClient { Timeout = TimeSpan.FromMinutes(10) });
         _installer = new UpdateInstaller();
+        _fileDownloads = new DownloadManager(
+            CreateHttpClient(TimeSpan.FromMinutes(30)));
 
 #if DEBUG
         _manager.SetDevToolsEnabled(true);
@@ -69,7 +79,7 @@ internal static class Program
         _manager.WaitForClose();
     }
 
-    private static HttpClient CreateHttpClient()
+    private static HttpClient CreateHttpClient(TimeSpan? timeout = null)
     {
         var handler = new HttpClientHandler();
         if (Environment.GetEnvironmentVariable("INFRAORGIT_INSECURE_TLS") == "1")
@@ -78,7 +88,10 @@ internal static class Program
                 HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
         }
 
-        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        return new HttpClient(handler)
+        {
+            Timeout = timeout ?? TimeSpan.FromSeconds(20)
+        };
     }
 
     private static void HandleMessage(
@@ -157,6 +170,21 @@ internal static class Program
                     _ = InstallUpdateAsync();
                     break;
 
+                case "settings.get":
+                    SendSettings(window);
+                    break;
+
+                case "settings.save":
+                    var savedSettings = _settingsStore?.Save(
+                        new DesktopSettings
+                        {
+                            DownloadMode = ReadDownloadMode(root)
+                        });
+                    if (savedSettings is not null)
+                        _settings = savedSettings;
+                    SendSettings(window);
+                    break;
+
                 case "open-external":
                     OpenExternal(window, root);
                     break;
@@ -207,6 +235,171 @@ internal static class Program
             Send(window, new { type = "error", message = exception.Message });
         }
     }
+
+    /// <summary>
+    /// Handles only the desktop bridge subset for an instance window. Other
+    /// messages belong to the instance SPA and are deliberately ignored, so a
+    /// child page can never drive the manager or arbitrary native actions.
+    /// </summary>
+    private static void HandleInstanceMessage(PhotinoWindow child, string message)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(message);
+            var root = document.RootElement;
+            var type = root.TryGetProperty("type", out var typeElement)
+                ? typeElement.GetString()
+                : null;
+
+            switch (type)
+            {
+                case "desktop.capabilities":
+                    TrySend(child, new
+                    {
+                        type = "desktop.capabilities",
+                        downloadMode = DownloadModeNames.ToWireValue(
+                            _settings.DownloadMode),
+                        nativeDownload = DownloadManager.NativeDownloadAvailable
+                    });
+                    break;
+
+                case "desktop.download":
+                    QueueDownload(child, root);
+                    break;
+
+                case "desktop.download.blob":
+                    QueueBlobDownload(child, root);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ArgumentException or
+            InvalidOperationException)
+        {
+            TrySend(child, new
+            {
+                type = "desktop.download.status",
+                state = DownloadStates.Failed,
+                message = "Richiesta di download non valida."
+            });
+        }
+    }
+
+    private static void QueueDownload(PhotinoWindow child, JsonElement root)
+    {
+        var manager = _fileDownloads;
+        if (manager is null)
+            return;
+
+        _ = manager.EnqueueAsync(
+            new DownloadRequest(
+                OptionalString(root, "url") ?? "",
+                OptionalString(root, "filename"),
+                OptionalString(root, "id")),
+            (title, defaultPath) => PickSavePath(child, title, defaultPath),
+            status => SendDownloadStatus(child, status),
+            (title, body) => TryNotify(child, title, body));
+    }
+
+    private static void QueueBlobDownload(PhotinoWindow child, JsonElement root)
+    {
+        var manager = _fileDownloads;
+        if (manager is null)
+            return;
+
+        // The mime value is advisory: the native save dialog decides the
+        // extension and no content is ever executed.
+        _ = manager.EnqueueBlobAsync(
+            OptionalString(root, "filename"),
+            OptionalString(root, "base64"),
+            (title, defaultPath) => PickSavePath(child, title, defaultPath),
+            status => SendDownloadStatus(child, status),
+            OptionalString(root, "id"),
+            (title, body) => TryNotify(child, title, body));
+    }
+
+    private static async Task<string?> PickSavePath(
+        PhotinoWindow child,
+        string title,
+        string defaultPath)
+    {
+        try
+        {
+            return await child.ShowSaveFileAsync(title, defaultPath);
+        }
+        catch (Exception exception) when (
+            exception is ApplicationException or InvalidOperationException or
+            System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    private static void SendDownloadStatus(
+        PhotinoWindow child,
+        DownloadStatus status) =>
+        TrySend(child, new
+        {
+            type = "desktop.download.status",
+            state = status.State,
+            status = status.State,
+            fileName = status.FileName,
+            path = status.Path,
+            message = status.Message,
+            id = status.Id
+        });
+
+    private static void TryNotify(PhotinoWindow child, string title, string body)
+    {
+        try
+        {
+            child.SendNotification(title, body);
+        }
+        catch (Exception)
+        {
+            // Notifications are optional and may be unavailable.
+        }
+    }
+
+    private static void TrySend(PhotinoWindow window, object payload)
+    {
+        try
+        {
+            Send(window, payload);
+        }
+        catch (Exception exception) when (
+            exception is ApplicationException or InvalidOperationException)
+        {
+            // The instance window may close while a download finishes.
+        }
+    }
+
+    private static string? OptionalString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var element) &&
+        element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+
+    private static DownloadMode ReadDownloadMode(JsonElement root)
+    {
+        var value = root.TryGetProperty("downloadMode", out var element)
+            ? element.GetString()
+            : null;
+        if (!DownloadModeNames.TryParse(value, out var mode))
+            throw new ArgumentException("Modalità di download non valida.");
+        return mode;
+    }
+
+    private static void SendSettings(PhotinoWindow window) =>
+        Send(window, new
+        {
+            type = "settings",
+            downloadMode = DownloadModeNames.ToWireValue(_settings.DownloadMode),
+            nativeDownload = DownloadManager.NativeDownloadAvailable
+        });
 
     private static void OpenVerification(PhotinoWindow window, JsonElement root)
     {
@@ -305,7 +498,7 @@ internal static class Program
     /// </summary>
     private static async Task DownloadUpdateAsync(bool confirmed)
     {
-        var downloader = _downloads;
+        var downloader = _updateDownloads;
         var release = _latestRelease;
         _lastDownload = null;
         if (downloader is null || release is null)
@@ -492,6 +685,11 @@ internal static class Program
             .SetSize(1280, 860)
             .SetUseOsDefaultLocation(false)
             .Center()
+            // Completion notifications are best effort; the bridge still
+            // reports every state through the desktop.download.status message.
+            .SetNotificationsEnabled(true)
+            .RegisterWebMessageReceivedHandler((sender, message) =>
+                HandleInstanceMessage((PhotinoWindow)sender!, message))
             .RegisterWindowClosingHandler((sender, _) =>
             {
                 children.Remove((PhotinoWindow)sender);

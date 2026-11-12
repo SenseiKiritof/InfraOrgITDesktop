@@ -6,6 +6,7 @@
   const list = document.querySelector("#instances");
   const empty = document.querySelector("#empty");
   const count = document.querySelector("#count");
+  const downloadModeSelect = document.querySelector("#download-mode");
   const restoreStatus = document.querySelector("#restore-status");
   const restoreMessage = document.querySelector("#restore-message");
   const restoreClear = document.querySelector("#restore-clear");
@@ -473,6 +474,15 @@
       case "opened":
         setStatus("Istanza aperta in una nuova finestra.");
         break;
+      case "settings":
+        if (
+          message.downloadMode === "auto" ||
+          message.downloadMode === "bridge" ||
+          message.downloadMode === "native"
+        ) {
+          downloadModeSelect.value = message.downloadMode;
+        }
+        break;
       case "error":
         adding = false;
         updateCheck.disabled = false;
@@ -838,6 +848,10 @@
 
   tunnelClose.addEventListener("click", closeTunnelPanel);
 
+  downloadModeSelect.addEventListener("change", () => {
+    send({ type: "settings.save", downloadMode: downloadModeSelect.value });
+  });
+
   restoreClear.addEventListener("click", () => {
     restoreStatus.hidden = true;
     restoreMessage.textContent = "";
@@ -851,4 +865,5 @@
 
   window.external.receiveMessage(onMessage);
   send({ type: "list" });
+  send({ type: "settings.get" });
 })();
