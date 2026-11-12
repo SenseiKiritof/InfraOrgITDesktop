@@ -12,7 +12,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
 ## What you can do
 
 - **Several instances, separate windows.** Keep production, staging and a lab
-  open at the same time; each window has its own session and cookies.
+  open at the same time. Each window keeps its own navigation and session
+  state; on Windows each instance also gets a separate webview data folder.
+  macOS and Linux still share the webview data store, so two instances on the
+  same host can share the login cookie.
 - **Tunnels with your SSH agent.** Open `ssh -L` (local), `-D` (SOCKS) and
   `-R` (remote) forwards, including jump-host chains supplied by the instance.
 - **Services per server.** The tunnel panel lists the server's deployments and
@@ -75,6 +78,24 @@ with `ssh-add` before opening a tunnel; the app never reads private keys.
 
 The panel shows the active tunnels and their live state. The same sessions are
 visible to the team on the instance's **Tunnels** page.
+
+## Downloads
+
+The manager's **Download** setting chooses how files from an instance are
+saved:
+
+- **Automatico**: uses the native macOS webview when this build includes the
+  patched Photino library, otherwise the managed bridge.
+- **Bridge**: asks the instance for a short-lived one-time ticket and downloads
+  it in the desktop process. This works on every platform and keeps the app
+  responsive while the server is slow.
+- **Nativo**: lets the macOS webview handle server attachments directly. It is
+  available only when the optional patched native library is present; generated
+  API results still use the bridge.
+
+The desktop runs downloads in the background, shows queued/running/completed
+state and sends a native notification at the end. A slow server or a large file
+never blocks the app window.
 
 ## Security
 
