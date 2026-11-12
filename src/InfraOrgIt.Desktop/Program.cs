@@ -881,11 +881,6 @@ internal static class Program
                 return false;
             });
 
-        // WKWebView disables the Fullscreen API unless the preference is set.
-        if (OperatingSystem.IsMacOS())
-            child.SetBrowserControlInitParameters(
-                "{\"elementFullscreenEnabled\":true}");
-
         // WebView2 keeps its data store in %LocalAppData%\Photino by default;
         // give every instance its own directory so same-host sessions do not
         // overwrite each other.

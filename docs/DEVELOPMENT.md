@@ -84,9 +84,10 @@ The flag now applies both to the tunnel `HttpClient` and to the instance
 webview. It disables certificate validation for every instance opened in that
 run, so do not use it in a packaged install or on a shared host.
 
-On macOS the child webview enables the HTML Fullscreen API through
-`elementFullscreenEnabled`; on Windows and Linux the webview default already
-supports it.
+The fullscreen API in the macOS child window is left at the Photino
+default. Forcing `elementFullscreenEnabled` through
+`SetBrowserControlInitParameters` made child windows stop navigating in
+Photino 4.0.16, so the desktop does not enable it.
 
 ### Desktop download modes
 
