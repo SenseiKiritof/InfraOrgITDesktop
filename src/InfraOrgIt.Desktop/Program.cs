@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using InfraOrgIt.Desktop.Auth;
 using InfraOrgIt.Desktop.Downloads;
@@ -34,6 +36,8 @@ internal static class Program
         var store = new InstanceStore(InstanceStore.DefaultPath());
         _settingsStore = new SettingsStore(SettingsStore.DefaultPath());
         _settings = _settingsStore.Load();
+        DownloadManager.SetNativeDownloadAvailable(
+            NativeDownloadSupport.TryRegister());
         var children = new List<PhotinoWindow>();
 
         _manager = new PhotinoWindow()
@@ -685,6 +689,9 @@ internal static class Program
             .SetSize(1280, 860)
             .SetUseOsDefaultLocation(false)
             .Center()
+            // The documented local-instance escape hatch must also cover the
+            // instance webview, not only the tunnel HttpClient.
+            .SetIgnoreCertificateErrorsEnabled(IgnoreCertificateErrors())
             // Completion notifications are best effort; the bridge still
             // reports every state through the desktop.download.status message.
             .SetNotificationsEnabled(true)
@@ -694,11 +701,42 @@ internal static class Program
             {
                 children.Remove((PhotinoWindow)sender);
                 return false;
-            })
-            .Load(instance.Url);
+            });
+
+        // WKWebView disables the Fullscreen API unless the preference is set.
+        if (OperatingSystem.IsMacOS())
+            child.SetBrowserControlInitParameters(
+                "{\"elementFullscreenEnabled\":true}");
+
+        // WebView2 keeps its data store in %LocalAppData%\Photino by default;
+        // give every instance its own directory so same-host sessions do not
+        // overwrite each other.
+        if (OperatingSystem.IsWindows())
+            child.SetTemporaryFilesPath(InstanceDataPath(instance.Url));
+
+        child.Load(instance.Url);
 
         children.Add(child);
         child.WaitForClose();
+    }
+
+    private static bool IgnoreCertificateErrors() =>
+        string.Equals(
+            Environment.GetEnvironmentVariable("INFRAORGIT_INSECURE_TLS"),
+            "1",
+            StringComparison.Ordinal);
+
+    private static string InstanceDataPath(string url)
+    {
+        var hash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(url)))[..16].ToLowerInvariant();
+        var path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "InfraOrgIT",
+            "webview",
+            hash);
+        Directory.CreateDirectory(path);
+        return path;
     }
 
     private static IReadOnlyList<Instance> SafeLoad(InstanceStore store)

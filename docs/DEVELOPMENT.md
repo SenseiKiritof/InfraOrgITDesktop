@@ -13,7 +13,10 @@ runtime is bundled, the OS webview is used (WKWebView, WebView2, WebKitGTK).
 
 - Multi-instance manager: add, remove and open installations; the list is
   stored per user in `instances.json`.
-- One window per open instance, so sessions and cookies stay independent.
+- One window per open instance, so navigation and session state stay
+  independent. On Windows each child gets its own webview data folder; on
+  macOS and Linux Photino 4.0.16 shares the webview data store, so two
+  instances on the same host can share the login cookie.
 - Tunnel manager: sign in with Keycloak through the OAuth 2.0 device grant
   (PKCE S256) or paste a personal token with `tunnels:operate`, load the
   allowlist from the instance and open `ssh -L`, `-D` or `-R` forwards through
@@ -76,6 +79,36 @@ For a local instance with the self-signed certificate:
 ```bash
 INFRAORGIT_INSECURE_TLS=1 dotnet run --project src/InfraOrgIt.Desktop
 ```
+
+The flag now applies both to the tunnel `HttpClient` and to the instance
+webview. It disables certificate validation for every instance opened in that
+run, so do not use it in a packaged install or on a shared host.
+
+On macOS the child webview enables the HTML Fullscreen API through
+`elementFullscreenEnabled`; on Windows and Linux the webview default already
+supports it.
+
+### Desktop download modes
+
+The manager stores `downloadMode` in `settings.json` (`auto`, `bridge`,
+`native`). The SPA asks the native process for its capabilities; the server
+advertises whether signed ticket URLs are enabled.
+
+- `bridge`: `POST /api/desktop/downloads/tickets`, then the native
+  `DownloadManager` streams the ticket URL to a temporary `.part` file and
+  renames it. Downloads run in background tasks with at most two concurrent
+  slots.
+- `native`: the macOS webview saves the attachment. It needs the patched
+  `Photino.Native` built from `native/photino-download`; the app registers it
+  through `NativeLibrary.SetDllImportResolver` only when the dylib is next to
+  the executable. The patch is opt-in (`PHOTINO_MAC_DOWNLOADS=1`) and does not
+  cover blob URLs, so API results keep using the managed bridge.
+- `auto`: native when the patched library was registered, otherwise bridge.
+
+`publish.yml` builds the native dylib on macOS, `scripts/publish.sh` copies it
+to `native/` in the app bundle and signs it with the same Developer ID before
+the app signature. A local build without the dylib still advertises the bridge;
+run `native/photino-download/build.sh` to build it.
 
 ### Instance URLs
 
