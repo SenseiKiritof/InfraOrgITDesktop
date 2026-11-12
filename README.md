@@ -7,6 +7,8 @@ private key copied into the app.
 
 ![InfraOrgIT Desktop with three instances, each with Tunnel, Open and Remove actions](docs/screenshots/desktop-manager.png)
 
+The screenshots use fictitious demo instances, servers and tunnels.
+
 ## What you can do
 
 - **Several instances, separate windows.** Keep production, staging and a lab
