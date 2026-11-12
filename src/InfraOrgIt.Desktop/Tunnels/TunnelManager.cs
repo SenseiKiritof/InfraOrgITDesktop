@@ -82,6 +82,7 @@ public sealed class TunnelManager(
     private readonly HashSet<string> _verificationUrls =
         new(StringComparer.Ordinal);
     private CancellationTokenSource? _loginCancellation;
+    private string? _loginUrl;
     private bool _stopping;
     private bool _stateWriteWarned;
 
@@ -99,6 +100,7 @@ public sealed class TunnelManager(
 
     private async Task HandleAsync(string message)
     {
+        string? requestUrl = null;
         try
         {
             using var document = JsonDocument.Parse(message);
@@ -106,6 +108,7 @@ public sealed class TunnelManager(
             var type = root.TryGetProperty("type", out var typeElement)
                 ? typeElement.GetString()
                 : null;
+            requestUrl = OptionalString(root, "url");
 
             switch (type)
             {
@@ -122,6 +125,7 @@ public sealed class TunnelManager(
                     {
                         await RestoreSessionAsync(listUrl, listName);
                     }
+                    Send(new { type = "tunnels.state", items = ActiveItems() });
                     break;
 
                 case "tunnels.restore":
@@ -131,6 +135,7 @@ public sealed class TunnelManager(
                     await RestoreSessionAsync(
                         restoreUrl,
                         RequiredString(root, "name"));
+                    Send(new { type = "tunnels.state", items = ActiveItems() });
                     break;
 
                 case "tunnels.logout":
@@ -147,7 +152,7 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.login.cancel":
-                    CancelLogin();
+                    CancelLogin(OptionalString(root, "url"));
                     break;
 
                 case "tunnels.retries.cancel":
@@ -164,7 +169,9 @@ public sealed class TunnelManager(
                     break;
 
                 case "tunnels.stop":
-                    await StopAsync(RequiredString(root, "id"));
+                    await StopAsync(
+                        RequiredString(root, "id"),
+                        OptionalString(root, "url"));
                     break;
 
                 case "tunnels.forget":
@@ -172,7 +179,12 @@ public sealed class TunnelManager(
                     break;
 
                 default:
-                    Send(new { type = "tunnels.error", message = "Messaggio tunnel non riconosciuto." });
+                    Send(new
+                    {
+                        type = "tunnels.error",
+                        url = requestUrl,
+                        message = "Messaggio tunnel non riconosciuto."
+                    });
                     break;
             }
         }
@@ -182,7 +194,12 @@ public sealed class TunnelManager(
             HttpRequestException or TaskCanceledException or
             TokenStoreException)
         {
-            Send(new { type = "tunnels.error", message = exception.Message });
+            Send(new
+            {
+                type = "tunnels.error",
+                url = requestUrl,
+                message = exception.Message
+            });
         }
     }
 
@@ -199,6 +216,7 @@ public sealed class TunnelManager(
         lock (_gate)
         {
             _loginCancellation = cancellation;
+            _loginUrl = url;
             _verificationUrls.Clear();
         }
 
@@ -285,6 +303,7 @@ public sealed class TunnelManager(
                 if (ReferenceEquals(_loginCancellation, cancellation))
                 {
                     _loginCancellation = null;
+                    _loginUrl = null;
                     _verificationUrls.Clear();
                 }
             }
@@ -488,7 +507,7 @@ public sealed class TunnelManager(
     /// </summary>
     public async Task LogoutAsync(string url)
     {
-        CancelLogin();
+        CancelLogin(url);
         await ClearSessionAsync(url);
         RemovePersistedForUrl(url);
         Send(new
@@ -502,15 +521,27 @@ public sealed class TunnelManager(
 
     /// <summary>
     /// Cancels a running device poll. Called when the tunnel panel closes,
-    /// another instance opens or the app exits.
+    /// another instance opens or the app exits. With a URL, only that
+    /// instance's pending login is cancelled; the manager omission keeps the
+    /// existing global behaviour.
     /// </summary>
-    public void CancelLogin()
+    public void CancelLogin(string? url = null)
     {
         CancellationTokenSource? cancellation;
         lock (_gate)
         {
+            if (url is not null &&
+                !string.Equals(
+                    TunnelStateEntry.NormalizeUrl(_loginUrl),
+                    TunnelStateEntry.NormalizeUrl(url),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             cancellation = _loginCancellation;
             _loginCancellation = null;
+            _loginUrl = null;
             _verificationUrls.Clear();
         }
         cancellation?.Cancel();
@@ -599,7 +630,7 @@ public sealed class TunnelManager(
         token = token.Trim();
         if (token.Length == 0)
         {
-            ReportTargetsError("Inserisci il token personale.", silent);
+            ReportTargetsError(url, "Inserisci il token personale.", silent);
             return;
         }
 
@@ -624,6 +655,7 @@ public sealed class TunnelManager(
         if (!response.IsSuccessStatusCode)
         {
             ReportTargetsError(
+                url,
                 response.StatusCode switch
                 {
                     HttpStatusCode.Unauthorized =>
@@ -640,7 +672,7 @@ public sealed class TunnelManager(
             .ReadFromJsonAsync<TunnelTargetsResponse>(JsonOptions, cancellationToken);
         if (payload is null)
         {
-            ReportTargetsError("Risposta target non valida.", silent);
+            ReportTargetsError(url, "Risposta target non valida.", silent);
             return;
         }
 
@@ -692,12 +724,12 @@ public sealed class TunnelManager(
         }
     }
 
-    private void ReportTargetsError(string message, bool silent)
+    private void ReportTargetsError(string url, string message, bool silent)
     {
         if (silent)
             SendLog("Tunnel salvati: " + message);
         else
-            Send(new { type = "tunnels.error", message });
+            Send(new { type = "tunnels.error", url, message });
     }
 
     /// <summary>
@@ -993,7 +1025,8 @@ public sealed class TunnelManager(
         {
             ReportStartFailure(
                 "Indica un deployment o un servizio tunnel, non entrambi.",
-                automatic);
+                automatic,
+                url);
             return;
         }
 
@@ -1006,7 +1039,7 @@ public sealed class TunnelManager(
             if (!_sessions.TryGetValue(url, out session!))
             {
                 ReportStartFailure(
-                    "Carica prima i target dell'istanza.", automatic);
+                    "Carica prima i target dell'istanza.", automatic, url);
                 return;
             }
 
@@ -1031,7 +1064,8 @@ public sealed class TunnelManager(
                 serviceId is null
                     ? "Target non più disponibile; ricarica i target."
                     : "Servizio tunnel non più disponibile; ricarica i target.",
-                automatic);
+                automatic,
+                session.Url);
             return;
         }
 
@@ -1039,7 +1073,9 @@ public sealed class TunnelManager(
                 server, endpoint, service, localPort, out var spec, out var error))
         {
             ReportStartFailure(
-                error ?? "Configurazione del tunnel non valida.", automatic);
+                error ?? "Configurazione del tunnel non valida.",
+                automatic,
+                session.Url);
             return;
         }
 
@@ -1101,7 +1137,9 @@ public sealed class TunnelManager(
                 session, spec, "error", correlationId,
                 "spawn_failed", ShortErrorDetail(exception.Message));
             ReportStartFailure(
-                $"Avvio di ssh non riuscito: {exception.Message}", automatic);
+                $"Avvio di ssh non riuscito: {exception.Message}",
+                automatic,
+                session.Url);
             return null;
         }
 
@@ -1143,12 +1181,13 @@ public sealed class TunnelManager(
         return tunnel;
     }
 
-    private void ReportStartFailure(string message, bool automatic)
+    private void ReportStartFailure(
+        string message, bool automatic, string? url = null)
     {
         if (automatic)
             SendLog("Avvio automatico non riuscito: " + message);
         else
-            Send(new { type = "tunnels.error", message });
+            Send(new { type = "tunnels.error", url, message });
     }
 
     private static string ActiveMessage(TunnelStartSpec spec) =>
@@ -1161,13 +1200,27 @@ public sealed class TunnelManager(
             _ => $"Tunnel {spec.Name} su 127.0.0.1:{spec.LocalPort} attivo."
         };
 
-    public Task StopAsync(string id)
+    public Task StopAsync(string id) => StopAsync(id, null);
+
+    /// <summary>
+    /// Stops one tunnel. When a URL is supplied the tunnel must belong to that
+    /// instance, so an instance child window cannot stop another one.
+    /// </summary>
+    public Task StopAsync(string id, string? url)
     {
         TunnelProcess? tunnel;
         lock (_gate)
         {
             if (!_active.TryGetValue(id, out tunnel))
                 return Task.CompletedTask;
+            if (url is not null &&
+                !string.Equals(
+                    TunnelStateEntry.NormalizeUrl(tunnel.Session.Url),
+                    TunnelStateEntry.NormalizeUrl(url),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.CompletedTask;
+            }
             tunnel.StopRequested = true;
         }
 
@@ -2053,6 +2106,7 @@ public sealed class TunnelManager(
                 .Select(x => (object)new
                 {
                     id = x.Id,
+                    url = x.Session.Url,
                     instanceName = x.Session.Name,
                     serverName = x.Spec.Server.ServerName,
                     application = x.Spec.Name,
@@ -2074,7 +2128,13 @@ public sealed class TunnelManager(
     /// tunnel. The manager bridge uses it to keep the generic open-external
     /// path from launching arbitrary http addresses.
     /// </summary>
-    public bool IsTunnelOpenUrl(string url)
+    public bool IsTunnelOpenUrl(string url) => IsTunnelOpenUrl(url, null);
+
+    /// <summary>
+    /// True only for a browser URL generated by an active local HTTP(S)
+    /// tunnel. With an instance URL, only that instance's tunnel matches.
+    /// </summary>
+    public bool IsTunnelOpenUrl(string url, string? instanceUrl)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var candidate))
             return false;
@@ -2082,6 +2142,11 @@ public sealed class TunnelManager(
         lock (_gate)
         {
             return _active.Values.Any(x =>
+                (instanceUrl is null ||
+                 string.Equals(
+                     TunnelStateEntry.NormalizeUrl(x.Session.Url),
+                     TunnelStateEntry.NormalizeUrl(instanceUrl),
+                     StringComparison.OrdinalIgnoreCase)) &&
                 x.Spec.OpenUrl is { } open &&
                 Uri.TryCreate(open, UriKind.Absolute, out var expected) &&
                 string.Equals(

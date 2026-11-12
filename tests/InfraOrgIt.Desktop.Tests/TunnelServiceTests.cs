@@ -61,10 +61,38 @@ public sealed class TunnelServiceTests
 
         var openUrl = $"http://127.0.0.1:{port}/login";
         var item = Assert.Single(StateItems(messages));
+        Assert.Equal(InstanceUrl, item.GetProperty("url").GetString());
         Assert.Equal(openUrl, item.GetProperty("openUrl").GetString());
         Assert.True(manager.IsTunnelOpenUrl(openUrl));
+        Assert.True(manager.IsTunnelOpenUrl(openUrl, InstanceUrl));
+        Assert.False(manager.IsTunnelOpenUrl(
+            openUrl, "https://other.example.com"));
 
         manager.StopAll();
+        await WaitForAsync(() => !manager.IsTunnelOpenUrl(openUrl));
+    }
+
+    [Fact]
+    public async Task Stop_with_another_instance_url_leaves_the_tunnel_running()
+    {
+        var port = PortAllocator.FindFree();
+        var socksPort = PortAllocator.FindFree();
+        var handler = new RecordingHandler(
+            _ => Json(TargetsJson(port, socksPort)));
+        var messages = new ConcurrentQueue<object>();
+        var starts = new ConcurrentQueue<ProcessStartInfo>();
+        var manager = CreateManager(handler, messages, starts);
+
+        await manager.LoadTargetsAsync(InstanceUrl, "Prod", "token");
+        await manager.StartAsync(InstanceUrl, 1, null, 10, null);
+        var openUrl = $"http://127.0.0.1:{port}/login";
+        var id = Assert.Single(StateItems(messages))
+            .GetProperty("id").GetString();
+
+        await manager.StopAsync(id!, "https://other.example.com");
+        Assert.True(manager.IsTunnelOpenUrl(openUrl));
+
+        await manager.StopAsync(id!, InstanceUrl);
         await WaitForAsync(() => !manager.IsTunnelOpenUrl(openUrl));
     }
 
