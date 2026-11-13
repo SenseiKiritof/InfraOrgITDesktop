@@ -1366,6 +1366,91 @@ function startTestTunnels() {
   fs.writeFileSync(process.env.FAKE_SSH_LOG, "");
   const instance = instanceStore.list()[0];
   if (!instance) return;
+
+  // The shell test exercises the tunnel creation form without a real
+  // Keycloak device flow: seed an access token and the allowlist payload.
+  desktopAuth.setTokens(
+    instance.url,
+    {
+      accessToken: "test-access-token",
+      refreshToken: "test-refresh-token",
+      expiresAt: Date.now() + 3_600_000,
+    },
+    "session",
+  );
+  desktopAuth.fetchTargets = async (url) =>
+    Array.isArray(runtimeFor(url).targets) ? runtimeFor(url).targets : [];
+  desktopAuth.restore = async () => ({ mode: "silent" });
+  runtimeFor(instance.url).targets = [
+    {
+      serverId: 1,
+      serverName: "demo-app-01",
+      environmentLabel: "Produzione",
+      sshHost: "10.0.0.10",
+      sshPort: 22,
+      username: "demo",
+      jumps: [],
+      targets: [
+        {
+          serverApplicationId: 7,
+          application: "orders-api",
+          version: "1.4.2",
+          targetHost: "127.0.0.1",
+          targetPort: 8080,
+          suggestedLocalPort: 18080,
+        },
+      ],
+      services: [
+        {
+          id: 9,
+          name: "postgres",
+          mode: "Local",
+          kind: "Tcp",
+          enabled: true,
+          autoStart: false,
+          targetHost: "10.0.0.10",
+          targetPort: 5432,
+          localPort: 15433,
+          remotePort: null,
+          openPath: null,
+        },
+      ],
+    },
+    {
+      serverId: 2,
+      serverName: "demo-db-01",
+      environmentLabel: "Staging",
+      sshHost: "10.0.0.20",
+      sshPort: 22,
+      username: "demo",
+      jumps: [],
+      targets: [
+        {
+          serverApplicationId: 8,
+          application: "billing-api",
+          version: "2.0.0",
+          targetHost: "127.0.0.1",
+          targetPort: 9090,
+          suggestedLocalPort: 19080,
+        },
+      ],
+      services: [
+        {
+          id: 10,
+          name: "redis",
+          mode: "Dynamic",
+          kind: "Tcp",
+          enabled: true,
+          autoStart: false,
+          targetHost: null,
+          targetPort: null,
+          localPort: 16379,
+          remotePort: null,
+          openPath: null,
+        },
+      ],
+    },
+  ];
   const demoServer = (name, ip) => ({
     serverId: name === "demo-app-01" ? 1 : 2,
     serverName: name,
@@ -1573,6 +1658,93 @@ async function runTest() {
       "drawer shows the local port",
       drawerState.port,
     );
+
+    const newTunnel = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const details = document.querySelector(".new-tunnel");
+      if (!details) return {missing: true};
+      details.open = true;
+      const search = details.querySelector('input[type="search"]');
+      search.value = "10.0.0.20";
+      search.dispatchEvent(new Event("input", {bubbles: true}));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return {
+        environments: [...details.querySelectorAll(".new-tunnel-env-title")].map((node) => node.textContent),
+        servers: [...details.querySelectorAll(".new-tunnel-server-name")].map((node) => node.textContent),
+        options: [...details.querySelectorAll(".new-tunnel-option")].map((node) => node.textContent),
+        selected: details.dataset.selected,
+        port: details.querySelector('input[type="number"]')?.value || "",
+      };
+    })()`);
+    check(newTunnel.missing !== true, "new tunnel form present");
+    check(
+      newTunnel.environments.length === 1 &&
+        newTunnel.environments[0] === "Staging",
+      "new tunnel groups by environment",
+      JSON.stringify(newTunnel.environments),
+    );
+    check(
+      newTunnel.servers.length === 1 && newTunnel.servers[0] === "demo-db-01",
+      "new tunnel search filters server",
+      JSON.stringify(newTunnel.servers),
+    );
+    check(
+      newTunnel.options.length === 2,
+      "new tunnel search filters services",
+      String(newTunnel.options.length),
+    );
+    check(
+      newTunnel.selected.startsWith("target:2:"),
+      "new tunnel selects a visible result",
+      newTunnel.selected,
+    );
+    check(
+      newTunnel.port === "19080",
+      "new tunnel uses the suggested port",
+      newTunnel.port,
+    );
+
+    const created = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const details = document.querySelector(".new-tunnel");
+      const search = details.querySelector('input[type="search"]');
+      search.value = "orders-api";
+      search.dispatchEvent(new Event("input", {bubbles: true}));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      details.querySelector('.new-tunnel-option[data-value="target:1:7"]')?.click();
+      const port = details.querySelector('input[type="number"]');
+      if (port) port.value = "19090";
+      details.querySelector(".new-tunnel-form .row button")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      return {
+        selected: details.dataset.selected,
+        toast: document.querySelector("#toast")?.textContent || "",
+      };
+    })()`);
+    check(
+      created.selected === "target:1:7",
+      "new tunnel keeps the searched selection",
+      created.selected,
+    );
+    const tunnelCreated = await waitFor(
+      () =>
+        publicState().tunnels.some(
+          (tunnel) => tunnel.localPort === 19090 && tunnel.status === "Active",
+        ),
+      6000,
+    );
+    check(
+      tunnelCreated,
+      "new tunnel started from the searchable form",
+      created.toast,
+    );
+
+    await mainWindow.webContents.executeJavaScript(`(() => {
+      const details = document.querySelector(".new-tunnel");
+      const search = details?.querySelector('input[type="search"]');
+      if (!search) return;
+      search.value = "";
+      search.dispatchEvent(new Event("input", {bubbles: true}));
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await captureScreenshot(mainWindow.webContents, "drawer.png");
 
     activateTab(first.url);

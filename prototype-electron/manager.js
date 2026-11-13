@@ -331,9 +331,15 @@ function captureDrawerDraft() {
   const openDetails = els.drawerBody.querySelector(".new-tunnel[open]");
   if (!openDetails) return null;
   const url = openDetails.dataset.url;
-  const select = openDetails.querySelector("select");
   const port = openDetails.querySelector("input[type=number]");
-  return { url, select: select?.value || "", port: port?.value || "" };
+  const search = openDetails.querySelector('input[type="search"]');
+  return {
+    url,
+    selected: openDetails.dataset.selected || "",
+    port: port?.value || "",
+    query: search?.value || "",
+    open: openDetails.open,
+  };
 }
 
 function renderDrawer() {
@@ -590,10 +596,70 @@ function renderTunnelRow(tunnel) {
   return row;
 }
 
+function tunnelOptionRows(targets) {
+  const rows = [];
+  for (const server of targets) {
+    const serverSearch = [
+      server.serverName,
+      server.environmentLabel,
+      server.sshHost,
+      server.username,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    for (const target of server.targets || []) {
+      rows.push({
+        value: `target:${server.serverId}:${target.serverApplicationId}`,
+        server,
+        kind: "Deployment",
+        label: `${target.application} :${target.targetPort}`,
+        meta: target.version || "",
+        port: target.suggestedLocalPort ?? target.targetPort ?? null,
+        mode: "Local",
+        search: [
+          serverSearch,
+          target.application,
+          target.version || "",
+          target.targetHost || "",
+          target.targetPort || "",
+        ]
+          .join(" ")
+          .toLowerCase(),
+      });
+    }
+    for (const service of server.services || []) {
+      rows.push({
+        value: `service:${server.serverId}:${service.id}`,
+        server,
+        kind: "Servizio",
+        label: service.name,
+        meta: `${service.mode} ${service.kind}`,
+        port: service.localPort ?? service.targetPort ?? null,
+        mode: service.mode,
+        search: [
+          serverSearch,
+          service.name,
+          service.mode,
+          service.kind,
+          service.targetHost || "",
+          service.targetPort || "",
+          service.localPort || "",
+          service.remotePort || "",
+        ]
+          .join(" ")
+          .toLowerCase(),
+      });
+    }
+  }
+  return rows;
+}
+
 function renderNewTunnel(instance) {
   const targets = state.targets?.[instance.url];
   const details = el("details", "new-tunnel");
   details.dataset.url = instance.url;
+  details.dataset.selected = "";
   details.append(el("summary", "", "Nuovo tunnel"));
   const form = el("div", "new-tunnel-form");
 
@@ -609,39 +675,22 @@ function renderNewTunnel(instance) {
     return details;
   }
 
-  const select = el("select");
-  select.setAttribute("aria-label", "Server e servizio del tunnel");
-  for (const server of targets) {
-    const group = el("optgroup");
-    group.label = `${server.serverName} · ${server.environmentLabel || ""}`;
-    for (const target of server.targets || []) {
-      const option = el(
-        "option",
-        "",
-        `Deployment · ${target.application} :${target.targetPort}`,
-      );
-      option.value = `target:${server.serverId}:${target.serverApplicationId}`;
-      option.dataset.server = String(server.serverId);
-      option.dataset.target = String(target.serverApplicationId);
-      option.dataset.port = String(target.suggestedLocalPort || target.targetPort || "");
-      group.append(option);
-    }
-    for (const service of server.services || []) {
-      const option = el(
-        "option",
-        "",
-        `Servizio · ${service.name} (${service.mode} ${service.kind})`,
-      );
-      option.value = `service:${server.serverId}:${service.id}`;
-      option.dataset.server = String(server.serverId);
-      option.dataset.service = String(service.id);
-      option.dataset.mode = service.mode;
-      option.dataset.port = String(service.localPort || service.targetPort || "");
-      group.append(option);
-    }
-    select.append(group);
-  }
-  form.append(select);
+  const rows = tunnelOptionRows(targets);
+  const draft = drawerDraft?.url === instance.url ? drawerDraft : null;
+  let optionButtons = new Map();
+  let selectedValue = "";
+  if (draft?.open) details.open = true;
+
+  const search = el("input");
+  search.type = "search";
+  search.placeholder = "Cerca macchina, ambiente o servizio";
+  search.setAttribute("aria-label", "Cerca macchina, ambiente o servizio");
+  form.append(search);
+
+  const list = el("div", "new-tunnel-options");
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Server e servizio del tunnel");
+  form.append(list);
 
   const row = el("div", "row");
   const port = el("input");
@@ -651,25 +700,130 @@ function renderNewTunnel(instance) {
   port.placeholder = "Porta locale";
   port.setAttribute("aria-label", "Porta locale");
   const start = button("Avvia", "tiny-button", () => {
-    void startTunnel(instance, select.value, port.value);
+    void startTunnel(instance, selectedValue, port.value);
   });
+  start.disabled = true;
   row.append(port, start);
   form.append(row);
 
-  const updatePort = () => {
-    const option = select.selectedOptions[0];
-    port.value = option?.dataset.port || "";
-    port.disabled = option?.dataset.mode === "Remote";
-    if (port.disabled) port.value = "";
+  const visibleRows = () => {
+    const query = search.value.trim().toLowerCase();
+    return query
+      ? rows.filter((item) => item.search.includes(query))
+      : rows;
   };
-  select.addEventListener("change", updatePort);
-  updatePort();
+
+  const applySelection = (value, { keepPort = false } = {}) => {
+    const visible = visibleRows();
+    const previous = selectedValue;
+    const selected =
+      visible.find((item) => item.value === value) || visible[0] || null;
+    selectedValue = selected?.value || "";
+    details.dataset.selected = selectedValue;
+    for (const [optionValue, node] of optionButtons)
+      node.setAttribute(
+        "aria-pressed",
+        String(optionValue === selectedValue),
+      );
+    start.disabled = !selected;
+    if (!selected) {
+      if (!keepPort) {
+        port.value = "";
+        port.disabled = false;
+      }
+      return;
+    }
+    if (!keepPort || selectedValue !== previous) {
+      port.value =
+        selected.port === null || selected.port === undefined
+          ? ""
+          : String(selected.port);
+      port.disabled = selected.mode === "Remote";
+    }
+  };
+
+  const renderOptions = (value, { keepPort = false } = {}) => {
+    const visible = visibleRows();
+    list.replaceChildren();
+    optionButtons = new Map();
+    if (visible.length === 0) {
+      list.append(
+        el(
+          "p",
+          "new-tunnel-empty",
+          "Nessuna macchina o servizio corrisponde alla ricerca.",
+        ),
+      );
+      applySelection("", { keepPort });
+      return;
+    }
+
+    let environment = null;
+    let section = null;
+    let serverId = null;
+    let serverBlock = null;
+    for (const item of visible) {
+      const environmentLabel =
+        item.server.environmentLabel || "Senza ambiente";
+      if (environmentLabel !== environment) {
+        environment = environmentLabel;
+        section = el("section", "new-tunnel-env");
+        section.append(el("h4", "new-tunnel-env-title", environmentLabel));
+        list.append(section);
+        serverId = null;
+      }
+      if (item.server.serverId !== serverId) {
+        serverId = item.server.serverId;
+        serverBlock = el("div", "new-tunnel-server");
+        serverBlock.dataset.serverId = String(serverId);
+        const head = el("div", "new-tunnel-server-head");
+        head.append(
+          el("span", "new-tunnel-server-name", item.server.serverName),
+        );
+        head.append(
+          el("span", "new-tunnel-server-ip", item.server.sshHost || "—"),
+        );
+        serverBlock.append(head);
+        section.append(serverBlock);
+      }
+      const option = el("button", "new-tunnel-option");
+      option.type = "button";
+      option.dataset.value = item.value;
+      option.setAttribute("aria-pressed", "false");
+      option.append(el("span", "new-tunnel-option-kind", item.kind));
+      option.append(el("span", "new-tunnel-option-label", item.label));
+      if (item.meta)
+        option.append(el("span", "new-tunnel-option-meta", item.meta));
+      if (item.port !== null && item.port !== undefined)
+        option.append(el("span", "new-tunnel-option-port", `:${item.port}`));
+      option.addEventListener("click", () => applySelection(item.value));
+      optionButtons.set(item.value, option);
+      serverBlock.append(option);
+    }
+    applySelection(value, { keepPort });
+  };
+
+  search.addEventListener("input", () =>
+    renderOptions(selectedValue, { keepPort: true }),
+  );
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown") return;
+    const first = optionButtons.values().next().value;
+    if (first) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+
+  if (draft?.query) search.value = draft.query;
+  renderOptions(draft?.selected || "");
+  if (draft?.port) {
+    port.value = draft.port;
+    const selected = rows.find((item) => item.value === selectedValue);
+    port.disabled = selected?.mode === "Remote";
+  }
 
   details.append(form);
-  if (drawerDraft?.url === instance.url) {
-    if (drawerDraft.select) select.value = drawerDraft.select;
-    if (drawerDraft.port) port.value = drawerDraft.port;
-  }
   return details;
 }
 
