@@ -21,6 +21,7 @@ const { DesktopAuth } = require("./auth/desktop-auth");
 const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
 const { TunnelManager } = require("./tunnels");
+const { TunnelProjection } = require("./tunnel-projection");
 
 const IS_TEST = process.env.PROTO_TEST === "1";
 const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
@@ -45,6 +46,7 @@ let settingsStore = null;
 let tokenStore = null;
 let desktopAuth = null;
 let tunnels = null;
+let tunnelProjection = null;
 let quitting = false;
 
 if (process.env.DESKTOP_USER_DATA) {
@@ -251,6 +253,48 @@ function broadcastTunnels() {
     sendToView(url, { type: "tunnels.state", items });
   }
   sendState();
+}
+
+async function postTunnelProjection(row, kind, payload) {
+  if (IS_TEST || !row?.url) return false;
+  const instance = instanceStore.get(row.url);
+  if (!instance) return false;
+  const record = recordFor(row.url);
+  const ses = record?.session || sessionFor(instance).session;
+  const fetcher = sessionFetch(ses);
+  let csrf = desktopAuth?.csrfToken(row.url) || "";
+  if (!csrf && desktopAuth) {
+    await desktopAuth
+      .readAccount(row.url, fetcher, { emit: false })
+      .catch(() => null);
+    csrf = desktopAuth.csrfToken(row.url) || "";
+  }
+  if (!csrf) return false;
+
+  const path =
+    kind === "event" ? "/api/tunnels/events" : "/api/tunnels/sessions";
+  try {
+    const response = await fetcher(
+      `${instance.url.replace(/\/$/, "")}${path}`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+          Origin: new URL(instance.url).origin,
+        },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      },
+    );
+    if (!response.ok)
+      console.warn("tunnel projection rejected", response.status, path);
+    return response.ok;
+  } catch (error) {
+    console.warn("tunnel projection failed", error.message);
+    return false;
+  }
 }
 
 function webAuthStatus(url) {
@@ -854,13 +898,16 @@ function registerIpc() {
   handle("manager:auth-cancel", (url) => desktopAuth.cancel(url));
   handle("manager:auth-logout", async (url) => {
     await desktopAuth.logout(url);
+    const snapshot = authSnapshot(url);
     const data = runtimeFor(url);
-    data.targets = null;
-    data.targetsAt = 0;
-    sendWebAuth(url, { forcedStatus: "logout", message: "Sessione tunnel dimenticata." });
+    if (!snapshot.tunnelAccess) {
+      data.targets = null;
+      data.targetsAt = 0;
+    }
+    sendWebAuth(url);
     sendToView(url, { type: "tunnels.state", items: activeTunnels() });
     sendState();
-    return authSnapshot(url);
+    return snapshot;
   });
   handle("manager:auth-open-verification", async (url) => {
     const snapshot = authSnapshot(url);
@@ -1696,6 +1743,38 @@ async function runTest() {
       newTunnel.port,
     );
 
+    const beforeNewService = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const details = document.querySelector(".new-tunnel");
+      const search = details.querySelector('input[type="search"]');
+      search.value = "";
+      search.dispatchEvent(new Event("input", {bubbles: true}));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return details.querySelectorAll(".new-tunnel-option").length;
+    })()`);
+    runtimeFor(first.url).targets[0].services.push({
+      id: 11,
+      name: "backup",
+      mode: "Local",
+      kind: "Tcp",
+      enabled: true,
+      autoStart: false,
+      targetHost: "10.0.0.10",
+      targetPort: 22,
+      localPort: 15434,
+      remotePort: null,
+      openPath: null,
+    });
+    sendState();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const afterNewService = await mainWindow.webContents.executeJavaScript(
+      'document.querySelectorAll(".new-tunnel-option").length',
+    );
+    check(
+      afterNewService === beforeNewService + 1,
+      "new tunnel picks up a new service",
+      `${beforeNewService} -> ${afterNewService}`,
+    );
+
     const created = await mainWindow.webContents.executeJavaScript(`(async () => {
       const details = document.querySelector(".new-tunnel");
       const search = details.querySelector('input[type="search"]');
@@ -1897,7 +1976,11 @@ if (!hasLock) {
         sendState();
       },
     });
-    tunnels = new TunnelManager(() => broadcastTunnels());
+    tunnelProjection = new TunnelProjection({ post: postTunnelProjection });
+    tunnels = new TunnelManager(() => {
+      broadcastTunnels();
+      if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
+    });
 
     seedTestInstances();
     startTestTunnels();
@@ -1931,6 +2014,7 @@ if (!hasLock) {
     quitting = true;
     if (authRenewTimer) clearInterval(authRenewTimer);
     tunnels?.stopAll();
+    tunnelProjection?.dispose();
     desktopAuth?.dispose();
   });
 

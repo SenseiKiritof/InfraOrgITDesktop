@@ -40,7 +40,9 @@ user-facing notes and screenshots.
 - Tunnels: the manager owns the SSH processes; the Web `/tunnels` panel stays
   the per-instance detail. The drawer groups every instance by server, shows
   the local port and active/stopped state, and enforces a duplicate local-port
-  guard before spawning `ssh`.
+  guard before spawning `ssh`. The manager posts start/stop/error and a
+  30-second heartbeat to the instance, so the central `/tunnels` table shows
+  Electron tunnels too.
 - Server anagrafica: the manage dialog lists servers through the instance BFF
   session and opens `/servers/{id}`; the Tunnel services form remains in the
   Web app.
