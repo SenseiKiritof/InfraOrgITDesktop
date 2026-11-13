@@ -1,79 +1,100 @@
 # InfraOrgIT Desktop
 
-InfraOrgIT Desktop opens one or more InfraOrgIT instances from a single
-control-room window. The current Electron shell uses one tab per instance,
-reuses the instance BFF session for tunnel access and inherits the account
-theme. It drives your existing SSH agent, so no private key is copied into the
-app.
+InfraOrgIT Desktop is the Electron shell in
+[`prototype-electron/`](prototype-electron/README.md). It opens one or more
+InfraOrgIT instances from a single control-room window, reuses the instance BFF
+session and drives the local SSH agent. No private key is copied into the app.
 
-![InfraOrgIT Desktop landing with instance cards, tabs and tunnel drawer](docs/screenshots/electron-landing.png)
+![InfraOrgIT Desktop landing with instance cards and tabs](docs/screenshots/electron-landing.png)
 
 The screenshots use fictitious demo instances, servers and tunnels.
 
-> The Electron shell in [`prototype-electron/`](prototype-electron/README.md)
-> is packaged locally for testing. The signed archives below still refer to the
-> Photino build until Electron signing and notarization are released.
+> The Electron shell is packaged locally for testing. The signed archives on
+> the Releases page still use the legacy Photino build until Electron signing
+> and notarization are released.
 
-## Electron shell
+## Features
 
-- **Landing manager.** Instance cards with name, URL, environment, last use,
-  server count and tunnel count; **Nuova istanza**, **Apri**, **Gestisci** and
-  **Rimuovi**. **Istanze** is always one click away from an open tab.
+- **Landing manager.** Instance cards show name, URL, environment, last use,
+  server count and tunnel count. **Nuova istanza**, **Apri**, **Gestisci** and
+  **Rimuovi** are in the card; **Istanze** is always one click away from a tab.
 - **Isolated tabs.** Each instance URL has its own persistent Chromium
-  partition, so cookies and the BFF login never cross instances.
-- **One tunnel drawer for every instance.** Rows are grouped by instance and
-  server and show the local port. The **Nuovo tunnel** form searches by machine,
-  IP, environment, application and service, while keeping the environment
-  groups. Start/stop/error and a 30-second heartbeat are projected to the
-  central `/tunnels` page.
-- **One theme.** The shell follows the light/dark preference of the signed-in
-  account. The Web app toggle is the only control and cycles light, dark and
-  system; the shell follows the resolved appearance. There is no separate
-  desktop theme button.
-- **Session reuse.** When the instance tab is already signed in, the desktop
-  uses that BFF session for the tunnel API. It falls back to the device flow or
-  a personal `tunnels:operate` token only when no web session is available.
+  partition. Cookies, the BFF login and storage never cross instances.
+- **Tunnel drawer.** Rows are grouped by instance and server and show the local
+  port. **Nuovo tunnel** searches by machine, IP, environment, application and
+  service, keeping the environment groups. Start, stop, error and a 30-second
+  heartbeat are projected to the central `/tunnels` page.
+- **Session reuse.** If the instance tab is already signed in, the desktop uses
+  that BFF session for the tunnel API. The device flow with `offline_access`,
+  or a personal `tunnels:operate` token, is only a fallback.
+- **One theme.** The shell follows the account theme. The Web toggle is the
+  only control and cycles light, dark and system; the shell follows the
+  resolved appearance. There is no desktop theme button.
+- **Web workspace in a tab.** Server detail, SSH console, SFTP/FTPS/FTP file
+  sessions and tunnel anagrafica stay in the existing Web app. The desktop adds
+  the native window, instance management and the process-level tunnel manager.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
 
 ![Light theme inherited from the Web account preference](docs/screenshots/electron-light.png)
 
-## What you can do
+## Run locally
 
-The list below describes the current Photino release; the Electron shell above
-adds the landing manager, isolated tabs, the searchable multi-instance tunnel
-drawer and the shared account theme.
+Requirements: Node 24+, npm, the OpenSSH client and a running SSH agent, plus an
+InfraOrgIT instance. For the local full stack, `make full` from
+`AllInfraOrgIT` serves `https://localhost:8443`.
 
-- **Several instances, separate windows.** Keep production, staging and a lab
-  open at the same time. Each window keeps its own navigation and session
-  state; on Windows each instance also gets a separate webview data folder.
-  macOS and Linux still share the webview data store, so two instances on the
-  same host can share the login cookie.
-- **Tunnels with your SSH agent.** Open `ssh -L` (local), `-D` (SOCKS) and
-  `-R` (remote) forwards, including jump-host chains supplied by the instance.
-- **Services per server.** The tunnel panel lists the server's deployments and
-  custom services (local HTTP/HTTPS, SOCKS, remote), with a local port and an
-  **Open** button while a tunnel is active.
-- **Start once, reconnect if needed.** Services marked `autoStart` start when
-  the target list loads. If an `autoStart` SSH process exits unexpectedly, the
-  app reconnects up to three times, five seconds apart, reusing the same local
-  port. A manual stop cancels the retries.
-- **Keycloak or a personal token.** Sign in with the OAuth device grant, or
-  paste a token with `tunnels:operate`. The access token stays in memory; the
-  refresh token goes to the OS secret store.
-- **Restore after restart.** Saved tunnels reopen after the manager page loads
-  when the stored session is still valid. No token, host, username or secret is
-  written to the tunnel file.
-- **Signed updates.** The app reads the latest GitHub release, downloads the
-  archive for the current platform only from GitHub, verifies the signed
-  SHA-256 manifest and installs or opens the installer.
+```bash
+cd prototype-electron
+npm install
+npm start
+```
 
-![Tunnel panel with a server, deployed application, custom services and an active local tunnel](docs/screenshots/desktop-tunnels.png)
+The local Caddy certificate must be trusted by macOS. On a development machine
+the shell accepts the loopback certificate only for loopback hosts; packaged
+builds require a trusted certificate. `DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is
+the explicit local override.
 
-## Install
+For tests and packaging, see
+[`prototype-electron/README.md`](prototype-electron/README.md) and
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-Download the archive for your platform from the
-[Releases](https://github.com/SenseiKiritof/InfraOrgITDesktop/releases) page:
+## First start
+
+1. Press **Nuova istanza**, enter a name and the HTTPS URL of the installation,
+   and choose whether it opens at startup.
+2. Press **Apri**. Each instance gets its own tab and persistent Chromium
+   session.
+3. Sign in from the instance tab. The tunnel drawer reuses that session; no
+   second Keycloak prompt is needed. Use the device flow or a personal token
+   only when the instance has no web session.
+4. Open **Tunnel**, expand **Nuovo tunnel**, search for a server, deployment or
+   service, set the local port and press **Avvia**.
+5. Change the theme from the Web app. The desktop shell follows it.
+
+## Security
+
+- The refresh token is encrypted with Electron `safeStorage` in
+  `userData/desktop-auth.bin`: macOS Keychain, Windows DPAPI or Linux Secret
+  Service. Without a keyring the session stays in memory for that run.
+- Access and refresh tokens never reach a renderer. The Web app receives only
+  the CSRF token it needs for its own mutations. The preload exposes only the
+  narrow `window.infraorgitDesktop` message bridge, gated by the instance
+  origin.
+- Remote instance URLs must use HTTPS. Loopback HTTP is accepted only during
+  development; packaged builds require a trusted certificate unless the
+  explicit local override is set.
+- The app reads the SSH configuration and lets the system `ssh` use the agent;
+  it does not store private keys.
+- Tunnels are projected to the instance using the signed-in BFF session and
+  CSRF token. A user without the operator role cannot see or change them.
+
+## Legacy Photino release
+
+The existing signed archives on
+[Releases](https://github.com/SenseiKiritof/InfraOrgITDesktop/releases) are the
+legacy Photino build. They use one window per instance and the old native
+download modes; the Electron shell replaces them when packaging is signed.
 
 | Platform | Archive |
 |---|---|
@@ -82,66 +103,13 @@ Download the archive for your platform from the
 | Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` |
 | Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` |
 
-If the Releases page does not have a build yet, [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
-describes how to build and package it from source.
+- **macOS**: unzip and move `InfraOrgIT Desktop.app` to Applications.
+- **Windows**: unzip and run `InfraOrgIt.Desktop.exe`.
+- **Linux**: extract and run `InfraOrgIt.Desktop`; WebKitGTK is required.
 
-- **macOS**: unzip, move `InfraOrgIT Desktop.app` to Applications and open it.
-  A build without a Developer ID signature requires the usual right-click →
-  **Open** confirmation; the release notes state whether the build is signed
-  and notarized.
-- **Windows**: unzip and run `InfraOrgIt.Desktop.exe`. An unsigned build may
-  show SmartScreen; use **More info → Run anyway** only if you trust the
-  release.
-- **Linux**: extract the archive and run `InfraOrgIt.Desktop`. The system
-  webview needs WebKitGTK (`libwebkit2gtk-4.1-0` on Debian/Ubuntu).
-
-The app also needs the OpenSSH client and a running SSH agent. Load your key
-with `ssh-add` before opening a tunnel; the app never reads private keys.
-
-## Use it (Photino release)
-
-1. Add an instance: a name and the HTTPS URL of your InfraOrgIT installation.
-2. **Open** launches the instance in its own window.
-3. **Tunnel** opens the panel for that instance. Sign in with Keycloak or paste
-   a personal token with `tunnels:operate`.
-4. Pick a server, a deployment or a custom service, optionally change the local
-   port, and press **Open** or **Start**.
-5. Use **Open** next to an active local HTTP/HTTPS tunnel to launch it in the
-   browser. **Close** stops the forward.
-
-The panel shows the active tunnels and their live state. The same sessions are
-visible to the team on the instance's **Tunnels** page.
-
-## Downloads
-
-The manager's **Download** setting chooses how files from an instance are
-saved:
-
-- **Automatico**: uses the native webview on Windows, or on macOS when the
-  patched Photino library is present; otherwise the managed bridge.
-- **Bridge**: asks the instance for a short-lived one-time ticket and downloads
-  it in the desktop process. This works on every platform and keeps the app
-  responsive while the server is slow.
-- **Nativo**: lets Windows WebView2 or the patched macOS webview handle server
-  attachments directly. It is available only when the platform supports it;
-  generated API results still use the bridge.
-
-The desktop runs downloads in the background, shows queued/running/completed
-state and sends a native notification at the end. A slow server or a large file
-never blocks the app window.
-
-## Security
-
-- The refresh token is stored in macOS Keychain, Windows Credential Manager or
-  the Linux Secret Service. Access tokens live only in memory.
-- On macOS the token is written through the native Security framework, never
-  as a process argument.
-- Remote instance URLs must use HTTPS; plain HTTP is accepted only for
-  loopback development, unless the explicit development override is set.
-- The app reads the SSH configuration and lets the system `ssh` use the agent;
-  it does not store private keys.
-- Updates require a valid signed manifest; a missing or invalid signature
-  blocks automatic installation and offers only a manual download.
+The Photino download setting offers **Automatico**, **Bridge** and **Nativo**.
+The Electron shell reports native Chromium downloads and has no separate
+download-mode setting; the bridge remains part of the legacy Photino build.
 
 ## Learn more
 
@@ -150,4 +118,6 @@ never blocks the app window.
 - [`../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md`](../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md)
   — MCP and tunnel design.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, run from source,
-  packaging, signing, update internals and tests.
+  packaging, signing and tests.
+- [`prototype-electron/README.md`](prototype-electron/README.md) — Electron
+  structure, commands and security boundaries.
