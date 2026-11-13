@@ -72,7 +72,11 @@ function fakeDevice(overrides = {}) {
   };
 }
 
-function sessionFetch({ exchangeStatus = 204, accountTheme = "dark" } = {}) {
+function sessionFetch({
+  exchangeStatus = 204,
+  accountTheme = "dark",
+  accountStatus = 200,
+} = {}) {
   const calls = [];
   const fetch = async (url, init = {}) => {
     calls.push({ url, init });
@@ -85,6 +89,8 @@ function sessionFetch({ exchangeStatus = 204, accountTheme = "dark" } = {}) {
       });
     }
     if (url.endsWith("/api/session")) {
+      if (accountStatus !== 200)
+        return response(accountStatus, { code: "unauthorized" });
       return response(200, {
         user: { username: "admin", name: "Ada", surname: "Lovelace" },
         theme: accountTheme,
@@ -150,6 +156,77 @@ test("restore refreshes Keycloak, exchanges the BFF session and hides secrets", 
   auth.dispose();
 });
 
+test("restore reuses the BFF session without a device token", async () => {
+  const store = tokenStore();
+  const device = fakeDevice();
+  const auth = new DesktopAuth({
+    deviceClient: device,
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.restore(instance, sessionFetch(), cookies());
+  assert.equal(result.mode, "session");
+  assert.deepEqual(device.refreshCalls, []);
+  const snapshot = auth.snapshot(instance.url);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.method, "session");
+  assert.equal(snapshot.tunnelAccess, true);
+  assert.equal(snapshot.requiresLogin, false);
+  assert.equal(snapshot.saved, false);
+  auth.dispose();
+});
+
+test("restore falls back to the BFF session when the refresh token is revoked", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice({
+      async refresh() {
+        throw new DeviceAuthError(
+          "La sessione non è più valida. Accedi di nuovo.",
+          "invalid_grant",
+        );
+      },
+    }),
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.restore(instance, sessionFetch(), cookies());
+  assert.equal(result.mode, "session");
+  assert.equal(store.values.has(instance.url), false);
+  const snapshot = auth.snapshot(instance.url);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.tunnelAccess, true);
+  auth.dispose();
+});
+
+test("fetchTargets prefers the BFF session over the device token", async () => {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    assert.equal(init.headers.Authorization, undefined);
+    return response(200, { items: [{ serverId: 1, serverName: "target" }] });
+  };
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice({
+      async refresh() {
+        throw new Error("token refresh must not run");
+      },
+    }),
+    tokenStore: tokenStore(),
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const items = await auth.fetchTargets(instance.url, fetch);
+  assert.deepEqual(items, [{ serverId: 1, serverName: "target" }]);
+  assert.equal(calls.length, 1);
+  auth.dispose();
+});
+
 test("restore drops the session when the desktop exchange is rejected", async () => {
   const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
   const auth = new DesktopAuth({
@@ -160,7 +237,7 @@ test("restore drops the session when the desktop exchange is rejected", async ()
   });
   const result = await auth.restore(
     instance,
-    sessionFetch({ exchangeStatus: 401 }),
+    sessionFetch({ exchangeStatus: 401, accountStatus: 401 }),
     cookies(),
   );
   assert.equal(result.mode, "revoked");
@@ -208,7 +285,11 @@ test("restore drops an invalid refresh token and asks for a new login", async ()
     openExternal: async () => {},
     logger: { warn: () => {} },
   });
-  const result = await auth.restore(instance, sessionFetch(), cookies());
+  const result = await auth.restore(
+    instance,
+    sessionFetch({ accountStatus: 401 }),
+    cookies(),
+  );
   assert.equal(result.mode, "expired");
   assert.equal(store.values.has(instance.url), false);
   assert.equal(auth.snapshot(instance.url).status, "none");
@@ -261,7 +342,11 @@ test("renew drops the session when Keycloak revokes the refresh token", async ()
     logger: { warn: () => {} },
   });
 
-  const result = await auth.renew(instance, sessionFetch(), cookies());
+  const result = await auth.renew(
+    instance,
+    sessionFetch({ accountStatus: 401 }),
+    cookies(),
+  );
   assert.equal(result.mode, "revoked");
   assert.equal(store.values.has(instance.url), false);
   const snapshot = auth.snapshot(instance.url);
@@ -281,7 +366,7 @@ test("renew drops the session when the API rejects the desktop exchange", async 
 
   const result = await auth.renew(
     instance,
-    sessionFetch({ exchangeStatus: 401 }),
+    sessionFetch({ exchangeStatus: 401, accountStatus: 401 }),
     cookies(),
   );
   assert.equal(result.mode, "revoked");
