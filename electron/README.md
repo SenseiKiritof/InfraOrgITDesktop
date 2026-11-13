@@ -1,19 +1,15 @@
-# InfraOrgIT Desktop — Electron shell
+# InfraOrgIT Desktop
 
-Production-intent Electron shell built on the `feat/electron-prototype`
-prototype. The shell is packaged locally for testing; the Photino app under
-`src/` remains the signed release until Electron signing/notarization is
-completed.
-
-The shell opens a dark control-room manager, then each InfraOrgIT instance in
-its own tab of the same window. Every instance has a persistent Chromium
-session partition, so cookies and the BFF login are isolated per URL.
+Electron desktop shell for InfraOrgIT. The app opens a dark control-room
+manager, then each InfraOrgIT instance in its own tab of the same window. Every
+instance has a persistent Chromium session partition, so cookies and the BFF
+login are isolated per URL.
 
 ![Manager with instance cards, tabs, command palette shortcut and tunnel drawer](../docs/screenshots/electron-landing.png)
 
 The screenshots use fictitious demo instances, servers and tunnels.
 
-## What this branch implements
+## Features
 
 - **Landing manager.** Instance cards show name, URL, environment, last use,
   server count and active tunnel count. **Nuova istanza**, **Apri**,
@@ -58,9 +54,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
   drawer, reloads the active tab and opens tunnel URLs.
 - **Downloads.** Server attachments use Chromium's native download into the
   user's Downloads folder with a unique file name; progress and completion are
-  tracked per instance and shown in the management window. Generated API results use the blob bridge with a native save dialog.
-  Dragging a remote file out of the SFTP panel uses Chromium's `DownloadURL`,
-  which saves it through the same native download path.
+  tracked per instance and shown in the management window. Generated API
+  results use the blob bridge with a native save dialog. Dragging a remote file
+  out of the SFTP panel uses Chromium's `DownloadURL`, which saves it through
+  the same native download path.
 - **Existing bridge.** The renderer still sees the narrow
   `window.infraorgitDesktop` bridge used by the download/tunnel panels of the
   Web app: `sendMessage`/`receiveMessage` of JSON strings only. No Node,
@@ -117,7 +114,7 @@ Requirements: Node 24+, npm, the local full stack (`make full` from
 development loopback exception.
 
 ```bash
-cd InfraOrgITDesktop/prototype-electron
+cd electron
 npm install
 npm start
 ```
@@ -147,6 +144,42 @@ The unit suite covers the device client (discovery, PKCE, polling,
 cookie landing, 401/404/502 fallback, no token in errors), the safeStorage
 store, instance/settings persistence and duplicate local-port protection.
 
+`test/unit` runs with `node --test` and needs no display; the shell test starts
+Electron and is what `ci.yml` leaves out. CI runs the unit suite and an unsigned
+package build on Linux, macOS and Windows.
+
+## Package
+
+The app is packaged with
+[`@electron/packager`](https://github.com/electron/packager):
+
+```bash
+npm run package        # current platform and architecture
+npm run package:mac    # darwin/arm64
+npm run package:win    # win32/x64
+npm run package:linux  # linux/x64
+```
+
+Output goes to `electron/dist/InfraOrgIT-<platform>-<arch>/`, with the app as
+`InfraOrgIT.app` on macOS, `InfraOrgIT.exe` on Windows and `InfraOrgIT` on
+Linux. The package scripts enable `--asar`, overwrite an existing output and
+ignore `test/`, `node_modules`, `README.md` and `package-lock.json`.
+
+The `publish` workflow runs Electron Packager for all four release targets and
+builds these archives:
+
+| Platform | Archive | Contents |
+|---|---|---|
+| macOS Apple silicon | `InfraOrgIT-Desktop-<version>-osx-arm64.zip` | `InfraOrgIT.app` |
+| macOS Intel | `InfraOrgIT-Desktop-<version>-osx-x64.zip` | `InfraOrgIT.app` |
+| Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` | `InfraOrgIT-win32-x64/` |
+| Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` | `InfraOrgIT-linux-x64/` |
+
+Every archive is published with a `.sha256` checksum next to it. The packages
+are unsigned: Developer ID signing, macOS notarization, Windows Authenticode
+signing and auto-update are follow-ups, so the first launch needs the explicit
+Gatekeeper or SmartScreen confirmation described in the root README.
+
 ## Structure
 
 ```
@@ -155,7 +188,7 @@ auth/device-client.js     OAuth device flow + PKCE, injected fetch/delay
 auth/session-client.js    /auth/desktop-session and /api/session contract
 auth/refresh-store.js     safeStorage encrypted refresh-token file
 auth/desktop-auth.js      BFF/device restore, tunnel access tokens
-shell/instances.js        validation, atomic instances.json, prototype migration
+shell/instances.js        validation, atomic instances.json, old-list migration
 shell/settings.js         atomic settings.json (theme fallback)
 tunnels.js                SSH argument builder, process lifecycle, port guard
 tunnel-projection.js      /api/tunnels start/stop/heartbeat projection
@@ -189,14 +222,14 @@ test/                     Electron shell test, fake SSH, unit tests
 - Tunnel definitions kept as “stopped” rows live in memory only. The OS port
   can still be occupied by another process; the app guards duplicate desktop
   tunnels and lets `ssh ExitOnForwardFailure` report the rest.
-- The shell is packaged locally as an ad-hoc application bundle. Developer ID
-  signing, notarization, auto-update and a signed installer are not released
-  yet; the Photino app remains the public product until that changes.
+- Release packages are unsigned. Developer ID signing, notarization,
+  auto-update and a signed installer are follow-ups; verify the published
+  SHA-256 checksum before running an archive.
 
 ## Packaging path
 
-The local ad-hoc build uses Electron Packager. For release, use Electron Forge,
-electron-builder or Packager with the same `preload`/IPC boundary, keep the
+Release packaging uses Electron Packager (see the `package*` scripts and
+`.github/workflows/publish.yml`). Keep the `preload`/IPC boundary, keep the
 loopback certificate exception out of production, sign the macOS and Windows
-builds, and keep the local manager page free of remote content. Do not disable
-the Chromium sandbox to work around packaging.
+builds before enabling auto-update, and keep the local manager page free of
+remote content. Do not disable the Chromium sandbox to work around packaging.

@@ -112,7 +112,7 @@ class InstanceStore {
 
     const seen = new Set();
     raw.forEach((entry, index) => {
-      // The prototype wrote {name,url}; the first entry opened at startup.
+      // An older build wrote {name,url}; the first entry opened at startup.
       const instance = normalizeInstance(entry, { defaultOpen: index === 0 });
       if (!instance || seen.has(instance.url)) return;
       seen.add(instance.url);
