@@ -32,8 +32,6 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
 
-![Light theme inherited from the Web account preference](docs/screenshots/electron-light.png)
-
 ## Run locally
 
 Requirements: Node 24+, npm, the OpenSSH client and a running SSH agent, plus an

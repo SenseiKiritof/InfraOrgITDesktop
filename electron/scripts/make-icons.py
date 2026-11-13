@@ -43,52 +43,54 @@ def render() -> Image.Image:
         width=rounded(8),
     )
 
-    layers = ((310, ACCENT_DIM), (410, ACCENT), (510, ACCENT_DIM))
+    nodes = ((512, 292), (306, 704), (718, 704))
+    links = ((0, 1), (1, 2), (2, 0))
 
-    # Soft emerald glow behind the stack.
+    # Thick links survive the 16 px menu-bar size; the glow is decorative.
     glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    for y, color in layers:
-        glow_draw.rounded_rectangle(
-            (rounded(260), rounded(y), rounded(764), rounded(y + 70)),
-            radius=rounded(35),
-            fill=(color[0], color[1], color[2], 55),
+    for start, end in links:
+        glow_draw.line(
+            (
+                rounded(nodes[start][0]),
+                rounded(nodes[start][1]),
+                rounded(nodes[end][0]),
+                rounded(nodes[end][1]),
+            ),
+            fill=(94, 234, 212, 80),
+            width=rounded(78),
         )
-    glow_draw.ellipse(
-        (rounded(452), rounded(204), rounded(572), rounded(324)),
-        fill=(ACCENT[0], ACCENT[1], ACCENT[2], 60),
-    )
-    glow = glow.filter(ImageFilter.GaussianBlur(rounded(30)))
+    for x, y in nodes:
+        glow_draw.ellipse(
+            (rounded(x - 122), rounded(y - 122), rounded(x + 122), rounded(y + 122)),
+            fill=(94, 234, 212, 75),
+        )
+    glow = glow.filter(ImageFilter.GaussianBlur(rounded(26)))
     image.alpha_composite(glow)
 
-    for y, color in layers:
-        draw.rounded_rectangle(
-            (rounded(260), rounded(y), rounded(764), rounded(y + 70)),
-            radius=rounded(35),
-            fill=(17, 29, 48, 255),
-            outline=color,
-            width=rounded(12),
-        )
-        draw.rounded_rectangle(
-            (rounded(340), rounded(y + 26), rounded(684), rounded(y + 44)),
-            radius=rounded(9),
-            fill=(94, 234, 212, 100),
+    for index, (start, end) in enumerate(links):
+        draw.line(
+            (
+                rounded(nodes[start][0]),
+                rounded(nodes[start][1]),
+                rounded(nodes[end][0]),
+                rounded(nodes[end][1]),
+            ),
+            fill=(94, 234, 212, 205 if index != 1 else 235),
+            width=rounded(52),
         )
 
-    # Central spine and top node: the stack reads as one connected system.
-    draw.line(
-        (rounded(512), rounded(230), rounded(512), rounded(790)),
-        fill=(94, 234, 212, 120),
-        width=rounded(10),
-    )
-    draw.ellipse(
-        (rounded(452), rounded(204), rounded(572), rounded(324)),
-        fill=ACCENT,
-    )
-    draw.ellipse(
-        (rounded(472), rounded(224), rounded(552), rounded(304)),
-        fill=BACKGROUND,
-    )
+    for index, (x, y) in enumerate(nodes):
+        color = ACCENT if index == 0 else ACCENT_DIM
+        draw.ellipse(
+            (rounded(x - 106), rounded(y - 106), rounded(x + 106), rounded(y + 106)),
+            fill=color,
+        )
+        # Small dark center keeps the nodes distinct from plain dots.
+        draw.ellipse(
+            (rounded(x - 34), rounded(y - 34), rounded(x + 34), rounded(y + 34)),
+            fill=BACKGROUND,
+        )
 
     return image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
 

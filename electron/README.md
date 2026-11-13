@@ -65,9 +65,7 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ![Command palette with instance, tunnel and application actions](../docs/screenshots/electron-command-palette.png)
 
-![Light theme inherited from the account preference; the Web app owns the only theme toggle](../docs/screenshots/electron-light.png)
-
-![Instance tab rendered by the Web app inside the Electron shell, with the system-theme icon in the Web header](../docs/screenshots/electron-instance.png)
+![Instance tab rendered by the Web app inside the Electron shell in the dark theme](../docs/screenshots/electron-instance.png)
 
 ## Silent authentication sequence
 
