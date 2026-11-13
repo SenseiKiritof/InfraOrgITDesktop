@@ -52,6 +52,7 @@ class DesktopAuth {
         accessExpiresAt: 0,
         csrfToken: "",
         account: null,
+        webSession: false,
         flow: null,
         saved: false,
       });
@@ -62,7 +63,10 @@ class DesktopAuth {
   snapshot(instanceUrl) {
     const context = this.context(instanceUrl);
     const hasStoredToken = Boolean(this.tokenStore.get(instanceUrl));
-    const tunnelAccess = this.hasAccessToken(instanceUrl) || hasStoredToken;
+    const tunnelAccess =
+      this.hasAccessToken(instanceUrl) ||
+      hasStoredToken ||
+      context.webSession;
     return {
       status: context.status,
       method: context.method,
@@ -116,8 +120,12 @@ class DesktopAuth {
   async readAccount(instanceUrl, sessionFetch, { emit = true } = {}) {
     try {
       const account = await fetchAccountSession({ instanceUrl, sessionFetch });
-      if (!account) return null;
       const context = this.context(instanceUrl);
+      if (!account) {
+        context.webSession = false;
+        return null;
+      }
+      context.webSession = true;
       context.account = account;
       context.csrfToken = account.csrfToken;
       if (context.status !== "pending") {
@@ -134,6 +142,25 @@ class DesktopAuth {
   }
 
   /**
+   * The instance tab already holds a BFF cookie when the user signed in from
+   * the Web UI: reuse it for tunnel calls instead of asking for a second
+   * device-flow login.
+   */
+  async restoreFromWebSession(instance, sessionFetch) {
+    const account = await this.readAccount(instance.url, sessionFetch, {
+      emit: false,
+    });
+    if (!account) return null;
+    this.emit(instance.url, {
+      status: "ready",
+      method: "session",
+      message: "",
+      saved: false,
+    });
+    return { mode: "session" };
+  }
+
+  /**
    * Startup path: Keycloak refresh, then BFF exchange in the instance
    * partition. Any failure returns a fallback marker; the tab still loads the
    * normal login page.
@@ -141,6 +168,8 @@ class DesktopAuth {
   async restore(instance, sessionFetch, cookies) {
     const refreshToken = this.tokenStore.get(instance.url);
     if (!refreshToken) {
+      const session = await this.restoreFromWebSession(instance, sessionFetch);
+      if (session) return session;
       this.emit(instance.url, {
         status: "none",
         method: null,
@@ -167,6 +196,8 @@ class DesktopAuth {
       ) {
         this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
+        const session = await this.restoreFromWebSession(instance, sessionFetch);
+        if (session) return session;
         this.emit(instance.url, {
           status: "none",
           method: null,
@@ -197,6 +228,8 @@ class DesktopAuth {
       if (error?.status === 401) {
         this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
+        const session = await this.restoreFromWebSession(instance, sessionFetch);
+        if (session) return session;
         this.emit(instance.url, {
           status: "none",
           method: null,
@@ -244,6 +277,8 @@ class DesktopAuth {
       ) {
         this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
+        const session = await this.restoreFromWebSession(instance, sessionFetch);
+        if (session) return session;
         this.emit(instance.url, {
           status: "none",
           method: null,
@@ -273,6 +308,8 @@ class DesktopAuth {
       if (error?.status === 401) {
         this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
+        const session = await this.restoreFromWebSession(instance, sessionFetch);
+        if (session) return session;
         this.emit(instance.url, {
           status: "none",
           method: null,
@@ -465,13 +502,12 @@ class DesktopAuth {
 
   async fetchTargets(instanceUrl, sessionFetch) {
     const request = async (token) => {
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
       const response = await sessionFetch(
         `${instanceUrl.replace(/\/$/, "")}/api/tunnels/targets`,
         {
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-          },
+          headers,
           credentials: "include",
         },
       );
@@ -479,8 +515,34 @@ class DesktopAuth {
       return { response, body };
     };
 
-    let token = await this.ensureAccessToken(instanceUrl, sessionFetch);
     let result;
+    try {
+      // First try the BFF session already present in the instance partition.
+      result = await request(null);
+    } catch {
+      throw new Error("Istanza non raggiungibile.");
+    }
+    if (result.response.ok)
+      return Array.isArray(result.body.items) ? result.body.items : [];
+    if (![401, 403].includes(result.response.status)) {
+      throw new Error(
+        result.body?.detail ||
+          result.body?.title ||
+          `API tunnel: HTTP ${result.response.status}`,
+      );
+    }
+
+    // No usable BFF session: fall back to the device-flow token.
+    let token;
+    try {
+      token = await this.ensureAccessToken(instanceUrl, sessionFetch);
+    } catch {
+      throw new Error(
+        result.body?.detail ||
+          result.body?.title ||
+          "Accedi per usare i tunnel dal desktop.",
+      );
+    }
     try {
       result = await request(token);
     } catch {
