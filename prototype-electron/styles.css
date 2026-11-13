@@ -344,20 +344,6 @@ body[data-view="landing"] .home-button {
   color: var(--text);
 }
 
-.theme-icon {
-  display: grid;
-  place-items: center;
-  font-size: 15px;
-}
-
-.theme-icon::before {
-  content: "☾";
-}
-
-html[data-theme="light"] .theme-icon::before {
-  content: "☀";
-}
-
 .tunnel-button {
   display: inline-flex;
   align-items: center;

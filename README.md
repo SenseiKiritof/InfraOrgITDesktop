@@ -1,19 +1,46 @@
 # InfraOrgIT Desktop
 
-InfraOrgIT Desktop opens one or more InfraOrgIT instances in their own
-windows and brings the instance's SSH targets to your machine. It uses the
-operating-system webview and your existing SSH agent: no separate browser, no
-private key copied into the app.
+InfraOrgIT Desktop opens one or more InfraOrgIT instances from a single
+control-room window. The current Electron shell uses one tab per instance,
+reuses the instance BFF session for tunnel access and inherits the account
+theme. It drives your existing SSH agent, so no private key is copied into the
+app.
 
-![InfraOrgIT Desktop with three instances, each with Tunnel, Open and Remove actions](docs/screenshots/desktop-manager.png)
+![InfraOrgIT Desktop landing with instance cards, tabs and tunnel drawer](docs/screenshots/electron-landing.png)
 
 The screenshots use fictitious demo instances, servers and tunnels.
 
-> The Electron rework lives in [`prototype-electron/`](prototype-electron/README.md)
-> on `feat/electron-rework`. It is not packaged or shipped yet; this README
-> describes the released Photino app.
+> The Electron shell in [`prototype-electron/`](prototype-electron/README.md)
+> is packaged locally for testing. The signed archives below still refer to the
+> Photino build until Electron signing and notarization are released.
+
+## Electron shell
+
+- **Landing manager.** Instance cards with name, URL, environment, last use,
+  server count and tunnel count; **Nuova istanza**, **Apri**, **Gestisci** and
+  **Rimuovi**. **Istanze** is always one click away from an open tab.
+- **Isolated tabs.** Each instance URL has its own persistent Chromium
+  partition, so cookies and the BFF login never cross instances.
+- **One tunnel drawer for every instance.** Rows are grouped by instance and
+  server and show the local port. The **Nuovo tunnel** form searches by machine,
+  IP, environment, application and service, while keeping the environment
+  groups.
+- **One theme.** The shell follows the light/dark preference of the signed-in
+  account. The Web app toggle is the only control; there is no separate desktop
+  theme button.
+- **Session reuse.** When the instance tab is already signed in, the desktop
+  uses that BFF session for the tunnel API. It falls back to the device flow or
+  a personal `tunnels:operate` token only when no web session is available.
+
+![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
+
+![Light theme inherited from the Web account preference](docs/screenshots/electron-light.png)
 
 ## What you can do
+
+The list below describes the current Photino release; the Electron shell above
+adds the landing manager, isolated tabs, the searchable multi-instance tunnel
+drawer and the shared account theme.
 
 - **Several instances, separate windows.** Keep production, staging and a lab
   open at the same time. Each window keeps its own navigation and session
@@ -69,7 +96,7 @@ describes how to build and package it from source.
 The app also needs the OpenSSH client and a running SSH agent. Load your key
 with `ssh-add` before opening a tunnel; the app never reads private keys.
 
-## Use it
+## Use it (Photino release)
 
 1. Add an instance: a name and the HTTPS URL of your InfraOrgIT installation.
 2. **Open** launches the instance in its own window.

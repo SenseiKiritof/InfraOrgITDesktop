@@ -31,7 +31,6 @@ contextBridge.exposeInMainWorld("desktopManager", {
   closeTab: (url) => invoke("manager:close-tab", url),
   reload: (url) => invoke("manager:reload", url),
   refresh: (url) => invoke("manager:refresh", url),
-  setTheme: (preference) => invoke("manager:theme-set", preference),
   openExternal: (url) => invoke("manager:open-external", url),
 
   authStart: (url) => invoke("manager:auth-start", url),

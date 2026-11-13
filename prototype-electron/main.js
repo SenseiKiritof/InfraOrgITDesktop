@@ -434,36 +434,6 @@ function applyThemeToManager() {
   sendState();
 }
 
-function sendThemeToView(url, preference) {
-  const record = recordFor(url);
-  if (!record || record.view.webContents.isDestroyed()) return;
-  sendToView(url, { type: "theme.apply", theme: preference });
-}
-
-/**
- * The shell follows the account theme. The topbar switch is only a shortcut:
- * it writes the same account preference instead of keeping a second desktop
- * theme, and tells the open Web view to apply it immediately.
- */
-function applyThemePreference(preference) {
-  if (!THEMES.includes(preference)) throw new Error("Tema non valido.");
-  const targets = activeUrl ? [activeUrl] : [...windows.keys()];
-  settingsStore.setTheme(preference);
-  for (const url of targets) {
-    accountThemes.set(url, preference);
-    sendThemeToView(url, preference);
-    const record = recordFor(url);
-    if (!record) continue;
-    const fetcher = sessionFetch(record.session);
-    void desktopAuth
-      .readAccount(url, fetcher, { emit: false })
-      .then(() => desktopAuth.setTheme(url, fetcher, preference))
-      .catch(() => false);
-  }
-  if (targets.length > 0) lastThemeUrl = targets[0];
-  applyThemeToManager();
-}
-
 function applyViewLayout() {
   if (!mainWindow || mainWindow.isDestroyed() || !activeUrl) {
     hideAttachedView();
@@ -860,10 +830,6 @@ function registerIpc() {
     if (!target) return publicState();
     const instance = instanceStore.get(target);
     if (instance && recordFor(target)) await refreshInstanceData(instance);
-    return publicState();
-  });
-  handle("manager:theme-set", (preference) => {
-    applyThemePreference(preference);
     return publicState();
   });
   handle("manager:open-external", (url) => safeExternal(url));
@@ -1300,19 +1266,6 @@ function buildMenu() {
           click: () => sendCommand("toggle-drawer"),
         },
         { type: "separator" },
-        {
-          label: "Tema chiaro",
-          click: () => applyThemePreference("light"),
-        },
-        {
-          label: "Tema scuro",
-          click: () => applyThemePreference("dark"),
-        },
-        {
-          label: "Segui il sistema",
-          click: () => applyThemePreference("system"),
-        },
-        { type: "separator" },
         { role: "reload" },
         { role: "toggleDevTools" },
         { role: "togglefullscreen" },
@@ -1582,6 +1535,22 @@ async function runTest() {
     await refreshInstanceData(first);
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
+    const toggleWebTheme = () =>
+      record.view.webContents.executeJavaScript(`(() => {
+        const button = [...document.querySelectorAll("button[aria-label]")].find((node) => /tema|theme/i.test(node.getAttribute("aria-label") || ""));
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`);
+    const setWebTheme = async (target) => {
+      const current = await record.view.webContents.executeJavaScript(
+        'document.documentElement.classList.contains("dark") ? "dark" : "light"',
+      );
+      if (current === target) return;
+      await toggleWebTheme();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    };
+
     const state = publicState();
     check(state.instances.length === 3, "three demo instances", String(state.instances.length));
     check(state.tabs.length >= 1, "startup tab opened", String(state.tabs.length));
@@ -1624,17 +1593,28 @@ async function runTest() {
     );
     check(invalid.includes("https"), "remote http rejected", invalid);
 
-    await mainWindow.webContents.executeJavaScript(
-      "window.desktopManager.setTheme('light')",
+    const initialTheme = publicState().theme.preference;
+    check(
+      (await toggleWebTheme()) === true,
+      "web theme toggle available",
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const lightState = publicState();
-    check(lightState.theme.resolved === "light", "theme switch light");
-    await mainWindow.webContents.executeJavaScript(
-      "window.desktopManager.setTheme('dark')",
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const shellTheme = publicState().theme;
+    const webDark = await record.view.webContents.executeJavaScript(
+      'document.documentElement.classList.contains("dark")',
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    check(publicState().theme.resolved === "dark", "theme switch dark");
+    check(
+      shellTheme.preference !== initialTheme,
+      "shell follows the web theme",
+      `${initialTheme} -> ${shellTheme.preference}`,
+    );
+    check(
+      (shellTheme.resolved === "dark") === webDark,
+      "shell and web theme agree",
+      `${shellTheme.resolved} / webDark=${webDark}`,
+    );
+    // The README screenshots use the dark control-room shell.
+    await setWebTheme("dark");
 
     const palette = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", {key: "k", metaKey: ${process.platform === "darwin"}, ctrlKey: ${process.platform !== "darwin"}, bubbles: true}));
@@ -1763,6 +1743,7 @@ async function runTest() {
       "environment groups are unique",
       JSON.stringify(envGroups),
     );
+    await new Promise((resolve) => setTimeout(resolve, 2600));
     await captureScreenshot(mainWindow.webContents, "drawer.png");
 
     activateTab(first.url);
@@ -1825,14 +1806,18 @@ async function runTest() {
     check(publicState().activeUrl === secondTab.url, "tab switch loads instance");
     showLanding();
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await mainWindow.webContents.executeJavaScript(
-      "window.desktopManager.setTheme('light')",
+    const darkBeforeShot = await record.view.webContents.executeJavaScript(
+      'document.documentElement.classList.contains("dark")',
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (darkBeforeShot) {
+      await toggleWebTheme();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
     await captureScreenshot(mainWindow.webContents, "light.png");
-    await mainWindow.webContents.executeJavaScript(
-      "window.desktopManager.setTheme('dark')",
-    );
+    if (darkBeforeShot) {
+      await toggleWebTheme();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
 
     console.log(failed ? "TEST_RESULT FAIL" : "TEST_RESULT PASS");
   } catch (error) {
