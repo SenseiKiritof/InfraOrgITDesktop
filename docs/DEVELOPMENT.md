@@ -33,9 +33,10 @@ user-facing notes and screenshots.
   never receive access, refresh or CSRF tokens.
 - Theme: the desktop shell follows the account theme returned by
   `GET /api/session`; it has no theme control of its own. The Web app's theme
-  toggle is the only control: it writes the account preference and sends
-  `theme.changed` to the shell, which applies the same light/dark value.
-  `settings.json` is only the fallback before an instance loads.
+  toggle is the only control and cycles light, dark and system; it writes the
+  account preference and sends `theme.changed` to the shell, which applies the
+  same resolved appearance. `settings.json` is only the fallback before an
+  instance loads.
 - Tunnels: the manager owns the SSH processes; the Web `/tunnels` panel stays
   the per-instance detail. The drawer groups every instance by server, shows
   the local port and active/stopped state, and enforces a duplicate local-port

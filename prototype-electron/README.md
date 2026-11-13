@@ -47,8 +47,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
   desktop does not duplicate the tunnel-service form.
 - **Theme.** The shell inherits the account theme read from `/api/session`
   (falling back to `settings.json` before any instance is available). There is
-  no desktop theme button: the Web app's toggle is the only control, and its
-  `theme.changed` message updates the shell immediately.
+  no desktop theme button: the Web app's toggle is the only control and cycles
+  light, dark and system (the system icon follows the OS); its `theme.changed`
+  message updates the shell immediately.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, reloads the active tab and opens tunnel URLs.
@@ -61,7 +62,7 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ![Light theme inherited from the account preference; the Web app owns the only theme toggle](../docs/screenshots/electron-light.png)
 
-![Instance tab rendered by the Web app inside the Electron shell](../docs/screenshots/electron-instance.png)
+![Instance tab rendered by the Web app inside the Electron shell, with the system-theme icon in the Web header](../docs/screenshots/electron-instance.png)
 
 ## Silent authentication sequence
 
