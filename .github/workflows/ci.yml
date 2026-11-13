@@ -2,7 +2,13 @@ name: ci
 
 on:
   push:
+    branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,12 +22,34 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-node@v4
         with:
-          dotnet-version: "10.0.x"
-      - name: Restore
-        run: dotnet restore InfraOrgITDesktop.slnx
-      - name: Build
-        run: dotnet build InfraOrgITDesktop.slnx --no-restore -warnaserror
-      - name: Test
-        run: dotnet test InfraOrgITDesktop.slnx --no-build
+          node-version: "24"
+      - name: Install
+        run: npm ci --prefix electron
+      - name: Unit tests
+        run: npm --prefix electron run test:unit
+      # Unsigned packaging smoke test: the script packages for the current
+      # platform and architecture, so every OS exercises its own output.
+      - name: Package
+        run: npm --prefix electron run package
+      - name: Verify package output
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            macOS) targets=(electron/dist/InfraOrgIT-darwin-*/InfraOrgIT.app) ;;
+            Windows) targets=(electron/dist/InfraOrgIT-win32-*/InfraOrgIT.exe) ;;
+            Linux) targets=(electron/dist/InfraOrgIT-linux-*/InfraOrgIT) ;;
+            *)
+              echo "::error::Unsupported runner: $RUNNER_OS"
+              exit 1
+              ;;
+          esac
+          if [ ${#targets[@]} -eq 0 ]; then
+            echo "::error::Packaged application not found for $RUNNER_OS"
+            ls -R electron/dist || true
+            exit 1
+          fi
+          echo "Packaged application: ${targets[0]}"
