@@ -227,6 +227,30 @@ test("fetchTargets prefers the BFF session over the device token", async () => {
   auth.dispose();
 });
 
+test("fetchConnectionPolicy reads the installation mode", async () => {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    return response(200, { mode: "Server", updatedBy: "admin" });
+  };
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice(),
+    tokenStore: tokenStore(),
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  assert.equal(
+    await auth.fetchConnectionPolicy(instance.url, fetch),
+    "Server",
+  );
+  assert.equal(
+    calls[0].url,
+    "https://infra.example.com/api/connection-policy",
+  );
+  auth.dispose();
+});
+
 test("restore drops the session when the desktop exchange is rejected", async () => {
   const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
   const auth = new DesktopAuth({

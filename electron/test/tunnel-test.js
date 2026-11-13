@@ -59,22 +59,22 @@ const remote = buildSshArgs(
 assert(remote.includes("-R"));
 assert(remote.includes("9000:127.0.0.1:8081"));
 
-const manager = new TunnelManager(() => {});
-const started = manager.start({
-  id: "test-1",
-  url: "https://localhost:8443",
-  instanceName: "Locale",
-  server,
-  target,
-  service: null,
-  localPort: 8081,
-});
-assert.strictEqual(manager.list().length, 1);
-assert.strictEqual(manager.list()[0].status, "Active");
-assert.strictEqual(started.localPort, 8081);
+async function main() {
+  const manager = new TunnelManager(() => {});
+  const started = await manager.start({
+    id: "test-1",
+    url: "https://localhost:8443",
+    instanceName: "Locale",
+    server,
+    target,
+    service: null,
+    localPort: 8081,
+  });
+  assert.strictEqual(manager.list().length, 1);
+  assert.strictEqual(manager.list()[0].status, "Active");
+  assert.strictEqual(started.localPort, 8081);
 
-assert.throws(
-  () =>
+  await assert.rejects(
     manager.start({
       id: "test-duplicate",
       url: "https://localhost:8443",
@@ -84,26 +84,28 @@ assert.throws(
       service: null,
       localPort: 8081,
     }),
-  /già usata/,
-);
+    /già usata/,
+  );
 
-setTimeout(() => {
-  try {
-    const lines = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
-    assert(lines.length >= 1, "fake ssh did not receive arguments");
-    const received = JSON.parse(lines[0]);
-    assert(received.includes("-L"));
-    assert(received.includes("127.0.0.1:8081:127.0.0.1:8081"));
-    manager.stop("test-1");
-    assert.strictEqual(manager.list().length, 1);
-    assert.strictEqual(manager.list()[0].status, "Stopped");
-    manager.forget("test-1");
-    assert.strictEqual(manager.list().length, 0);
-    console.log("TUNNEL_RESULT PASS");
-    console.log("SSH_ARGS", received.join(" "));
-    process.exit(0);
-  } catch (error) {
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const lines = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
+  assert(lines.length >= 1, "fake ssh did not receive arguments");
+  const received = JSON.parse(lines[0]);
+  assert(received.includes("-L"));
+  assert(received.includes("127.0.0.1:8081:127.0.0.1:8081"));
+  manager.stop("test-1");
+  assert.strictEqual(manager.list().length, 1);
+  assert.strictEqual(manager.list()[0].status, "Stopped");
+  manager.forget("test-1");
+  assert.strictEqual(manager.list().length, 0);
+  console.log("TUNNEL_RESULT PASS");
+  console.log("SSH_ARGS", received.join(" "));
+}
+
+main().then(
+  () => process.exit(0),
+  (error) => {
     console.error("TUNNEL_RESULT FAIL", error.message);
     process.exit(2);
-  }
-}, 800);
+  },
+);

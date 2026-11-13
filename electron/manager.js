@@ -297,6 +297,7 @@ function renderCards() {
         : String(instance.serverCount);
     meta.append(metaItem("Server", serverValue));
     meta.append(metaItem("Tunnel attivi", String(instance.tunnelCount || 0)));
+    meta.append(metaItem("Connessioni", policyLabel(instance.connectionPolicy)));
     meta.append(metaItem("Ultimo uso", formatLastUsed(instance.lastUsedAt), true));
     card.append(meta);
 
@@ -330,6 +331,10 @@ function renderCards() {
     els.instances.append(els.newInstanceCard);
     els.newInstanceCard.hidden = false;
   }
+}
+
+function policyLabel(value) {
+  return value === "Server" ? "Server" : value === "Client" ? "Client" : "Auto";
 }
 
 function metaItem(label, value, dim = false) {
@@ -431,6 +436,14 @@ function renderInstanceGroup(instance) {
   const dot = el("span", "env-dot");
   dot.style.setProperty("--env", envColor(instance.environment));
   title.append(dot, el("span", "", instance.name));
+  const policy = el(
+    "span",
+    "chip",
+    `Connessioni: ${policyLabel(instance.connectionPolicy)}`,
+  );
+  policy.title =
+    "Modalità connessioni dell'installazione: Server, Client o Auto.";
+  title.append(policy);
   const info = el("div");
   info.append(title);
   const url = el("p", "instance-group-url", instance.url);
@@ -591,6 +604,13 @@ function renderTunnelRow(tunnel) {
   const sub = el("div", "tunnel-sub");
   sub.append(el("span", "", tunnel.source || tunnel.application || "Tunnel"));
   sub.append(el("span", "", `· ${tunnel.mode}${tunnel.remotePort ? ` :${tunnel.remotePort}` : ""}`));
+  sub.append(
+    el(
+      "span",
+      "",
+      tunnel.transport === "Server" ? "· via server" : "· diretto",
+    ),
+  );
   sub.append(
     el(
       "span",

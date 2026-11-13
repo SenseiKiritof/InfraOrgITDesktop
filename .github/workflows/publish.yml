@@ -108,18 +108,11 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          npx electron-packager . InfraOrgIT \
+          node scripts/package.js \
             --platform="$PLATFORM" \
             --arch="$ARCH" \
             --out=../dist \
-            --asar \
-            --overwrite \
-            --app-version="$VERSION" \
-            --app-bundle-id=it.infraorgit.desktop \
-            --ignore="^/test($|/)" \
-            --ignore="^/node_modules($|/)" \
-            --ignore="^/README\.md$" \
-            --ignore="^/package-lock\.json$"
+            --app-version="$VERSION"
 
       - name: Create archive
         shell: bash

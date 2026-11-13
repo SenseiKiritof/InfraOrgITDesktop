@@ -14,7 +14,8 @@ Desktop app for InfraOrgIT: an Electron shell in `electron/`. Sibling of
 - `npm --prefix electron run tunnel-test`: fake SSH arguments and lifecycle.
 - `npm --prefix electron run package`: package the current platform into
   `electron/dist/`. `package:mac`, `package:win` and `package:linux` select a
-  target explicitly.
+  target explicitly. Icons live in `electron/assets/`; regenerate them with
+  `python3 scripts/make-icons.py` when the brand mark changes.
 - `node --check electron/main.js` (and any other changed JS file) is the quick
   syntax gate.
 - `.github/workflows/ci.yml` (`build-test` on Linux, macOS and Windows) installs

@@ -106,6 +106,15 @@ session exchange with an injected fetch.
   Local, dynamic (SOCKS) and remote forwards map to `-L`, `-D` and `-R`; `-J`
   chains come from the API nearest-first.
 - A duplicate local port is rejected before spawning a second `ssh`.
+- Before start the manager reads `/api/connection-policy`. `Client` uses the
+  system `ssh`; `Server` opens a loopback listener and relays each TCP
+  connection over a WebSocket to `/api/tunnels/relay`; `Auto` tests the first
+  SSH hop and falls back to the relay when the client cannot reach it. The
+  relay accepts only Local services or deployments with a fixed target port;
+  Dynamic and Remote stay client-only.
+- The policy row is shared by all API nodes in a cluster. Relay WebSockets are
+  node-local and each local TCP connection gets its own relay, so no sticky
+  sessions are required; the load balancer must forward WebSocket upgrades.
 - Start, active heartbeat (every 30 seconds), stop and error are projected to
   the instance's `/api/tunnels` endpoints with the signed-in BFF session and
   CSRF token, so the central `/tunnels` page shows the same session.
@@ -125,12 +134,17 @@ npm run package:win    # win32/x64
 npm run package:linux  # linux/x64
 ```
 
-The output directory is `electron/dist/InfraOrgIT-<platform>-<arch>/`. macOS
+The scripts use `electron/scripts/package.js`, which selects the platform icon
+(`assets/icon.icns` on macOS, `assets/icon.ico` on Windows, `assets/icon.png`
+for the Linux window). `python3 scripts/make-icons.py` regenerates all three
+from the brand mark. The output directory is
+`electron/dist/InfraOrgIT-<platform>-<arch>/`. macOS
 produces `InfraOrgIT.app` inside `InfraOrgIT-darwin-<arch>/`, Windows
 `InfraOrgIT.exe` inside `InfraOrgIT-win32-<arch>/` and Linux the `InfraOrgIT`
 binary inside `InfraOrgIT-linux-<arch>/`. The scripts pass `--asar`,
 `--overwrite` and the bundle id `it.infraorgit.desktop`, and ignore `test/`,
-`node_modules`, `README.md` and `package-lock.json`. `dist/` is ignored.
+`README.md` and `package-lock.json`; production dependencies such as `ws` are
+packaged. `dist/` is ignored.
 
 ## CI
 
@@ -150,10 +164,10 @@ workflow.
 1. `version` strips a leading `v` and validates `^[0-9A-Za-z.+-]+$`.
 2. Each platform job checks out the full history, and on a tag asserts that
    `GITHUB_SHA` is an ancestor of `origin/main` before packaging.
-3. `npm ci --prefix electron`, then `npx electron-packager` from `electron/`
+3. `npm ci --prefix electron`, then `node scripts/package.js` from `electron/`
    with the matrix platform/architecture, output to the repository `dist`,
-   `--asar`, `--overwrite`, `--app-version`, the bundle id and the same
-   ignores as the package scripts.
+   `--app-version`, the bundle id, the platform icon and the same ignores as
+   the package scripts.
 4. The archive is built with these names and roots:
 
    | Target | Runner | Archive | Root |
@@ -183,9 +197,9 @@ material in repository secrets and never in the repository.
 1. Merge the change through a pull request into `dev`, then `dev` into `main`,
    and wait for the `build-test` checks.
 2. From `main`, create and push the tag by hand:
-   `git tag -a v0.2.0 -m "InfraOrgIT Desktop 0.2.0" && git push origin v0.2.0`.
+   `git tag -a v0.3.1 -m "InfraOrgIT Desktop 0.3.1" && git push origin v0.3.1`.
 3. The `publish` workflow builds all four targets, writes the archives and
-   checksums, and creates or updates the `v0.2.0` GitHub Release. Re-running
+   checksums, and creates or updates the `v0.3.1` GitHub Release. Re-running
    the workflow for the same tag updates the release instead of creating a new
    tag.
 
