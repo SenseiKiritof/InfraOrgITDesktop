@@ -1,11 +1,8 @@
 name: publish
 
-# Packages the desktop app for all four RIDs. macOS signing/notarization and
-# Windows signing run only when the repository secrets are configured;
-# without them the workflow logs a warning and keeps the unsigned artifact.
-# The SHA-256 checksum manifest is signed with UPDATE_SIGNING_KEY; without the
-# secret the manifest is uploaded unsigned with a warning and the desktop app
-# blocks automatic installation.
+# Packages the Electron shell for macOS (arm64 and x64), Windows x64 and
+# Linux x64. The packages are unsigned: Developer ID signing, macOS
+# notarization, Windows Authenticode signing and auto-update are follow-ups.
 # A v* tag publishes or updates a GitHub Release from the tag that already
 # exists: the workflow never creates tags. Manual runs only upload workflow
 # artifacts.
@@ -14,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version used in artifact names (leading v is stripped)
+        description: Version used in artifact names and the app bundle (leading v is stripped)
         required: false
         default: "0.1.0"
         type: string
@@ -60,16 +57,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - rid: osx-arm64
+          - target: osx-arm64
             os: macos-latest
-          # Intel macOS: macos-13 was retired in December 2025; the
-          # macos-15-intel image is the remaining x86_64 runner.
-          - rid: osx-x64
+            platform: darwin
+            arch: arm64
+          - target: osx-x64
             os: macos-15-intel
-          - rid: win-x64
+            platform: darwin
+            arch: x64
+          - target: win-x64
             os: windows-latest
-          - rid: linux-x64
+            platform: win32
+            arch: x64
+          - target: linux-x64
             os: ubuntu-latest
+            platform: linux
+            arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -80,187 +83,91 @@ jobs:
 
       - name: Version tag must be on main
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
+          set -euo pipefail
           git fetch --no-tags origin main:refs/remotes/origin/main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::Version tags must point to a commit on main."
             exit 1
           fi
-      - uses: actions/setup-dotnet@v4
+
+      - uses: actions/setup-node@v4
         with:
-          dotnet-version: "10.0.x"
+          node-version: "24"
 
-      # Signing is optional: forks and runs without secrets keep producing
-      # unsigned artifacts instead of failing.
-      - name: Detect signing secrets
-        id: signing
+      - name: Install
+        run: npm ci --prefix electron
+
+      - name: Package
         shell: bash
+        working-directory: electron
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          macos=false
-          windows=false
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            if [ -n "${MACOS_CERTIFICATE:-}" ] \
-              && [ -n "${MACOS_CERTIFICATE_PASSWORD:-}" ] \
-              && [ -n "${APPLE_ID:-}" ] \
-              && [ -n "${APPLE_TEAM_ID:-}" ] \
-              && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
-              macos=true
-            else
-              echo "::warning::macOS signing secrets are not configured; publishing an unsigned, un-notarized artifact."
-            fi
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            if [ -n "${WINDOWS_CERTIFICATE:-}" ] \
-              && [ -n "${WINDOWS_CERTIFICATE_PASSWORD:-}" ]; then
-              windows=true
-            else
-              echo "::warning::Windows signing secrets are not configured; publishing an unsigned artifact."
-            fi
-          fi
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
-          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          npx electron-packager . InfraOrgIT \
+            --platform="$PLATFORM" \
+            --arch="$ARCH" \
+            --out=../dist \
+            --asar \
+            --overwrite \
+            --app-version="$VERSION" \
+            --app-bundle-id=it.infraorgit.desktop \
+            --ignore="^/test($|/)" \
+            --ignore="^/node_modules($|/)" \
+            --ignore="^/README\.md$" \
+            --ignore="^/package-lock\.json$"
 
-      - name: Import macOS signing certificate
-        id: macos-signing
-        if: steps.signing.outputs.macos == 'true'
-        shell: bash
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PATH: ${{ runner.temp }}/signing.keychain-db
-        run: |
-          set -euo pipefail
-          keychain_password="$(openssl rand -base64 32)"
-          echo "::add-mask::$keychain_password"
-          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$keychain_password" "$KEYCHAIN_PATH"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" \
-            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/cert.p12"
-          # Best effort: the intermediate is usually preinstalled on the
-          # runner, but importing it keeps the signature chain complete.
-          if curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer \
-            -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"; then
-            security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH" \
-              -T /usr/bin/codesign || true
-            rm -f "$RUNNER_TEMP/DeveloperIDG2CA.cer"
-          else
-            echo "::warning::Could not download the Developer ID intermediate certificate."
-          fi
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$keychain_password" "$KEYCHAIN_PATH"
-          # Make the temporary keychain the only entry in the user search
-          # list so codesign finds the imported identity.
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -n 1)"
-          if [ -z "$identity" ]; then
-            echo "No Developer ID Application identity found in the imported certificate." >&2
-            exit 1
-          fi
-          echo "identity=$identity" >> "$GITHUB_OUTPUT"
-          echo "Signing with: $identity"
-
-      - name: Build the patched Photino native library (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: ./native/photino-download/build.sh
-
-      - name: Publish and package
+      - name: Create archive
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          CODESIGN_IDENTITY: ${{ steps.macos-signing.outputs.identity }}
-        run: bash scripts/publish.sh ${{ matrix.rid }}
-
-      - name: Notarize and staple macOS app
-        if: steps.signing.outputs.macos == 'true'
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          RID: ${{ matrix.rid }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          app="$PWD/dist/InfraOrgIT Desktop.app"
-          archive="$PWD/dist/InfraOrgIT-Desktop-$VERSION-$RID.zip"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          xcrun notarytool submit "$archive" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --wait
-          xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
-          # The zip is notarized as-is; after stapling the app the archive
-          # must be rebuilt so the ticket travels with the bundle.
-          rm -f "$archive"
-          ditto -c -k --keepParent "$app" "$archive"
-          echo "Notarized and stapled: $archive"
+          archive_base="dist/InfraOrgIT-Desktop-$VERSION-$TARGET"
+          case "$PLATFORM" in
+            darwin)
+              app="dist/InfraOrgIT-darwin-$ARCH/InfraOrgIT.app"
+              if [ ! -d "$app" ]; then
+                echo "::error::Missing app bundle: $app"
+                exit 1
+              fi
+              # --keepParent keeps InfraOrgIT.app as the zip root.
+              ditto -c -k --keepParent "$app" "$archive_base.zip"
+              echo "Archive: $archive_base.zip"
+              ;;
+            win32)
+              folder="dist/InfraOrgIT-win32-$ARCH"
+              if [ ! -d "$folder" ]; then
+                echo "::error::Missing package folder: $folder"
+                exit 1
+              fi
+              # Archive the folder itself so InfraOrgIT-win32-x64 is the root.
+              powershell -NoProfile -Command "Compress-Archive -Path '$folder' -DestinationPath '$archive_base.zip' -Force"
+              echo "Archive: $archive_base.zip"
+              ;;
+            linux)
+              folder="dist/InfraOrgIT-linux-$ARCH"
+              if [ ! -d "$folder" ]; then
+                echo "::error::Missing package folder: $folder"
+                exit 1
+              fi
+              tar -czf "$archive_base.tar.gz" -C dist "InfraOrgIT-linux-$ARCH"
+              echo "Archive: $archive_base.tar.gz"
+              ;;
+            *)
+              echo "::error::Unsupported platform: $PLATFORM"
+              exit 1
+              ;;
+          esac
 
-      - name: Sign Windows executable
-        if: steps.signing.outputs.windows == 'true'
-        shell: pwsh
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $archive = Join-Path $env:GITHUB_WORKSPACE "dist/InfraOrgIT-Desktop-$env:VERSION-win-x64.zip"
-          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
-
-          $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
-          if (-not $signtool) {
-            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
-              Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-          }
-          if (-not $signtool) { throw "signtool.exe not found" }
-
-          $extract = Join-Path $env:GITHUB_WORKSPACE "dist/sign-extract"
-          Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive -LiteralPath $archive -DestinationPath $extract
-
-          $binaries = Get-ChildItem $extract -Recurse -File |
-            Where-Object { $_.Extension -in ".exe", ".dll" }
-          if (-not $binaries) { throw "No binaries to sign in $archive" }
-          foreach ($binary in $binaries) {
-            & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-              /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD $binary.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($binary.FullName)" }
-            & $signtool verify /pa /v $binary.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($binary.FullName)" }
-          }
-
-          Remove-Item $archive -Force
-          Compress-Archive -Path (Join-Path $extract "*") -DestinationPath $archive -Force
-          Remove-Item $extract -Recurse -Force
-          Remove-Item $pfx -Force
-          Write-Host "Signed and re-packaged $archive"
-
-      - name: Delete temporary keychain
-        if: always() && runner.os == 'macOS' && steps.signing.outputs.macos == 'true'
-        shell: bash
-        env:
-          KEYCHAIN_PATH: ${{ runner.temp }}/signing.keychain-db
-        run: security delete-keychain "$KEYCHAIN_PATH" || true
-
-      # Runs after signing and notarization, which rebuild their archive, so
-      # every uploaded archive has a matching <archive>.sha256 file.
-      - name: Generate SHA-256 checksums
+      - name: Generate SHA-256 checksum
         shell: bash
         run: |
           set -euo pipefail
@@ -288,7 +195,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: InfraOrgIT-Desktop-${{ needs.version.outputs.version }}-${{ matrix.rid }}
+          name: InfraOrgIT-Desktop-${{ needs.version.outputs.version }}-${{ matrix.target }}
           path: |
             dist/*.zip
             dist/*.tar.gz
@@ -296,69 +203,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  manifest:
-    name: Signed checksum manifest
-    needs: [version, package]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download archives
-        uses: actions/download-artifact@v4
-        with:
-          path: release
-          merge-multiple: true
-
-      - name: Create and sign the SHA-256 manifest
-        shell: bash
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          mapfile -t archives < <(
-            find release -maxdepth 1 -type f \
-              \( -name '*.zip' -o -name '*.tar.gz' \) | LC_ALL=C sort
-          )
-          if [ ${#archives[@]} -eq 0 ]; then
-            echo "No archives found to checksum." >&2
-            exit 1
-          fi
-
-          manifest="release/InfraOrgIT-Desktop-$VERSION-sha256.txt"
-          : > "$manifest"
-          for archive in "${archives[@]}"; do
-            hash="$(sha256sum "$archive" | awk '{print $1}')"
-            printf '%s  %s\n' "$hash" "$(basename "$archive")" >> "$manifest"
-          done
-          cat "$manifest"
-
-          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
-            echo "::warning::UPDATE_SIGNING_KEY is not configured; the update manifest is unsigned and the desktop app will require a manual install."
-            exit 0
-          fi
-
-          key="$RUNNER_TEMP/update-signing-key.pem"
-          public_key="$RUNNER_TEMP/update-signing-public.pem"
-          (umask 077 && printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key")
-          openssl dgst -sha256 -sign "$key" -out "$manifest.sig" "$manifest"
-          openssl pkey -in "$key" -pubout -out "$public_key"
-          openssl dgst -sha256 -verify "$public_key" \
-            -signature "$manifest.sig" "$manifest"
-          rm -f "$key" "$public_key"
-          echo "Signed manifest: $manifest.sig"
-
-      - name: Upload signed manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: InfraOrgIT-Desktop-${{ needs.version.outputs.version }}-manifest
-          path: |
-            release/InfraOrgIT-Desktop-*-sha256.txt
-            release/InfraOrgIT-Desktop-*-sha256.txt.sig
-          if-no-files-found: error
-          retention-days: 14
-
   release:
     name: GitHub Release
-    needs: [version, package, manifest]
+    needs: [version, package]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -378,9 +225,4 @@ jobs:
             release/*.zip
             release/*.tar.gz
             release/*.sha256
-            release/*-sha256.txt
-            release/*-sha256.txt.sig
-          # The .sig file is absent when UPDATE_SIGNING_KEY is not configured,
-          # and the manifest job already fails if no manifest was produced.
-          fail_on_unmatched_files: false
           generate_release_notes: true

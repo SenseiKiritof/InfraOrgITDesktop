@@ -1,7 +1,7 @@
-bin/
-obj/
-TestResults/
+node_modules/
 dist/
-.vs/
-.idea/
-*.user
+electron/test/.run/
+electron/test/*.png
+electron/test/out.log
+*.log
+.DS_Store

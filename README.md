@@ -1,17 +1,13 @@
 # InfraOrgIT Desktop
 
-InfraOrgIT Desktop is the Electron shell in
-[`prototype-electron/`](prototype-electron/README.md). It opens one or more
-InfraOrgIT instances from a single control-room window, reuses the instance BFF
-session and drives the local SSH agent. No private key is copied into the app.
+InfraOrgIT Desktop is the Electron app in [`electron/`](electron/README.md). It
+opens one or more InfraOrgIT instances from a single control-room window, reuses
+the instance BFF session and drives the local SSH agent. No private key is
+copied into the app.
 
 ![InfraOrgIT Desktop landing with instance cards and tabs](docs/screenshots/electron-landing.png)
 
 The screenshots use fictitious demo instances, servers and tunnels.
-
-> The Electron shell is packaged locally for testing. The signed archives on
-> the Releases page still use the legacy Photino build until Electron signing
-> and notarization are released.
 
 ## Features
 
@@ -45,17 +41,18 @@ InfraOrgIT instance. For the local full stack, `make full` from
 `AllInfraOrgIT` serves `https://localhost:8443`.
 
 ```bash
-cd prototype-electron
+cd electron
 npm install
 npm start
 ```
 
 Packaged builds require the local Caddy certificate to be trusted by macOS. In
-development the shell can accept loopback certificates; `DESKTOP_ALLOW_INSECURE_LOCALHOST=1`
-is the explicit override for a packaged local test.
+development the shell can accept loopback certificates;
+`DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is the explicit override for a packaged
+local test.
 
-For tests and packaging, see
-[`prototype-electron/README.md`](prototype-electron/README.md) and
+For tests, packaging and the security boundaries, see
+[`electron/README.md`](electron/README.md) and
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ## First start
@@ -88,29 +85,29 @@ For tests and packaging, see
 - Tunnels are projected to the instance using the signed-in BFF session and
   CSRF token. A user without the operator role cannot see or change them.
 
-## Legacy Photino release
+## Packages
 
-The existing signed archives on
-[Releases](https://github.com/SenseiKiritof/InfraOrgITDesktop/releases) are the
-legacy Photino build. They use one window per instance and the old native
-download modes; the Electron shell replaces them when packaging is signed.
+The `publish` workflow packages four targets:
 
-| Platform | Archive |
-|---|---|
-| macOS Apple silicon | `InfraOrgIT-Desktop-<version>-osx-arm64.zip` |
-| macOS Intel | `InfraOrgIT-Desktop-<version>-osx-x64.zip` |
-| Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` |
-| Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` |
+| Platform | Archive | Contents |
+|---|---|---|
+| macOS Apple silicon | `InfraOrgIT-Desktop-<version>-osx-arm64.zip` | `InfraOrgIT.app` |
+| macOS Intel | `InfraOrgIT-Desktop-<version>-osx-x64.zip` | `InfraOrgIT.app` |
+| Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` | `InfraOrgIT-win32-x64/` |
+| Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` | `InfraOrgIT-linux-x64/` |
 
-- **macOS**: unzip and move `InfraOrgIT Desktop.app` to Applications.
-- **Windows**: unzip and run `InfraOrgIt.Desktop.exe`.
-- **Linux**: extract and run `InfraOrgIt.Desktop`; WebKitGTK is required.
+- **macOS**: unzip and move `InfraOrgIT.app` to Applications.
+- **Windows**: unzip and run `InfraOrgIT.exe` inside `InfraOrgIT-win32-x64`.
+- **Linux**: extract and run `InfraOrgIT` inside `InfraOrgIT-linux-x64`.
 
-The Photino download setting offers **Automatico**, **Bridge** and **Nativo**.
-The Electron shell downloads server attachments with Chromium into the user's
-Downloads folder (unique name, no save dialog) and uses the desktop blob bridge
-for generated API results; it has no download-mode setting. The signed-ticket
-bridge is specific to the legacy Photino manager.
+A `<archive>.sha256` checksum is published next to every archive.
+
+> The packages are unsigned. macOS Gatekeeper blocks a downloaded app until it
+> is allowed in **System Settings → Privacy & Security** (or the quarantine
+> attribute is removed with `xattr -dr com.apple.quarantine InfraOrgIT.app`),
+> and Windows SmartScreen shows an unknown-publisher warning. Developer ID
+> signing, macOS notarization, Windows Authenticode signing and auto-update are
+> follow-ups. Verify the SHA-256 checksum before running an archive.
 
 ## Learn more
 
@@ -118,7 +115,7 @@ bridge is specific to the legacy Photino manager.
   deployment and architecture.
 - [`../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md`](../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md)
   — MCP and tunnel design.
-- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, run from source,
-  packaging, signing and tests.
-- [`prototype-electron/README.md`](prototype-electron/README.md) — Electron
-  structure, commands and security boundaries.
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — run, test, packaging, CI and
+  publish.
+- [`electron/README.md`](electron/README.md) — Electron structure, commands and
+  security boundaries.

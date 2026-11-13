@@ -94,7 +94,7 @@ test("instance store adds, updates and removes with atomic files", () => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-test("instance store migrates the prototype array and skips invalid entries", () => {
+test("instance store migrates the old array and skips invalid entries", () => {
   const { directory, file } = tempFile("instances.json");
   fs.writeFileSync(
     file,
