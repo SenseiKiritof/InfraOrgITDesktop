@@ -43,43 +43,54 @@ def render() -> Image.Image:
         width=rounded(8),
     )
 
-    bars = (
-        (296, 460, 112, 300, ACCENT_SOFT),
-        (456, 260, 112, 500, ACCENT),
-        (616, 360, 112, 400, ACCENT_DIM),
-    )
+    layers = ((310, ACCENT_DIM), (410, ACCENT), (510, ACCENT_DIM))
 
-    # Soft emerald glow behind the bars.
+    # Soft emerald glow behind the stack.
     glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow)
-    for left, top, width, height, color in bars:
+    for y, color in layers:
         glow_draw.rounded_rectangle(
-            (
-                rounded(left),
-                rounded(top),
-                rounded(left + width),
-                rounded(top + height),
-            ),
-            radius=rounded(width // 2),
-            fill=(color[0], color[1], color[2], 70),
+            (rounded(260), rounded(y), rounded(764), rounded(y + 70)),
+            radius=rounded(35),
+            fill=(color[0], color[1], color[2], 55),
         )
-    glow = glow.filter(ImageFilter.GaussianBlur(rounded(34)))
+    glow_draw.ellipse(
+        (rounded(452), rounded(204), rounded(572), rounded(324)),
+        fill=(ACCENT[0], ACCENT[1], ACCENT[2], 60),
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(rounded(30)))
     image.alpha_composite(glow)
 
-    for left, top, width, height, color in bars:
+    for y, color in layers:
         draw.rounded_rectangle(
-            (
-                rounded(left),
-                rounded(top),
-                rounded(left + width),
-                rounded(top + height),
-            ),
-            radius=rounded(width // 2),
-            fill=color,
+            (rounded(260), rounded(y), rounded(764), rounded(y + 70)),
+            radius=rounded(35),
+            fill=(17, 29, 48, 255),
+            outline=color,
+            width=rounded(12),
+        )
+        draw.rounded_rectangle(
+            (rounded(340), rounded(y + 26), rounded(684), rounded(y + 44)),
+            radius=rounded(9),
+            fill=(94, 234, 212, 100),
         )
 
-    return image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+    # Central spine and top node: the stack reads as one connected system.
+    draw.line(
+        (rounded(512), rounded(230), rounded(512), rounded(790)),
+        fill=(94, 234, 212, 120),
+        width=rounded(10),
+    )
+    draw.ellipse(
+        (rounded(452), rounded(204), rounded(572), rounded(324)),
+        fill=ACCENT,
+    )
+    draw.ellipse(
+        (rounded(472), rounded(224), rounded(552), rounded(304)),
+        fill=BACKGROUND,
+    )
 
+    return image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
 
 def write_png(image: Image.Image, path: Path, size: int) -> None:
     image.resize((size, size), Image.Resampling.LANCZOS).save(path)
