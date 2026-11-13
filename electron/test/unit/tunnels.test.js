@@ -1,11 +1,19 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const path = require("node:path");
+const { EventEmitter } = require("node:events");
 
 const { TunnelManager, buildSshArgs } = require("../../tunnels");
 
-const fakeSsh = path.join(__dirname, "..", "fake-ssh.js");
-process.env.SSH_BIN = fakeSsh;
+function fakeManager() {
+  return new TunnelManager(() => {}, {
+    spawnProcess: () => {
+      const child = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      return child;
+    },
+  });
+}
 
 const server = {
   serverId: 1,
@@ -58,7 +66,7 @@ test("ssh arguments keep the existing local, dynamic and remote contract", () =>
 });
 
 test("tunnel manager rejects duplicate local ports and keeps stopped rows", async () => {
-  const manager = new TunnelManager(() => {});
+  const manager = fakeManager();
   const first = manager.start({
     id: "t1",
     url: "https://infra.example.com",
@@ -101,7 +109,7 @@ test("tunnel manager rejects duplicate local ports and keeps stopped rows", asyn
 });
 
 test("tunnel manager rejects invalid ports and missing targets", async () => {
-  const manager = new TunnelManager(() => {});
+  const manager = fakeManager();
   assert.throws(
     () =>
       manager.start({

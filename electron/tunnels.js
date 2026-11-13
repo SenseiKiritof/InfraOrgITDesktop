@@ -94,10 +94,11 @@ function samePort(left, right) {
  * restart them scoped to the owning instance.
  */
 class TunnelManager {
-  constructor(onState = () => {}) {
+  constructor(onState = () => {}, { spawnProcess = spawn } = {}) {
     this.onState = onState;
     this.rows = new Map();
     this.ssh = process.env.DESKTOP_SSH_BIN || process.env.SSH_BIN || "ssh";
+    this.spawnProcess = spawnProcess;
   }
 
   list() {
@@ -168,7 +169,7 @@ class TunnelManager {
     }
 
     const args = buildSshArgs(server, target, service, requested);
-    const processHandle = spawn(this.ssh, args, {
+    const processHandle = this.spawnProcess(this.ssh, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const row = {
