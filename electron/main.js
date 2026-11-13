@@ -1346,6 +1346,7 @@ function createMainWindow() {
     minHeight: 680,
     show: false,
     backgroundColor: "#0b0e13",
+    icon: path.join(__dirname, "assets", "icon.png"),
     title: "InfraOrgIT",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition:
@@ -2048,6 +2049,8 @@ if (!hasLock) {
   app.quit();
 } else {
   app.whenReady().then(async () => {
+    if (process.platform === "darwin" && app.dock)
+      app.dock.setIcon(path.join(__dirname, "assets", "icon.png"));
     if (allowLoopbackCertificates) applyLoopbackPolicy(session.defaultSession);
 
     if (IS_TEST) {
