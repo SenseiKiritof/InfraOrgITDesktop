@@ -1439,6 +1439,26 @@ function startTestTunnels() {
         },
       ],
     },
+    {
+      serverId: 3,
+      serverName: "demo-app-02",
+      environmentLabel: "Produzione",
+      sshHost: "10.0.0.30",
+      sshPort: 22,
+      username: "demo",
+      jumps: [],
+      targets: [
+        {
+          serverApplicationId: 9,
+          application: "metrics",
+          version: "1.0.0",
+          targetHost: "127.0.0.1",
+          targetPort: 9100,
+          suggestedLocalPort: 19100,
+        },
+      ],
+      services: [],
+    },
   ];
   const demoServer = (name, ip) => ({
     serverId: name === "demo-app-01" ? 1 : 2,
@@ -1734,6 +1754,15 @@ async function runTest() {
       search.dispatchEvent(new Event("input", {bubbles: true}));
     })()`);
     await new Promise((resolve) => setTimeout(resolve, 100));
+    const envGroups = await mainWindow.webContents.executeJavaScript(`(() => {
+      const details = document.querySelector(".new-tunnel");
+      return details ? [...details.querySelectorAll(".new-tunnel-env-title")].map((node) => node.textContent) : [];
+    })()`);
+    check(
+      new Set(envGroups).size === envGroups.length,
+      "environment groups are unique",
+      JSON.stringify(envGroups),
+    );
     await captureScreenshot(mainWindow.webContents, "drawer.png");
 
     activateTab(first.url);
@@ -1779,7 +1808,7 @@ async function runTest() {
     const manageModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       const card = [...document.querySelectorAll(".instance-card")].find((item) => item.textContent.includes("Produzione"));
       [...card.querySelectorAll("button")].find((button) => button.textContent === "Gestisci").click();
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       const visible = !document.querySelector("#modal").hidden;
       const title = document.querySelector("#modal-title").textContent;
       const servers = document.querySelectorAll(".server-item").length;
