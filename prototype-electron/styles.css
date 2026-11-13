@@ -1182,6 +1182,117 @@ body[data-drawer="open"] .drawer {
   font-size: 11.5px;
 }
 
+.new-tunnel-options {
+  display: grid;
+  gap: 9px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.new-tunnel-env {
+  display: grid;
+  gap: 6px;
+}
+
+.new-tunnel-env-title {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.new-tunnel-server {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+.new-tunnel-server-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 5px;
+}
+
+.new-tunnel-server-name {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.new-tunnel-server-ip {
+  color: var(--text-faint);
+  font: 10px ui-monospace, monospace;
+}
+
+.new-tunnel-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-tunnel-option:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.new-tunnel-option[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+}
+
+.new-tunnel-option-kind {
+  min-width: 48px;
+  color: var(--accent);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.new-tunnel-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-tunnel-option-meta {
+  color: var(--text-faint);
+  font-size: 9.5px;
+}
+
+.new-tunnel-option-port {
+  margin-left: auto;
+  color: var(--text-faint);
+  font: 10px ui-monospace, monospace;
+}
+
+.new-tunnel-empty {
+  margin: 0;
+  padding: 8px 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .new-tunnel-form .row {
   display: grid;
   grid-template-columns: 1fr 92px;
