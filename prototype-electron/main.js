@@ -25,6 +25,7 @@ const { TunnelManager } = require("./tunnels");
 const { TunnelProjection } = require("./tunnel-projection");
 const {
   DownloadTracker,
+  fileNameFromUrl,
   sanitizeFileName,
   uniqueFilePath,
 } = require("./downloads");
@@ -148,7 +149,9 @@ function trackDownloads(instance, targetSession) {
   if (downloadSessions.has(partition)) return;
   downloadSessions.add(partition);
   targetSession.on("will-download", (_event, item) => {
-    const fileName = sanitizeFileName(item.getFilename());
+    const fileName = sanitizeFileName(
+      fileNameFromUrl(item.getURL()) || item.getFilename(),
+    );
     const savePath = uniqueFilePath(app.getPath("downloads"), fileName);
     item.setSavePath(savePath);
     const entry = downloadTracker.add({
