@@ -1543,12 +1543,14 @@ async function runTest() {
         return true;
       })()`);
     const setWebTheme = async (target) => {
-      const current = await record.view.webContents.executeJavaScript(
-        'document.documentElement.classList.contains("dark") ? "dark" : "light"',
-      );
-      if (current === target) return;
-      await toggleWebTheme();
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const current = await record.view.webContents.executeJavaScript(
+          'localStorage.getItem("infraorgit-theme") || "system"',
+        );
+        if (current === target) return;
+        await toggleWebTheme();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     };
 
     const state = publicState();
@@ -1613,8 +1615,9 @@ async function runTest() {
       "shell and web theme agree",
       `${shellTheme.resolved} / webDark=${webDark}`,
     );
-    // The README screenshots use the dark control-room shell.
-    await setWebTheme("dark");
+    // The README screenshots use the dark control-room shell, but the Web
+    // page keeps the system icon visible in the instance screenshot.
+    await setWebTheme("system");
 
     const palette = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", {key: "k", metaKey: ${process.platform === "darwin"}, ctrlKey: ${process.platform !== "darwin"}, bubbles: true}));
@@ -1634,6 +1637,7 @@ async function runTest() {
 
     await captureScreenshot(record.view.webContents, "instance.png");
 
+    await setWebTheme("dark");
     sendCommand("toggle-drawer");
     await new Promise((resolve) => setTimeout(resolve, 600));
     const drawerState = await mainWindow.webContents.executeJavaScript(
@@ -1806,18 +1810,9 @@ async function runTest() {
     check(publicState().activeUrl === secondTab.url, "tab switch loads instance");
     showLanding();
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const darkBeforeShot = await record.view.webContents.executeJavaScript(
-      'document.documentElement.classList.contains("dark")',
-    );
-    if (darkBeforeShot) {
-      await toggleWebTheme();
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
+    await setWebTheme("light");
     await captureScreenshot(mainWindow.webContents, "light.png");
-    if (darkBeforeShot) {
-      await toggleWebTheme();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+    await setWebTheme("dark");
 
     console.log(failed ? "TEST_RESULT FAIL" : "TEST_RESULT PASS");
   } catch (error) {

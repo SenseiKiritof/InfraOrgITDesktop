@@ -26,8 +26,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
   IP, environment, application and service, while keeping the environment
   groups.
 - **One theme.** The shell follows the light/dark preference of the signed-in
-  account. The Web app toggle is the only control; there is no separate desktop
-  theme button.
+  account. The Web app toggle is the only control and cycles light, dark and
+  system; the shell follows the resolved appearance. There is no separate
+  desktop theme button.
 - **Session reuse.** When the instance tab is already signed in, the desktop
   uses that BFF session for the tunnel API. It falls back to the device flow or
   a personal `tunnels:operate` token only when no web session is available.
