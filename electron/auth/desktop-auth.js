@@ -576,8 +576,18 @@ class DesktopAuth {
    * usable credential; callers fall back to Auto rather than blocking the UI.
    * The relay endpoint still enforces RBAC and the allowlist server-side.
    */
-  async fetchConnectionPolicy(instanceUrl, sessionFetch, personalToken = null) {
-    const url = `${instanceUrl.replace(/\/$/, "")}/api/connection-policy`;
+  /**
+   * GET with the same credential ladder used by the tunnel API: explicit
+   * personal token, partition cookie, device-flow access token. Returns null
+   * when every credential is missing or rejected; other failures throw.
+   */
+  async fetchAuthorizedJson(
+    instanceUrl,
+    path,
+    sessionFetch,
+    personalToken = null,
+  ) {
+    const url = `${instanceUrl.replace(/\/$/, "")}${path}`;
     const request = async (token) => {
       const headers = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -596,12 +606,12 @@ class DesktopAuth {
       } catch {
         throw new Error("Istanza non raggiungibile.");
       }
-      if (result.response.ok) return normalizeConnectionPolicy(result.body);
+      if (result.response.ok) return result.body;
       if (![401, 403].includes(result.response.status)) {
         throw new Error(
           result.body?.detail ||
             result.body?.title ||
-            `API connessioni: HTTP ${result.response.status}`,
+            `API desktop: HTTP ${result.response.status}`,
         );
       }
     }
@@ -612,12 +622,12 @@ class DesktopAuth {
     } catch {
       throw new Error("Istanza non raggiungibile.");
     }
-    if (result.response.ok) return normalizeConnectionPolicy(result.body);
+    if (result.response.ok) return result.body;
     if (![401, 403].includes(result.response.status)) {
       throw new Error(
         result.body?.detail ||
           result.body?.title ||
-          `API connessioni: HTTP ${result.response.status}`,
+          `API desktop: HTTP ${result.response.status}`,
       );
     }
 
@@ -632,7 +642,33 @@ class DesktopAuth {
     } catch {
       return null;
     }
-    return result.response.ok ? normalizeConnectionPolicy(result.body) : null;
+    return result.response.ok ? result.body : null;
+  }
+
+  async fetchConnectionPolicy(instanceUrl, sessionFetch, personalToken = null) {
+    const body = await this.fetchAuthorizedJson(
+      instanceUrl,
+      "/api/connection-policy",
+      sessionFetch,
+      personalToken,
+    );
+    return normalizeConnectionPolicy(body);
+  }
+
+  async fetchRemoteTarget(
+    instanceUrl,
+    serverId,
+    sessionFetch,
+    personalToken = null,
+    scope = null,
+  ) {
+    const query = scope === "actions" ? "?scope=actions" : "";
+    return this.fetchAuthorizedJson(
+      instanceUrl,
+      `/api/remote/targets/${serverId}${query}`,
+      sessionFetch,
+      personalToken,
+    );
   }
 
   async fetchCounts(instanceUrl, sessionFetch) {

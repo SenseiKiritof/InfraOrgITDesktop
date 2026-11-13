@@ -13,6 +13,7 @@ const instanceOrigin = argument
 
 if (instanceOrigin && window.location.origin === instanceOrigin) {
   const bridge = {
+    remote: true,
     sendMessage: (message) => {
       if (typeof message === "string")
         ipcRenderer.send("desktop-message", message);
