@@ -50,10 +50,9 @@ npm install
 npm start
 ```
 
-The local Caddy certificate must be trusted by macOS. On a development machine
-the shell accepts the loopback certificate only for loopback hosts; packaged
-builds require a trusted certificate. `DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is
-the explicit local override.
+Packaged builds require the local Caddy certificate to be trusted by macOS. In
+development the shell can accept loopback certificates; `DESKTOP_ALLOW_INSECURE_LOCALHOST=1`
+is the explicit override for a packaged local test.
 
 For tests and packaging, see
 [`prototype-electron/README.md`](prototype-electron/README.md) and
