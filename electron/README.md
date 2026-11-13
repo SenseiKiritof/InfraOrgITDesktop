@@ -65,9 +65,7 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ![Command palette with instance, tunnel and application actions](../docs/screenshots/electron-command-palette.png)
 
-![Light theme inherited from the account preference; the Web app owns the only theme toggle](../docs/screenshots/electron-light.png)
-
-![Instance tab rendered by the Web app inside the Electron shell, with the system-theme icon in the Web header](../docs/screenshots/electron-instance.png)
+![Instance tab rendered by the Web app inside the Electron shell in the dark theme](../docs/screenshots/electron-instance.png)
 
 ## Silent authentication sequence
 
@@ -162,8 +160,11 @@ npm run package:linux  # linux/x64
 
 Output goes to `electron/dist/InfraOrgIT-<platform>-<arch>/`, with the app as
 `InfraOrgIT.app` on macOS, `InfraOrgIT.exe` on Windows and `InfraOrgIT` on
-Linux. The package scripts enable `--asar`, overwrite an existing output and
-ignore `test/`, `node_modules`, `README.md` and `package-lock.json`.
+Linux. The scripts select `assets/icon.icns`, `assets/icon.ico` or
+`assets/icon.png` per platform; `python3 scripts/make-icons.py` regenerates
+them from the brand mark. They enable `--asar`, overwrite an existing output
+and ignore `test/`, `node_modules`, `README.md`, `package-lock.json` and the
+packaging scripts.
 
 The `publish` workflow runs Electron Packager for all four release targets and
 builds these archives:
