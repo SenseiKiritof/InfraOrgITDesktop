@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const path = require("node:path");
 
 const {
   DownloadTracker,
@@ -50,17 +51,18 @@ test("DownloadTracker tracks progress and prunes only finished downloads", () =>
 });
 
 test("uniqueFilePath keeps the extension and avoids overwriting", () => {
+  const directory = path.join("root", "downloads");
   const existing = new Set([
-    "/downloads/report.pdf",
-    "/downloads/report (1).pdf",
+    path.join(directory, "report.pdf"),
+    path.join(directory, "report (1).pdf"),
   ]);
   assert.equal(
-    uniqueFilePath("/downloads", "report.pdf", (name) => existing.has(name)),
-    "/downloads/report (2).pdf",
+    uniqueFilePath(directory, "report.pdf", (name) => existing.has(name)),
+    path.join(directory, "report (2).pdf"),
   );
   assert.equal(
-    uniqueFilePath("/downloads", "../x.txt", () => false),
-    "/downloads/.._x.txt",
+    uniqueFilePath(directory, "../x.txt", () => false),
+    path.join(directory, ".._x.txt"),
   );
 });
 

@@ -37,7 +37,8 @@ test("refresh token store persists only encrypted refresh tokens", () => {
   const raw = fs.readFileSync(file, "utf8");
   assert.ok(!raw.includes("refresh-1"));
   assert.ok(!raw.includes("refresh-2"));
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== "win32")
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
   const reloaded = new RefreshTokenStore({ file, safeStorage, logger });
   assert.equal(reloaded.get("https://infra.example.com"), "refresh-1");
