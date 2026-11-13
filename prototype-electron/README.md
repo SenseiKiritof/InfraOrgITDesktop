@@ -171,9 +171,10 @@ test/                     Electron shell test, fake SSH, unit tests
   and keeps the session in memory for that run. A native keychain wrapper is
   the next hardening step; safeStorage is the deliberate compromise for this
   implementation.
-- The running 8443 stack does not yet serve `/auth/desktop-session`, so the
-  real silent path could not be completed end to end here. The shell falls
-  back to Keycloak login, which is what the shell test validates.
+- The local 8443 stack serves `/auth/desktop-session`; the startup path reuses
+  the instance BFF session when present and otherwise falls back to the device
+  flow. The shell test uses seeded tunnel targets so it does not need a real
+  SSH server.
 - Keycloak refresh-token rotation can invalidate the copy stored in the BFF
   session if the API turns on `revokeRefreshToken`; the current realm leaves
   rotation reuse enabled. If rotation is enabled, the API should return the
@@ -181,12 +182,14 @@ test/                     Electron shell test, fake SSH, unit tests
 - Tunnel definitions kept as “stopped” rows live in memory only. The OS port
   can still be occupied by another process; the app guards duplicate desktop
   tunnels and lets `ssh ExitOnForwardFailure` report the rest.
-- The shell has no packaging, signing, auto-update or installer yet. The
-  Photino app remains the released product until this branch is accepted.
+- The shell is packaged locally as an ad-hoc application bundle. Developer ID
+  signing, notarization, auto-update and a signed installer are not released
+  yet; the Photino app remains the public product until that changes.
 
 ## Packaging path
 
-Use Electron Forge or electron-builder with the same `preload`/IPC boundary,
-keep the loopback certificate exception out of production, sign the macOS and
-Windows builds, and keep the local manager page free of remote content. Do not
-disable the Chromium sandbox to work around packaging.
+The local ad-hoc build uses Electron Packager. For release, use Electron Forge,
+electron-builder or Packager with the same `preload`/IPC boundary, keep the
+loopback certificate exception out of production, sign the macOS and Windows
+builds, and keep the local manager page free of remote content. Do not disable
+the Chromium sandbox to work around packaging.
