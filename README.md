@@ -1,93 +1,113 @@
 # InfraOrgIT Desktop
 
-InfraOrgIT Desktop opens one or more InfraOrgIT instances in their own
-windows and brings the instance's SSH targets to your machine. It uses the
-operating-system webview and your existing SSH agent: no separate browser, no
-private key copied into the app.
+InfraOrgIT Desktop is the Electron app in [`electron/`](electron/README.md). It
+opens one or more InfraOrgIT instances from a single control-room window, reuses
+the instance BFF session and drives the local SSH agent. No private key is
+copied into the app.
 
-![InfraOrgIT Desktop with three instances, each with Tunnel, Open and Remove actions](docs/screenshots/desktop-manager.png)
+![InfraOrgIT Desktop landing with instance cards and tabs](docs/screenshots/electron-landing.png)
 
 The screenshots use fictitious demo instances, servers and tunnels.
 
-## What you can do
+## Features
 
-- **Several instances, separate windows.** Keep production, staging and a lab
-  open at the same time; each window has its own session and cookies.
-- **Tunnels with your SSH agent.** Open `ssh -L` (local), `-D` (SOCKS) and
-  `-R` (remote) forwards, including jump-host chains supplied by the instance.
-- **Services per server.** The tunnel panel lists the server's deployments and
-  custom services (local HTTP/HTTPS, SOCKS, remote), with a local port and an
-  **Open** button while a tunnel is active.
-- **Start once, reconnect if needed.** Services marked `autoStart` start when
-  the target list loads. If an `autoStart` SSH process exits unexpectedly, the
-  app reconnects up to three times, five seconds apart, reusing the same local
-  port. A manual stop cancels the retries.
-- **Keycloak or a personal token.** Sign in with the OAuth device grant, or
-  paste a token with `tunnels:operate`. The access token stays in memory; the
-  refresh token goes to the OS secret store.
-- **Restore after restart.** Saved tunnels reopen after the manager page loads
-  when the stored session is still valid. No token, host, username or secret is
-  written to the tunnel file.
-- **Signed updates.** The app reads the latest GitHub release, downloads the
-  archive for the current platform only from GitHub, verifies the signed
-  SHA-256 manifest and installs or opens the installer.
+- **Landing manager.** Instance cards show name, URL, environment, last use,
+  server count and tunnel count. **Nuova istanza**, **Apri**, **Gestisci** and
+  **Rimuovi** are in the card; **Istanze** is always one click away from a tab.
+- **Isolated tabs.** Each instance URL has its own persistent Chromium
+  partition. Cookies, the BFF login and storage never cross instances.
+- **Tunnel drawer.** Rows are grouped by instance and server and show the local
+  port. **Nuovo tunnel** searches by machine, IP, environment, application and
+  service, keeping the environment groups. Start, stop, error and a 30-second
+  heartbeat are projected to the central `/tunnels` page.
+- **Session reuse.** If the instance tab is already signed in, the desktop uses
+  that BFF session for the tunnel API. The device flow with `offline_access`,
+  or a personal `tunnels:operate` token, is only a fallback.
+- **One theme.** The shell follows the account theme. The Web toggle is the
+  only control and cycles light, dark and system; the shell follows the
+  resolved appearance. There is no desktop theme button.
+- **Web workspace in a tab.** Server detail, SSH console, SFTP/FTPS/FTP file
+  sessions and tunnel anagrafica stay in the existing Web app. The desktop adds
+  the native window, instance management and the process-level tunnel manager.
 
-![Tunnel panel with a server, deployed application, custom services and an active local tunnel](docs/screenshots/desktop-tunnels.png)
+![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
 
-## Install
+![Light theme inherited from the Web account preference](docs/screenshots/electron-light.png)
 
-Download the archive for your platform from the
-[Releases](https://github.com/SenseiKiritof/InfraOrgITDesktop/releases) page:
+## Run locally
 
-| Platform | Archive |
-|---|---|
-| macOS Apple silicon | `InfraOrgIT-Desktop-<version>-osx-arm64.zip` |
-| macOS Intel | `InfraOrgIT-Desktop-<version>-osx-x64.zip` |
-| Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` |
-| Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` |
+Requirements: Node 24+, npm, the OpenSSH client and a running SSH agent, plus an
+InfraOrgIT instance. For the local full stack, `make full` from
+`AllInfraOrgIT` serves `https://localhost:8443`.
 
-If the Releases page does not have a build yet, [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
-describes how to build and package it from source.
+```bash
+cd electron
+npm install
+npm start
+```
 
-- **macOS**: unzip, move `InfraOrgIT Desktop.app` to Applications and open it.
-  A build without a Developer ID signature requires the usual right-click →
-  **Open** confirmation; the release notes state whether the build is signed
-  and notarized.
-- **Windows**: unzip and run `InfraOrgIt.Desktop.exe`. An unsigned build may
-  show SmartScreen; use **More info → Run anyway** only if you trust the
-  release.
-- **Linux**: extract the archive and run `InfraOrgIt.Desktop`. The system
-  webview needs WebKitGTK (`libwebkit2gtk-4.1-0` on Debian/Ubuntu).
+Packaged builds require the local Caddy certificate to be trusted by macOS. In
+development the shell can accept loopback certificates;
+`DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is the explicit override for a packaged
+local test.
 
-The app also needs the OpenSSH client and a running SSH agent. Load your key
-with `ssh-add` before opening a tunnel; the app never reads private keys.
+For tests, packaging and the security boundaries, see
+[`electron/README.md`](electron/README.md) and
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-## Use it
+## First start
 
-1. Add an instance: a name and the HTTPS URL of your InfraOrgIT installation.
-2. **Open** launches the instance in its own window.
-3. **Tunnel** opens the panel for that instance. Sign in with Keycloak or paste
-   a personal token with `tunnels:operate`.
-4. Pick a server, a deployment or a custom service, optionally change the local
-   port, and press **Open** or **Start**.
-5. Use **Open** next to an active local HTTP/HTTPS tunnel to launch it in the
-   browser. **Close** stops the forward.
-
-The panel shows the active tunnels and their live state. The same sessions are
-visible to the team on the instance's **Tunnels** page.
+1. Press **Nuova istanza**, enter a name and the HTTPS URL of the installation,
+   and choose whether it opens at startup.
+2. Press **Apri**. Each instance gets its own tab and persistent Chromium
+   session.
+3. Sign in from the instance tab. The tunnel drawer reuses that session; no
+   second Keycloak prompt is needed. Use the device flow or a personal token
+   only when the instance has no web session.
+4. Open **Tunnel**, expand **Nuovo tunnel**, search for a server, deployment or
+   service, set the local port and press **Avvia**.
+5. Change the theme from the Web app. The desktop shell follows it.
 
 ## Security
 
-- The refresh token is stored in macOS Keychain, Windows Credential Manager or
-  the Linux Secret Service. Access tokens live only in memory.
-- On macOS the token is written through the native Security framework, never
-  as a process argument.
-- Remote instance URLs must use HTTPS; plain HTTP is accepted only for
-  loopback development, unless the explicit development override is set.
+- The refresh token is encrypted with Electron `safeStorage` in
+  `userData/desktop-auth.bin`: macOS Keychain, Windows DPAPI or Linux Secret
+  Service. Without a keyring the session stays in memory for that run.
+- Access and refresh tokens never reach a renderer. The Web app receives only
+  the CSRF token it needs for its own mutations. The preload exposes only the
+  narrow `window.infraorgitDesktop` message bridge, gated by the instance
+  origin.
+- Remote instance URLs must use HTTPS. Loopback HTTP is accepted only during
+  development; packaged builds require a trusted certificate unless the
+  explicit local override is set.
 - The app reads the SSH configuration and lets the system `ssh` use the agent;
   it does not store private keys.
-- Updates require a valid signed manifest; a missing or invalid signature
-  blocks automatic installation and offers only a manual download.
+- Tunnels are projected to the instance using the signed-in BFF session and
+  CSRF token. A user without the operator role cannot see or change them.
+
+## Packages
+
+The `publish` workflow packages four targets:
+
+| Platform | Archive | Contents |
+|---|---|---|
+| macOS Apple silicon | `InfraOrgIT-Desktop-<version>-osx-arm64.zip` | `InfraOrgIT.app` |
+| macOS Intel | `InfraOrgIT-Desktop-<version>-osx-x64.zip` | `InfraOrgIT.app` |
+| Windows x64 | `InfraOrgIT-Desktop-<version>-win-x64.zip` | `InfraOrgIT-win32-x64/` |
+| Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` | `InfraOrgIT-linux-x64/` |
+
+- **macOS**: unzip and move `InfraOrgIT.app` to Applications.
+- **Windows**: unzip and run `InfraOrgIT.exe` inside `InfraOrgIT-win32-x64`.
+- **Linux**: extract and run `InfraOrgIT` inside `InfraOrgIT-linux-x64`.
+
+A `<archive>.sha256` checksum is published next to every archive.
+
+> The packages are unsigned. macOS Gatekeeper blocks a downloaded app until it
+> is allowed in **System Settings → Privacy & Security** (or the quarantine
+> attribute is removed with `xattr -dr com.apple.quarantine InfraOrgIT.app`),
+> and Windows SmartScreen shows an unknown-publisher warning. Developer ID
+> signing, macOS notarization, Windows Authenticode signing and auto-update are
+> follow-ups. Verify the SHA-256 checksum before running an archive.
 
 ## Learn more
 
@@ -95,5 +115,7 @@ visible to the team on the instance's **Tunnels** page.
   deployment and architecture.
 - [`../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md`](../AllInfraOrgIT/docs/architecture/mcp-server-and-tunnels.md)
   — MCP and tunnel design.
-- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, run from source,
-  packaging, signing, update internals and tests.
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — run, test, packaging, CI and
+  publish.
+- [`electron/README.md`](electron/README.md) — Electron structure, commands and
+  security boundaries.
