@@ -407,11 +407,20 @@ async function renewInstanceAuth(instance) {
 
   const task = desktopAuth
     .renew(instance, sessionFetch(record.session), record.session.cookies)
-    .then((result) => {
+    .then(async (result) => {
       if (result.mode === "renewed")
         console.log("desktop auth renewed", instance.url);
-      else if (result.mode === "revoked")
+      else if (result.mode === "revoked") {
         console.log("desktop auth revoked", instance.url);
+        await clearInstanceCookies(instance);
+        record.prepared = false;
+        if (!record.view.webContents.isDestroyed()) {
+          record.view.webContents.loadURL(instance.url).catch((error) => {
+            record.lastError = error.message;
+            sendState();
+          });
+        }
+      }
       return result;
     })
     .catch((error) => {
@@ -608,6 +617,14 @@ function createInstanceView(instance) {
   return record;
 }
 
+async function clearInstanceCookies(instance) {
+  const record = recordFor(instance.url);
+  if (!record) return;
+  await record.session
+    .clearStorageData({ storages: ["cookies"] })
+    .catch(() => {});
+}
+
 function prepareInstance(instance) {
   const record = recordFor(instance.url);
   if (!record || record.prepared) return;
@@ -633,6 +650,10 @@ function prepareInstance(instance) {
     record.loading = false;
     sendState();
     if (record.view.webContents.isDestroyed()) return;
+    // A revoked refresh token must not leave the old BFF cookie usable:
+    // clear the partition cookies so the SPA goes through Keycloak again.
+    if (mode.mode === "expired" || mode.mode === "revoked")
+      await clearInstanceCookies(instance);
     const target = record.pendingUrl || instance.url;
     record.pendingUrl = null;
     record.view.webContents.loadURL(target).catch((error) => {

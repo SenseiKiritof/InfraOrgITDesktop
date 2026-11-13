@@ -150,7 +150,7 @@ test("restore refreshes Keycloak, exchanges the BFF session and hides secrets", 
   auth.dispose();
 });
 
-test("restore falls back to the login page when the session exchange fails", async () => {
+test("restore drops the session when the desktop exchange is rejected", async () => {
   const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
   const auth = new DesktopAuth({
     deviceClient: fakeDevice(),
@@ -163,8 +163,30 @@ test("restore falls back to the login page when the session exchange fails", asy
     sessionFetch({ exchangeStatus: 401 }),
     cookies(),
   );
-  assert.equal(result.mode, "fallback");
+  assert.equal(result.mode, "revoked");
   assert.match(result.message, /non è più valida/);
+  assert.equal(store.values.has(instance.url), false);
+  const snapshot = auth.snapshot(instance.url);
+  assert.equal(snapshot.status, "none");
+  assert.equal(snapshot.tunnelAccess, false);
+  auth.dispose();
+});
+
+test("restore falls back without forgetting the token when the exchange is unavailable", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice(),
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+  const result = await auth.restore(
+    instance,
+    sessionFetch({ exchangeStatus: 502 }),
+    cookies(),
+  );
+  assert.equal(result.mode, "fallback");
+  assert.equal(store.values.get(instance.url), "refresh-new");
   const snapshot = auth.snapshot(instance.url);
   assert.equal(snapshot.status, "error");
   assert.equal(snapshot.tunnelAccess, true);

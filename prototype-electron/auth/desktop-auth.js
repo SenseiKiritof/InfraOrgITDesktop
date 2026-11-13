@@ -105,6 +105,14 @@ class DesktopAuth {
     return context;
   }
 
+  forgetTokens(instanceUrl) {
+    const context = this.context(instanceUrl);
+    context.accessToken = null;
+    context.accessExpiresAt = 0;
+    context.csrfToken = "";
+    context.account = null;
+  }
+
   async readAccount(instanceUrl, sessionFetch, { emit = true } = {}) {
     try {
       const account = await fetchAccountSession({ instanceUrl, sessionFetch });
@@ -157,6 +165,7 @@ class DesktopAuth {
         error instanceof DeviceAuthError &&
         ["invalid_grant", "expired_token", "access_denied"].includes(error.code)
       ) {
+        this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
         this.emit(instance.url, {
           status: "none",
@@ -185,6 +194,17 @@ class DesktopAuth {
         cookies,
       });
     } catch (error) {
+      if (error?.status === 401) {
+        this.forgetTokens(instance.url);
+        this.tokenStore.delete(instance.url);
+        this.emit(instance.url, {
+          status: "none",
+          method: null,
+          message: friendly(error),
+          saved: false,
+        });
+        return { mode: "revoked", message: friendly(error) };
+      }
       this.emit(instance.url, {
         status: "error",
         method: "session",
@@ -222,6 +242,7 @@ class DesktopAuth {
         error instanceof DeviceAuthError &&
         ["invalid_grant", "expired_token", "access_denied"].includes(error.code)
       ) {
+        this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
         this.emit(instance.url, {
           status: "none",
@@ -250,6 +271,7 @@ class DesktopAuth {
       });
     } catch (error) {
       if (error?.status === 401) {
+        this.forgetTokens(instance.url);
         this.tokenStore.delete(instance.url);
         this.emit(instance.url, {
           status: "none",
@@ -428,6 +450,7 @@ class DesktopAuth {
         error instanceof DeviceAuthError &&
         ["invalid_grant", "expired_token"].includes(error.code)
       ) {
+        this.forgetTokens(instanceUrl);
         this.tokenStore.delete(instanceUrl);
         this.emit(instanceUrl, {
           status: "none",
