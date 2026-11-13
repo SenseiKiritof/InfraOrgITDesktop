@@ -2,6 +2,7 @@ const {
   app,
   BrowserWindow,
   WebContentsView,
+  dialog,
   ipcMain,
   Menu,
   nativeTheme,
@@ -22,6 +23,7 @@ const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
 const { TunnelManager } = require("./tunnels");
 const { TunnelProjection } = require("./tunnel-projection");
+const { DownloadTracker, sanitizeFileName } = require("./downloads");
 
 const IS_TEST = process.env.PROTO_TEST === "1";
 const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
@@ -34,6 +36,11 @@ const runtime = new Map();
 const tokens = new Map();
 const authRenewals = new Map();
 const accountThemes = new Map();
+const downloadTracker = new DownloadTracker();
+const downloadSessions = new Set();
+const MAX_BLOB_BYTES = 8 * 1024 * 1024;
+const DOWNLOAD_TTL_MS = 60_000;
+let downloadStateTimer = null;
 let lastThemeUrl = "";
 let authRenewTimer = null;
 let tabOrder = [];
@@ -105,10 +112,112 @@ const partitionFor = (url) =>
     .digest("hex")
     .slice(0, 16)}`;
 
+function publishDownload(entry, immediate = false) {
+  if (!entry) return;
+  sendToView(entry.instanceUrl, {
+    type: "desktop.download.status",
+    id: entry.id,
+    state: entry.state,
+    fileName: entry.fileName,
+    receivedBytes: entry.receivedBytes,
+    totalBytes: entry.totalBytes,
+  });
+  if (immediate) {
+    downloadTracker.prune();
+    if (downloadStateTimer) clearTimeout(downloadStateTimer);
+    downloadStateTimer = null;
+    sendState();
+    return;
+  }
+  if (downloadStateTimer) return;
+  downloadStateTimer = setTimeout(() => {
+    downloadStateTimer = null;
+    downloadTracker.prune();
+    sendState();
+  }, 400);
+  downloadStateTimer.unref?.();
+}
+
+/** Un listener per partizione: i download nativi restano visibili al manager. */
+function trackDownloads(instance, targetSession) {
+  const partition = partitionFor(instance.url);
+  if (downloadSessions.has(partition)) return;
+  downloadSessions.add(partition);
+  targetSession.on("will-download", (_event, item) => {
+    const entry = downloadTracker.add({
+      fileName: item.getFilename(),
+      totalBytes: item.getTotalBytes(),
+      instanceUrl: instance.url,
+    });
+    publishDownload(entry);
+    let progressAt = 0;
+    item.on("updated", (_updatedEvent, state) => {
+      const now = Date.now();
+      if (now - progressAt < 400) return;
+      progressAt = now;
+      publishDownload(
+        downloadTracker.update(entry.id, {
+          state: state === "interrupted" ? "failed" : "progressing",
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes() || entry.totalBytes,
+          savePath: item.getSavePath() || "",
+        }),
+      );
+    });
+    item.once("done", (_doneEvent, state) => {
+      publishDownload(
+        downloadTracker.finish(
+          entry.id,
+          state === "completed"
+            ? "completed"
+            : state === "cancelled"
+              ? "cancelled"
+              : "failed",
+          {
+            receivedBytes: item.getReceivedBytes(),
+            totalBytes: item.getTotalBytes() || entry.totalBytes,
+            savePath: item.getSavePath() || "",
+          },
+        ),
+        true,
+      );
+      setTimeout(() => {
+        downloadTracker.remove(entry.id);
+        sendState();
+      }, DOWNLOAD_TTL_MS).unref?.();
+    });
+  });
+}
+
+async function saveBlobDownload(record, message) {
+  const fileName = sanitizeFileName(message.filename);
+  const base64 = typeof message.base64 === "string" ? message.base64 : "";
+  const bytes = Buffer.from(base64.replace(/\s/g, ""), "base64");
+  if (bytes.length === 0 || bytes.length > MAX_BLOB_BYTES) return;
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: path.join(app.getPath("downloads"), fileName),
+  });
+  if (result.canceled || !result.filePath) return;
+  await fs.promises.writeFile(result.filePath, bytes);
+  const entry = downloadTracker.add({
+    fileName,
+    totalBytes: bytes.length,
+    instanceUrl: record.url,
+  });
+  publishDownload(
+    downloadTracker.finish(entry.id, "completed", {
+      receivedBytes: bytes.length,
+      savePath: result.filePath,
+    }),
+    true,
+  );
+}
+
 function sessionFor(instance) {
   const partition = partitionFor(instance.url);
   const target = session.fromPartition(partition);
   applyLoopbackPolicy(target);
+  trackDownloads(instance, target);
   return { partition, session: target };
 }
 
@@ -182,6 +291,7 @@ function publicTargets(url) {
 }
 
 function publicState() {
+  downloadTracker.prune();
   const instances = instanceStore.list().map((instance) => {
     const data = runtimeFor(instance.url);
     const localCount = localTunnelCount(instance.url);
@@ -222,6 +332,7 @@ function publicState() {
     theme: themeState(),
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
+    downloads: downloadTracker.list(),
     targets,
     version: app.getVersion(),
   };
@@ -1187,6 +1298,17 @@ async function handleDesktopMessage(sender, raw) {
       return;
 
     case "tunnels.retries.cancel":
+      return;
+
+    case "desktop.download": {
+      const url = typeof message.url === "string" ? message.url : "";
+      if (!/^https?:\/\//i.test(url)) return;
+      record.view.webContents.downloadURL(url);
+      return;
+    }
+
+    case "desktop.download.blob":
+      await saveBlobDownload(record, message);
       return;
 
     case "desktop.openExternal":

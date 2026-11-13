@@ -10,6 +10,7 @@ const els = {
   tunnelBadge: document.querySelector("#tunnel-badge"),
   landing: document.querySelector("#landing"),
   summary: document.querySelector("#summary"),
+  downloads: document.querySelector("#downloads"),
   instances: document.querySelector("#instances"),
   empty: document.querySelector("#empty"),
   newInstance: document.querySelector("#new-instance"),
@@ -174,6 +175,7 @@ function render() {
   document.documentElement.dataset.platform = state.platform;
   document.body.dataset.view = state.activeUrl ? "instance" : "landing";
   renderSummary();
+  renderDownloads();
   renderCards();
   renderTabs();
   renderDrawer();
@@ -195,12 +197,17 @@ function renderSummary() {
   const ready = state.instances.filter(
     (instance) => instance.auth?.status === "ready",
   ).length;
+  const activeDownloads = (state.downloads || []).filter(
+    (item) => item.state === "progressing",
+  ).length;
   const chips = [
     ["Istanze", state.instances.length, "Istanza"],
     ["Tab aperte", state.tabs.length, "Tab aperta"],
     ["Tunnel attivi", activeTunnels, "Tunnel attivo"],
     ["Sessioni", ready, "Sessione"],
   ];
+  if (activeDownloads > 0)
+    chips.push(["Download attivi", activeDownloads, "Download attivo"]);
   for (const [label, value, singular] of chips) {
     const chip = el("span", "summary-chip");
     if (label === "Tunnel attivi" && activeTunnels > 0)
@@ -210,6 +217,45 @@ function renderSummary() {
       document.createTextNode(value === 1 ? singular : label),
     );
     els.summary.append(chip);
+  }
+}
+
+function downloadLabel(item) {
+  if (item.state === "completed") return "Completato";
+  if (item.state === "cancelled") return "Annullato";
+  if (item.state === "failed") return "Non riuscito";
+  const total = Number(item.totalBytes) || 0;
+  const received = Number(item.receivedBytes) || 0;
+  if (total <= 0) return "In corso";
+  return `In corso · ${Math.min(100, Math.round((received / total) * 100))}%`;
+}
+
+function renderDownloads() {
+  const items = state.downloads || [];
+  els.downloads.hidden = items.length === 0;
+  els.downloads.replaceChildren();
+  if (items.length === 0) return;
+
+  els.downloads.append(el("h2", "downloads-title", "Download"));
+  for (const item of items) {
+    const row = el("div", "download-row");
+    const main = el("div", "download-main");
+    main.append(el("span", "download-name", item.fileName));
+    main.append(el("span", "download-meta", downloadLabel(item)));
+
+    const bar = el("div", "download-bar");
+    const total = Number(item.totalBytes) || 0;
+    const received = Number(item.receivedBytes) || 0;
+    const fill = el("span", "download-fill");
+    if (total > 0) {
+      fill.style.width = `${Math.min(100, Math.round((received / total) * 100))}%`;
+    } else {
+      fill.dataset.indeterminate = "true";
+    }
+    bar.append(fill);
+    main.append(bar);
+    row.append(main);
+    els.downloads.append(row);
   }
 }
 
