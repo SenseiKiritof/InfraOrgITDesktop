@@ -44,11 +44,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Server tunnel anagrafica.** The drawer and the manage dialog link to the
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
-- **Theme.** The topbar switch writes the user preference through
-  `PATCH /api/session/theme` when the session exposes a CSRF token, keeps
-  `instances`/`settings` locally for offline use, and reads the account theme
-  from `/api/session` (falling back to the Web localStorage
-  `infraorgit-theme`).
+- **Theme.** The shell inherits the account theme read from `/api/session`
+  (falling back to `settings.json` before any instance is available). The
+  topbar switch writes the same account preference through
+  `PATCH /api/session/theme` and tells the Web view to apply it; the Web toggle
+  reports changes back to the shell. There is no independent desktop theme.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, changes the theme, reloads the active tab and opens tunnel URLs.

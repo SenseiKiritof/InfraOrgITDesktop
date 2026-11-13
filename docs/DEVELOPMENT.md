@@ -31,9 +31,12 @@ user-facing notes and screenshots.
   resume, extending the same seven-day BFF session; a revoked or expired
   refresh token clears the local session and falls back to login. Renderers
   never receive access, refresh or CSRF tokens.
-- Theme: `GET /api/session` supplies the account theme; the topbar switch
-  writes it with `PATCH /api/session/theme` and mirrors it to the Web
-  `infraorgit-theme` localStorage. `settings.json` keeps the offline fallback.
+- Theme: the desktop shell follows the account theme returned by
+  `GET /api/session`; there is no separate desktop theme. The topbar switch is
+  a shortcut that writes the same account preference with
+  `PATCH /api/session/theme` and sends `theme.apply` to the Web view. A toggle
+  in the Web app sends `theme.changed` back, so shell and SPA stay on one
+  preference. `settings.json` is only the fallback before an instance loads.
 - Tunnels: the manager owns the SSH processes; the Web `/tunnels` panel stays
   the per-instance detail. The drawer groups every instance by server, shows
   the local port and active/stopped state, and enforces a duplicate local-port
