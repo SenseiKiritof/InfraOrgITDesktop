@@ -26,17 +26,18 @@ The screenshots use fictitious demo instances, servers and tunnels.
   `persist:instance-<hash>`; cookies never cross instances. A tab is a
   `WebContentsView`, so the shell chrome stays local while the SPA keeps its
   own navigation state.
-- **Silent authentication.** The desktop performs the OAuth 2.0 device flow
-  with `infraorgit-mcp-desktop` and scopes
+- **Silent authentication.** At startup the desktop first checks
+  `/api/session` through the instance partition. If the user already signed in
+  from the Web tab, that BFF session is reused for the tunnel API and no
+  Keycloak page appears. Without a BFF session it performs the OAuth 2.0 device
+  flow with `infraorgit-mcp-desktop` and scopes
   `openid profile email offline_access mcp:read tunnels:operate`, opens the
   verification URL in the default browser, polls Keycloak and stores only the
-  refresh token. At startup it refreshes the token, exchanges it at
-  `POST /auth/desktop-session` through the instance partition, and loads the
-  SPA without the Keycloak page. While an instance tab is open (and after
-  system resume) the exchange repeats every six hours and extends the same
-  seven-day BFF session, so the user is not asked to log in again while the
-  Keycloak offline token remains valid. Any failure falls back to the normal
-  login page; a revoked or expired refresh token clears the local session.
+  refresh token. The exchange at `POST /auth/desktop-session` extends the same
+  seven-day BFF session every six hours and after system resume, so the user is
+  not asked to log in again while the Keycloak offline token remains valid.
+  Any failure falls back to the normal login page; a revoked or expired refresh
+  token clears the local session.
 - **Global tunnel drawer.** All instances in one place, grouped by instance
   and server. Each row shows `istanza · server · IP · porta locale`, an
   active/stopped state, and scoped start/stop/restart actions. Starting a
@@ -55,6 +56,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, reloads the active tab and opens tunnel URLs.
+- **Downloads.** Server attachments use Chromium's native download; their
+  progress and completion are tracked per instance and shown in the management
+  window. Generated API results use the blob bridge with a native save dialog.
+  Dragging a remote file out of the SFTP panel uses Chromium's `DownloadURL`,
+  which saves it through the same native download path.
 - **Existing bridge.** The renderer still sees the narrow
   `window.infraorgitDesktop` bridge used by the download/tunnel panels of the
   Web app: `sendMessage`/`receiveMessage` of JSON strings only. No Node,
@@ -98,8 +104,9 @@ session or a token with `tunnels:operate`.
 
 ![Global tunnel drawer grouped by instance and environment, with the searchable New tunnel form](../docs/screenshots/electron-tunnels.png)
 
-The per-instance Web panel is unchanged and still lists only the active
-tunnels of that instance; the drawer is the multi-instance view.
+The per-instance Web panel keeps the local tunnel detail; the drawer is the
+multi-instance view, while start/stop/error and heartbeats are projected to the
+central `/tunnels` page.
 
 ![Existing Web /tunnels panel with the desktop tunnel section](../docs/screenshots/electron-web-tunnels.png)
 
@@ -147,7 +154,7 @@ main.js                   app lifecycle, main window, WebContentsView tabs, IPC
 auth/device-client.js     OAuth device flow + PKCE, injected fetch/delay
 auth/session-client.js    /auth/desktop-session and /api/session contract
 auth/refresh-store.js     safeStorage encrypted refresh-token file
-auth/desktop-auth.js      startup restore, device login, tunnel access tokens
+auth/desktop-auth.js      BFF/device restore, tunnel access tokens
 shell/instances.js        validation, atomic instances.json, prototype migration
 shell/settings.js         atomic settings.json (theme fallback)
 tunnels.js                SSH argument builder, process lifecycle, port guard

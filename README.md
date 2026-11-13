@@ -107,8 +107,9 @@ download modes; the Electron shell replaces them when packaging is signed.
 - **Linux**: extract and run `InfraOrgIt.Desktop`; WebKitGTK is required.
 
 The Photino download setting offers **Automatico**, **Bridge** and **Nativo**.
-The Electron shell reports native Chromium downloads and has no separate
-download-mode setting; the bridge remains part of the legacy Photino build.
+The Electron shell uses Chromium's native download for server attachments and
+the desktop blob bridge for generated API results; it has no download-mode
+setting. The signed-ticket bridge is specific to the legacy Photino manager.
 
 ## Learn more
 
