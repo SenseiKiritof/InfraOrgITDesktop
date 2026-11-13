@@ -205,6 +205,72 @@ class DesktopAuth {
   }
 
   /**
+   * Periodic renewal for an open instance: refreshes Keycloak and extends the
+   * BFF desktop session in the same partition, without changing the visible
+   * auth state. A revoked or expired refresh token drops the local session so
+   * the next load falls back to the login page.
+   */
+  async renew(instance, sessionFetch, cookies) {
+    const refreshToken = this.tokenStore.get(instance.url);
+    if (!refreshToken) return { mode: "none" };
+
+    let tokens;
+    try {
+      tokens = await this.deviceClient.refresh(instance.url, refreshToken);
+    } catch (error) {
+      if (
+        error instanceof DeviceAuthError &&
+        ["invalid_grant", "expired_token", "access_denied"].includes(error.code)
+      ) {
+        this.tokenStore.delete(instance.url);
+        this.emit(instance.url, {
+          status: "none",
+          method: null,
+          message: "La sessione desktop è stata revocata. Accedi di nuovo.",
+          saved: false,
+        });
+        return { mode: "revoked" };
+      }
+      this.logger.warn("Rinnovo sessione desktop non riuscito:", friendly(error));
+      return { mode: "error", message: friendly(error) };
+    }
+
+    this.setTokens(
+      instance.url,
+      tokens,
+      this.context(instance.url).method || "session",
+    );
+
+    try {
+      await exchangeDesktopSession({
+        instanceUrl: instance.url,
+        refreshToken: tokens.refreshToken || refreshToken,
+        sessionFetch,
+        cookies,
+      });
+    } catch (error) {
+      if (error?.status === 401) {
+        this.tokenStore.delete(instance.url);
+        this.emit(instance.url, {
+          status: "none",
+          method: null,
+          message: friendly(error),
+          saved: false,
+        });
+        return { mode: "revoked", message: friendly(error) };
+      }
+      this.logger.warn(
+        "Scambio sessione desktop non riuscito:",
+        friendly(error),
+      );
+      return { mode: "error", message: friendly(error) };
+    }
+
+    await this.readAccount(instance.url, sessionFetch);
+    return { mode: "renewed" };
+  }
+
+  /**
    * Starts the device flow, opens the verification page in the default
    * browser and polls Keycloak. Authentication happens in that browser; the
    * app only receives tokens.

@@ -6,6 +6,7 @@ const {
   Menu,
   nativeTheme,
   net,
+  powerMonitor,
   safeStorage,
   session,
   shell,
@@ -24,10 +25,14 @@ const { TunnelManager } = require("./tunnels");
 const IS_TEST = process.env.PROTO_TEST === "1";
 const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
 const MANAGER_PRELOAD = path.join(__dirname, "manager-preload.js");
+const AUTH_RENEW_INTERVAL =
+  Number(process.env.DESKTOP_AUTH_RENEW_MS) || 6 * 60 * 60 * 1000;
 
 const windows = new Map();
 const runtime = new Map();
 const tokens = new Map();
+const authRenewals = new Map();
+let authRenewTimer = null;
 let tabOrder = [];
 let activeUrl = null;
 let mainWindow = null;
@@ -387,6 +392,43 @@ async function refreshInstanceData(instance) {
   sendState();
 
   if (authSnapshot(instance.url).tunnelAccess) void loadTargets(instance);
+}
+
+async function renewInstanceAuth(instance) {
+  if (authRenewals.has(instance.url)) return authRenewals.get(instance.url);
+  const record = recordFor(instance.url);
+  if (
+    !record ||
+    !record.prepared ||
+    record.loading ||
+    !tokenStore?.get(instance.url)
+  )
+    return null;
+
+  const task = desktopAuth
+    .renew(instance, sessionFetch(record.session), record.session.cookies)
+    .then((result) => {
+      if (result.mode === "renewed")
+        console.log("desktop auth renewed", instance.url);
+      else if (result.mode === "revoked")
+        console.log("desktop auth revoked", instance.url);
+      return result;
+    })
+    .catch((error) => {
+      console.warn("desktop auth renewal failed", instance.url, error.message);
+      return { mode: "error" };
+    })
+    .finally(() => authRenewals.delete(instance.url));
+
+  authRenewals.set(instance.url, task);
+  return task;
+}
+
+async function renewOpenInstanceAuth() {
+  const instances = instanceStore
+    .list()
+    .filter((instance) => recordFor(instance.url));
+  await Promise.allSettled(instances.map(renewInstanceAuth));
 }
 
 function applyThemeToManager() {
@@ -1685,6 +1727,11 @@ if (!hasLock) {
     });
 
     openStartupTabs();
+    authRenewTimer = setInterval(
+      () => void renewOpenInstanceAuth(),
+      AUTH_RENEW_INTERVAL,
+    );
+    powerMonitor.on("resume", () => void renewOpenInstanceAuth());
     setTimeout(() => primeLandingCounts(), 1200);
 
     if (IS_TEST) {
@@ -1695,6 +1742,7 @@ if (!hasLock) {
 
   app.on("before-quit", () => {
     quitting = true;
+    if (authRenewTimer) clearInterval(authRenewTimer);
     tunnels?.stopAll();
     desktopAuth?.dispose();
   });
