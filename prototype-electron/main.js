@@ -23,7 +23,11 @@ const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
 const { TunnelManager } = require("./tunnels");
 const { TunnelProjection } = require("./tunnel-projection");
-const { DownloadTracker, sanitizeFileName } = require("./downloads");
+const {
+  DownloadTracker,
+  sanitizeFileName,
+  uniqueFilePath,
+} = require("./downloads");
 
 const IS_TEST = process.env.PROTO_TEST === "1";
 const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
@@ -144,8 +148,11 @@ function trackDownloads(instance, targetSession) {
   if (downloadSessions.has(partition)) return;
   downloadSessions.add(partition);
   targetSession.on("will-download", (_event, item) => {
+    const fileName = sanitizeFileName(item.getFilename());
+    const savePath = uniqueFilePath(app.getPath("downloads"), fileName);
+    item.setSavePath(savePath);
     const entry = downloadTracker.add({
-      fileName: item.getFilename(),
+      fileName,
       totalBytes: item.getTotalBytes(),
       instanceUrl: instance.url,
     });
@@ -160,7 +167,7 @@ function trackDownloads(instance, targetSession) {
           state: state === "interrupted" ? "failed" : "progressing",
           receivedBytes: item.getReceivedBytes(),
           totalBytes: item.getTotalBytes() || entry.totalBytes,
-          savePath: item.getSavePath() || "",
+          savePath: item.getSavePath() || savePath,
         }),
       );
     });
@@ -176,7 +183,7 @@ function trackDownloads(instance, targetSession) {
           {
             receivedBytes: item.getReceivedBytes(),
             totalBytes: item.getTotalBytes() || entry.totalBytes,
-            savePath: item.getSavePath() || "",
+            savePath: item.getSavePath() || savePath,
           },
         ),
         true,
