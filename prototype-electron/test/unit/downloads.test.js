@@ -5,11 +5,13 @@ const {
   DownloadTracker,
   MAX_FILE_NAME,
   sanitizeFileName,
+  uniqueFilePath,
 } = require("../../downloads");
 
-test("sanitizeFileName removes separators, control chars and leading dots", () => {
-  assert.equal(sanitizeFileName("../../etc/passwd"), "_.._etc_passwd");
+test("sanitizeFileName removes separators and control chars", () => {
+  assert.equal(sanitizeFileName("../../etc/passwd"), ".._.._etc_passwd");
   assert.equal(sanitizeFileName(" lead\ntask.sql.gz "), "lead_task.sql.gz");
+  assert.equal(sanitizeFileName(".bashrc"), ".bashrc");
   assert.equal(sanitizeFileName("..."), "download");
   assert.equal(sanitizeFileName(""), "download");
   assert.equal(sanitizeFileName("a".repeat(200)).length, MAX_FILE_NAME);
@@ -44,4 +46,19 @@ test("DownloadTracker tracks progress and prunes only finished downloads", () =>
   now = 10_000;
   tracker.prune(1_000);
   assert.equal(tracker.list().length, 0);
+});
+
+test("uniqueFilePath keeps the extension and avoids overwriting", () => {
+  const existing = new Set([
+    "/downloads/report.pdf",
+    "/downloads/report (1).pdf",
+  ]);
+  assert.equal(
+    uniqueFilePath("/downloads", "report.pdf", (name) => existing.has(name)),
+    "/downloads/report (2).pdf",
+  );
+  assert.equal(
+    uniqueFilePath("/downloads", "../x.txt", () => false),
+    "/downloads/.._x.txt",
+  );
 });

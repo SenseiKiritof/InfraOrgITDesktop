@@ -56,9 +56,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, reloads the active tab and opens tunnel URLs.
-- **Downloads.** Server attachments use Chromium's native download; their
-  progress and completion are tracked per instance and shown in the management
-  window. Generated API results use the blob bridge with a native save dialog.
+- **Downloads.** Server attachments use Chromium's native download into the
+  user's Downloads folder with a unique file name; progress and completion are
+  tracked per instance and shown in the management window. Generated API results use the blob bridge with a native save dialog.
   Dragging a remote file out of the SFTP panel uses Chromium's `DownloadURL`,
   which saves it through the same native download path.
 - **Existing bridge.** The renderer still sees the narrow
