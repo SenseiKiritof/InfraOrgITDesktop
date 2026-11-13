@@ -35,6 +35,7 @@ function sessionPayload(row, status, { errorCode = null, detail = null } = {}) {
     ...basePayload(row),
     sessionKey: row.id,
     status,
+    transport: row.transport === "Server" ? "Server" : "Client",
     errorCode,
     detail: cleanDetail(detail),
   };

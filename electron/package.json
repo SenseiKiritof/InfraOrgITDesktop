@@ -1,7 +1,7 @@
 {
   "name": "infraorgit-desktop",
   "productName": "InfraOrgIT",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Electron desktop shell for InfraOrgIT",
   "main": "main.js",
@@ -12,10 +12,10 @@
     "test:unit": "node --test test/unit/*.test.js",
     "test:shell": "node test/run-shell-test.js",
     "tunnel-test": "node test/tunnel-test.js",
-    "package": "electron-packager . InfraOrgIT --out=dist --asar --overwrite --app-bundle-id=it.infraorgit.desktop --ignore=\"^/test($|/)\" --ignore=\"^/node_modules($|/)\" --ignore=\"^/README\\.md$\" --ignore=\"^/package-lock\\.json$\"",
-    "package:mac": "electron-packager . InfraOrgIT --platform=darwin --arch=arm64 --out=dist --asar --overwrite --app-bundle-id=it.infraorgit.desktop --ignore=\"^/test($|/)\" --ignore=\"^/node_modules($|/)\" --ignore=\"^/README\\.md$\" --ignore=\"^/package-lock\\.json$\"",
-    "package:win": "electron-packager . InfraOrgIT --platform=win32 --arch=x64 --out=dist --asar --overwrite --app-bundle-id=it.infraorgit.desktop --ignore=\"^/test($|/)\" --ignore=\"^/node_modules($|/)\" --ignore=\"^/README\\.md$\" --ignore=\"^/package-lock\\.json$\"",
-    "package:linux": "electron-packager . InfraOrgIT --platform=linux --arch=x64 --out=dist --asar --overwrite --app-bundle-id=it.infraorgit.desktop --ignore=\"^/test($|/)\" --ignore=\"^/node_modules($|/)\" --ignore=\"^/README\\.md$\" --ignore=\"^/package-lock\\.json$\""
+    "package": "node scripts/package.js",
+    "package:mac": "node scripts/package.js --platform=darwin --arch=arm64",
+    "package:win": "node scripts/package.js --platform=win32 --arch=x64",
+    "package:linux": "node scripts/package.js --platform=linux --arch=x64"
   },
   "engines": {
     "node": ">=24"
@@ -23,5 +23,8 @@
   "devDependencies": {
     "@electron/packager": "20.3.0",
     "electron": "45.3.1"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
   }
 }

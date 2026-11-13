@@ -1,10 +1,18 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const net = require("node:net");
 const { EventEmitter } = require("node:events");
+const { WebSocketServer } = require("ws");
 
-const { TunnelManager, buildSshArgs } = require("../../tunnels");
+const {
+  TunnelManager,
+  buildSshArgs,
+  canRelay,
+  chooseTransport,
+  relayUrl,
+} = require("../../tunnels");
 
-function fakeManager() {
+function fakeManager(options = {}) {
   return new TunnelManager(() => {}, {
     spawnProcess: () => {
       const child = new EventEmitter();
@@ -12,7 +20,16 @@ function fakeManager() {
       child.kill = () => {};
       return child;
     },
+    ...options,
   });
+}
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 const server = {
@@ -29,6 +46,15 @@ const target = {
   targetHost: "127.0.0.1",
   targetPort: 8081,
   suggestedLocalPort: 8081,
+};
+const service = {
+  id: 9,
+  name: "web",
+  mode: "Local",
+  kind: "Tcp",
+  targetHost: "127.0.0.1",
+  targetPort: 8081,
+  localPort: 18099,
 };
 
 test("ssh arguments keep the existing local, dynamic and remote contract", () => {
@@ -65,9 +91,37 @@ test("ssh arguments keep the existing local, dynamic and remote contract", () =>
   assert.ok(remote.includes("9000:127.0.0.1:8081"));
 });
 
+test("transport policy picks client, server or relayable service", () => {
+  assert.equal(chooseTransport("Client", true, false), "client");
+  assert.equal(chooseTransport("Server", true, true), "server");
+  assert.equal(chooseTransport("Auto", true, true), "client");
+  assert.equal(chooseTransport("Auto", true, false), "server");
+  assert.equal(chooseTransport("Auto", false, false), "client");
+  assert.throws(() => chooseTransport("Server", false, false), /Local/);
+
+  assert.equal(canRelay(service, null), true);
+  assert.equal(canRelay({ ...service, mode: "Dynamic" }, null), false);
+  assert.equal(canRelay(null, target), true);
+  assert.equal(canRelay(null, { serverApplicationId: 7 }), false);
+  assert.equal(canRelay(null, null), false);
+  assert.equal(
+    relayUrl("https://infra.example.com", 1, { serviceId: 9 }, "t1"),
+    "wss://infra.example.com/api/tunnels/relay?serverId=1&serviceId=9&tunnelId=t1",
+  );
+  assert.equal(
+    relayUrl(
+      "https://infra.example.com",
+      1,
+      { serverApplicationId: 7 },
+      "t1",
+    ),
+    "wss://infra.example.com/api/tunnels/relay?serverId=1&serverApplicationId=7&tunnelId=t1",
+  );
+});
+
 test("tunnel manager rejects duplicate local ports and keeps stopped rows", async () => {
   const manager = fakeManager();
-  const first = manager.start({
+  const first = await manager.start({
     id: "t1",
     url: "https://infra.example.com",
     instanceName: "Produzione",
@@ -78,19 +132,19 @@ test("tunnel manager rejects duplicate local ports and keeps stopped rows", asyn
   });
   assert.equal(first.status, "Active");
   assert.equal(first.ip, "10.0.0.10");
+  assert.equal(first.transport, "Client");
   assert.equal(manager.active().length, 1);
 
-  assert.throws(
-    () =>
-      manager.start({
-        id: "t2",
-        url: "https://other.example.com",
-        instanceName: "Staging",
-        server,
-        target,
-        service: null,
-        localPort: 8081,
-      }),
+  await assert.rejects(
+    manager.start({
+      id: "t2",
+      url: "https://other.example.com",
+      instanceName: "Staging",
+      server,
+      target,
+      service: null,
+      localPort: 8081,
+    }),
     /già usata/,
   );
 
@@ -100,7 +154,10 @@ test("tunnel manager rejects duplicate local ports and keeps stopped rows", asyn
   assert.equal(stopped.length, 1);
   assert.equal(stopped[0].status, "Stopped");
 
-  const restarted = manager.restart("t1", "https://infra.example.com");
+  const restarted = await manager.restart(
+    "t1",
+    "https://infra.example.com",
+  );
   assert.equal(restarted.status, "Active");
   assert.equal(restarted.localPort, 8081);
   manager.stopAll();
@@ -110,31 +167,29 @@ test("tunnel manager rejects duplicate local ports and keeps stopped rows", asyn
 
 test("tunnel manager rejects invalid ports and missing targets", async () => {
   const manager = fakeManager();
-  assert.throws(
-    () =>
-      manager.start({
-        id: "bad-port",
-        url: "https://infra.example.com",
-        server,
-        target,
-        localPort: 80,
-      }),
+  await assert.rejects(
+    manager.start({
+      id: "bad-port",
+      url: "https://infra.example.com",
+      server,
+      target,
+      localPort: 80,
+    }),
     /1024/,
   );
-  assert.throws(
-    () =>
-      manager.start({
-        id: "no-port",
-        url: "https://infra.example.com",
-        server,
-        target: null,
-        service: { id: 1, mode: "Local", kind: "Tcp", targetPort: null },
-        localPort: null,
-      }),
+  await assert.rejects(
+    manager.start({
+      id: "no-port",
+      url: "https://infra.example.com",
+      server,
+      target: null,
+      service: { id: 1, mode: "Local", kind: "Tcp", targetPort: null },
+      localPort: null,
+    }),
     /porta|Target/i,
   );
 
-  const remote = manager.start({
+  const remote = await manager.start({
     id: "remote",
     url: "https://infra.example.com",
     server,
@@ -152,4 +207,63 @@ test("tunnel manager rejects invalid ports and missing targets", async () => {
   });
   assert.equal(remote.localPort, null);
   manager.stopAll();
+});
+
+test("server relay bridges a local TCP connection over WebSocket", async () => {
+  const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await new Promise((resolve) => wss.once("listening", resolve));
+  const wsPort = wss.address().port;
+  wss.on("connection", (socket) =>
+    socket.on("message", (data) => socket.send(data)),
+  );
+
+  const localPort = await freePort();
+  const manager = fakeManager({
+    relayTarget: async () => ({
+      url: `ws://127.0.0.1:${wsPort}`,
+      headers: {},
+    }),
+  });
+  try {
+    const row = await manager.start({
+      id: "relay",
+      url: "https://infra.example.com",
+      server,
+      target: null,
+      service,
+      localPort,
+      transport: "server",
+    });
+    assert.equal(row.transport, "Server");
+
+    const echoed = await new Promise((resolve, reject) => {
+      const socket = net.connect({ host: "127.0.0.1", port: localPort });
+      const timer = setTimeout(() => reject(new Error("timeout")), 3000);
+      timer.unref?.();
+      socket.once("connect", () => socket.write("hello"));
+      socket.once("data", (data) => {
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(String(data));
+      });
+      socket.once("error", reject);
+    });
+    assert.equal(echoed, "hello");
+
+    await assert.rejects(
+      manager.start({
+        id: "dynamic",
+        url: "https://infra.example.com",
+        server,
+        target: null,
+        service: { ...service, mode: "Dynamic" },
+        localPort: await freePort(),
+        transport: "server",
+      }),
+      /Local/,
+    );
+  } finally {
+    manager.stopAll();
+    await new Promise((resolve) => wss.close(resolve));
+  }
 });
