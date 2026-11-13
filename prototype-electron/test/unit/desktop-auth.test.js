@@ -193,6 +193,81 @@ test("restore drops an invalid refresh token and asks for a new login", async ()
   auth.dispose();
 });
 
+test("renew refreshes the token and extends the session without a restoring state", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const device = fakeDevice();
+  const fetch = sessionFetch();
+  const changes = [];
+  const auth = new DesktopAuth({
+    deviceClient: device,
+    tokenStore: store,
+    openExternal: async () => {},
+    onChange: (_url, snapshot) => changes.push(snapshot),
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.renew(instance, fetch, cookies());
+  assert.equal(result.mode, "renewed");
+  assert.deepEqual(device.refreshCalls, [
+    { instanceUrl: instance.url, refreshToken: "refresh-old" },
+  ]);
+  const exchange = fetch.calls.find((call) =>
+    call.url.endsWith("/auth/desktop-session"),
+  );
+  assert.deepEqual(JSON.parse(exchange.init.body), {
+    refreshToken: "refresh-new",
+  });
+  assert.equal(store.values.get(instance.url), "refresh-new");
+  assert.equal(auth.snapshot(instance.url).status, "ready");
+  assert.ok(!changes.some((change) => change.status === "restoring"));
+  auth.dispose();
+});
+
+test("renew drops the session when Keycloak revokes the refresh token", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice({
+      async refresh() {
+        throw new DeviceAuthError(
+          "La sessione non è più valida. Accedi di nuovo.",
+          "invalid_grant",
+        );
+      },
+    }),
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.renew(instance, sessionFetch(), cookies());
+  assert.equal(result.mode, "revoked");
+  assert.equal(store.values.has(instance.url), false);
+  const snapshot = auth.snapshot(instance.url);
+  assert.equal(snapshot.status, "none");
+  assert.equal(snapshot.requiresLogin, true);
+  auth.dispose();
+});
+
+test("renew drops the session when the API rejects the desktop exchange", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice(),
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.renew(
+    instance,
+    sessionFetch({ exchangeStatus: 401 }),
+    cookies(),
+  );
+  assert.equal(result.mode, "revoked");
+  assert.equal(store.values.has(instance.url), false);
+  assert.equal(auth.snapshot(instance.url).status, "none");
+  auth.dispose();
+});
+
 test("device login opens the browser, stores only the refresh token and reloads the session", async () => {
   const store = tokenStore();
   const device = fakeDevice();

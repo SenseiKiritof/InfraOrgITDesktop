@@ -26,7 +26,10 @@ user-facing notes and screenshots.
   `openid profile email offline_access mcp:read tunnels:operate`; only the
   refresh token is persisted (`safeStorage`, `desktop-auth.bin`). Startup
   refreshes Keycloak and calls `POST /auth/desktop-session` with the instance
-  partition's `session.fetch`; failure falls back to `/auth/login`. Renderers
+  partition's `session.fetch`; failure falls back to `/auth/login`. While an
+  instance tab is open the same exchange runs every six hours and after system
+  resume, extending the same seven-day BFF session; a revoked or expired
+  refresh token clears the local session and falls back to login. Renderers
   never receive access, refresh or CSRF tokens.
 - Theme: `GET /api/session` supplies the account theme; the topbar switch
   writes it with `PATCH /api/session/theme` and mirrors it to the Web

@@ -31,8 +31,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
   verification URL in the default browser, polls Keycloak and stores only the
   refresh token. At startup it refreshes the token, exchanges it at
   `POST /auth/desktop-session` through the instance partition, and loads the
-  SPA without the Keycloak page. Any failure falls back to the normal login
-  page.
+  SPA without the Keycloak page. While an instance tab is open (and after
+  system resume) the exchange repeats every six hours and extends the same
+  seven-day BFF session, so the user is not asked to log in again while the
+  Keycloak offline token remains valid. Any failure falls back to the normal
+  login page; a revoked or expired refresh token clears the local session.
 - **Global tunnel drawer.** All instances in one place, grouped by instance
   and server. Each row shows `istanza · server · IP · porta locale`, an
   active/stopped state, and scoped start/stop/restart actions. Starting a
@@ -76,7 +79,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
    `{ "refreshToken": "…" }` using `session.fromPartition(...).fetch`
    (`credentials: "include"`). Chromium stores the BFF `Set-Cookie` in that
    instance partition, and the tab loads the SPA directly.
-5. `401/404/502` or a network error fall back to the normal `/auth/login`
+5. The same exchange runs every six hours while an instance tab is open and
+   after system resume. The API updates the existing desktop session and
+   extends its seven-day cookie, so the login page only appears when the
+   Keycloak offline token is revoked, expired or unavailable.
+6. `401/404/502` or a network error fall back to the normal `/auth/login`
    page. Tokens are never sent to a renderer or written to `instances.json`.
 
 The server side is `POST /auth/desktop-session` with the public desktop client
