@@ -41,7 +41,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
   and server. Each row shows `istanza · server · IP · porta locale`, an
   active/stopped state, and scoped start/stop/restart actions. Starting a
   tunnel uses only the API allowlist stored for that instance; a second tunnel
-  on a busy local port is rejected before `ssh` starts.
+  on a busy local port is rejected before `ssh` starts. Start/stop/error and a
+  30-second heartbeat are also posted to the instance, so the central
+  `/tunnels` page shows the same session.
 - **Server tunnel anagrafica.** The drawer and the manage dialog link to the
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
@@ -149,6 +151,7 @@ auth/desktop-auth.js      startup restore, device login, tunnel access tokens
 shell/instances.js        validation, atomic instances.json, prototype migration
 shell/settings.js         atomic settings.json (theme fallback)
 tunnels.js                SSH argument builder, process lifecycle, port guard
+tunnel-projection.js      /api/tunnels start/stop/heartbeat projection
 manager.html/js/css       control-room landing, tabs, drawer, palette, modal
 preload.js                narrow SPA bridge, origin-gated
 manager-preload.js        explicit shell IPC surface

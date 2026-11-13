@@ -340,7 +340,16 @@ function renderDrawer() {
   const key = JSON.stringify({
     tunnels: state.tunnels,
     auth: state.instances.map((instance) => [instance.url, instance.auth]),
-    targets: Object.keys(state.targets || {}),
+    targets: Object.fromEntries(
+      Object.entries(state.targets || {}).map(([url, servers]) => [
+        url,
+        (servers || []).map((server) => [
+          server.serverId,
+          (server.targets || []).map((target) => target.serverApplicationId),
+          (server.services || []).map((service) => service.id),
+        ]),
+      ]),
+    ),
     instances: state.instances.map((instance) => [
       instance.url,
       instance.name,
@@ -986,10 +995,13 @@ function buildCommands() {
         run: () => void authStart(instance.url),
       });
     } else if (auth.saved) {
+      const webSession = auth.method === "session";
       commands.push({
         id: `logout-${instance.url}`,
-        title: `Esci dai tunnel · ${instance.name}`,
-        sub: "Dimentica il refresh token salvato",
+        title: `${webSession ? "Dimentica token" : "Esci dai tunnel"} · ${instance.name}`,
+        sub: webSession
+          ? "La sessione web resta attiva"
+          : "Dimentica il refresh token salvato",
         icon: "×",
         run: () => void api.authLogout(instance.url),
       });

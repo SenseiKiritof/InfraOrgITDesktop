@@ -405,6 +405,34 @@ test("device login opens the browser, stores only the refresh token and reloads 
   auth.dispose();
 });
 
+test("logout keeps the BFF session and only forgets the saved token", async () => {
+  const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice(),
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+  await auth.readAccount(instance.url, sessionFetch());
+  auth.setTokens(
+    instance.url,
+    {
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: Date.now() + 300_000,
+    },
+    "device",
+  );
+  await auth.logout(instance.url);
+  assert.equal(store.values.has(instance.url), false);
+  const snapshot = auth.snapshot(instance.url);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.method, "session");
+  assert.equal(snapshot.saved, false);
+  assert.equal(snapshot.tunnelAccess, true);
+  auth.dispose();
+});
+
 test("logout forgets the refresh token and keeps tokens out of the UI snapshot", async () => {
   const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
   const auth = new DesktopAuth({

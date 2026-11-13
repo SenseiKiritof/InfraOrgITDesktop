@@ -24,7 +24,8 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **One tunnel drawer for every instance.** Rows are grouped by instance and
   server and show the local port. The **Nuovo tunnel** form searches by machine,
   IP, environment, application and service, while keeping the environment
-  groups.
+  groups. Start/stop/error and a 30-second heartbeat are projected to the
+  central `/tunnels` page.
 - **One theme.** The shell follows the light/dark preference of the signed-in
   account. The Web app toggle is the only control and cycles light, dark and
   system; the shell follows the resolved appearance. There is no separate

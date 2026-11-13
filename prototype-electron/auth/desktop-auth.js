@@ -449,14 +449,17 @@ class DesktopAuth {
     this.cancel(instanceUrl);
     this.tokenStore.delete(instanceUrl);
     const context = this.context(instanceUrl);
+    const keepWebSession = context.webSession;
     context.accessToken = null;
     context.accessExpiresAt = 0;
     context.csrfToken = "";
     context.account = null;
     this.emit(instanceUrl, {
-      status: "none",
-      method: null,
-      message: "Sessione tunnel dimenticata.",
+      status: keepWebSession ? "ready" : "none",
+      method: keepWebSession ? "session" : null,
+      message: keepWebSession
+        ? "Token dimenticato. La sessione web resta attiva."
+        : "Sessione tunnel dimenticata.",
       userCode: null,
       verificationUri: null,
       verificationUriComplete: null,
