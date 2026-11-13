@@ -1,8 +1,9 @@
 # InfraOrgIT Desktop — Electron shell
 
 Production-intent Electron shell built on the `feat/electron-prototype`
-prototype. It is the rework branch for the desktop replacement: the Photino app
-under `src/` is still the product until this shell is accepted and packaged.
+prototype. The shell is packaged locally for testing; the Photino app under
+`src/` remains the signed release until Electron signing/notarization is
+completed.
 
 The shell opens a dark control-room manager, then each InfraOrgIT instance in
 its own tab of the same window. Every instance has a persistent Chromium
@@ -45,54 +46,54 @@ The screenshots use fictitious demo instances, servers and tunnels.
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
 - **Theme.** The shell inherits the account theme read from `/api/session`
-  (falling back to `settings.json` before any instance is available). The
-  topbar switch writes the same account preference through
-  `PATCH /api/session/theme` and tells the Web view to apply it; the Web toggle
-  reports changes back to the shell. There is no independent desktop theme.
+  (falling back to `settings.json` before any instance is available). There is
+  no desktop theme button: the Web app's toggle is the only control, and its
+  `theme.changed` message updates the shell immediately.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
-  drawer, changes the theme, reloads the active tab and opens tunnel URLs.
+  drawer, reloads the active tab and opens tunnel URLs.
 - **Existing bridge.** The renderer still sees the narrow
   `window.infraorgitDesktop` bridge used by the download/tunnel panels of the
   Web app: `sendMessage`/`receiveMessage` of JSON strings only. No Node,
   `require`, `process` or `ipcRenderer` is exposed to the SPA.
 
-![Command palette with instance, tunnel and theme actions](../docs/screenshots/electron-command-palette.png)
+![Command palette with instance, tunnel and application actions](../docs/screenshots/electron-command-palette.png)
 
-![Light theme with the same control-room shell](../docs/screenshots/electron-light.png)
+![Light theme inherited from the account preference; the Web app owns the only theme toggle](../docs/screenshots/electron-light.png)
 
 ![Instance tab rendered by the Web app inside the Electron shell](../docs/screenshots/electron-instance.png)
 
 ## Silent authentication sequence
 
-1. On “Accedi con Keycloak”, the main process calls the instance discovery
-   document, requests a device code with PKCE S256 and opens
-   `verification_uri_complete` with `shell.openExternal`.
-2. The renderer only receives the user code and verification URL. The device
+1. On startup the main process checks `/api/session` through the instance
+   partition. If the user already signed in from the Web tab, that BFF session
+   is reused for the tunnel API and no Keycloak page appears.
+2. Without a BFF session, “Accedi con Keycloak” starts the device flow: the main
+   process calls the instance discovery document, requests a device code with
+   PKCE S256 and opens `verification_uri_complete` with `shell.openExternal`.
+3. The renderer only receives the user code and verification URL. The device
    code, PKCE verifier, access token and refresh token stay in the main
    process.
-3. After approval, the refresh token is encrypted with Electron
+4. After approval, the refresh token is encrypted with Electron
    `safeStorage` into `userData/desktop-auth.bin`. The file contains only
    instance URL → refresh token; access tokens are never written.
-4. On the next launch the main process refreshes the token with Keycloak, then
+5. On the next launch the main process refreshes the token with Keycloak, then
    calls `POST /auth/desktop-session` with
    `{ "refreshToken": "…" }` using `session.fromPartition(...).fetch`
    (`credentials: "include"`). Chromium stores the BFF `Set-Cookie` in that
    instance partition, and the tab loads the SPA directly.
-5. The same exchange runs every six hours while an instance tab is open and
+6. The same exchange runs every six hours while an instance tab is open and
    after system resume. The API updates the existing desktop session and
    extends its seven-day cookie, so the login page only appears when the
    Keycloak offline token is revoked, expired or unavailable.
-6. `401/404/502` or a network error fall back to the normal `/auth/login`
+7. `401/404/502` or a network error fall back to the normal `/auth/login`
    page. Tokens are never sent to a renderer or written to `instances.json`.
 
 The server side is `POST /auth/desktop-session` with the public desktop client
-and `GET/PATCH /api/session[/theme]`. The API working tree currently carries
-that contract; the local 8443 stack used for these screenshots predates it, so
-the shell exercised the login fallback there and the endpoint behavior is
-covered by fake-fetch tests.
+and `GET/PATCH /api/session[/theme]`. Tunnel endpoints accept either the BFF
+session or a token with `tunnels:operate`.
 
-![Global tunnel drawer grouped by instance and server](../docs/screenshots/electron-tunnels.png)
+![Global tunnel drawer grouped by instance and environment, with the searchable New tunnel form](../docs/screenshots/electron-tunnels.png)
 
 The per-instance Web panel is unchanged and still lists only the active
 tunnels of that instance; the drawer is the multi-instance view.

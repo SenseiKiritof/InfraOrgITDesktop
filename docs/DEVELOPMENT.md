@@ -32,11 +32,10 @@ user-facing notes and screenshots.
   refresh token clears the local session and falls back to login. Renderers
   never receive access, refresh or CSRF tokens.
 - Theme: the desktop shell follows the account theme returned by
-  `GET /api/session`; there is no separate desktop theme. The topbar switch is
-  a shortcut that writes the same account preference with
-  `PATCH /api/session/theme` and sends `theme.apply` to the Web view. A toggle
-  in the Web app sends `theme.changed` back, so shell and SPA stay on one
-  preference. `settings.json` is only the fallback before an instance loads.
+  `GET /api/session`; it has no theme control of its own. The Web app's theme
+  toggle is the only control: it writes the account preference and sends
+  `theme.changed` to the shell, which applies the same light/dark value.
+  `settings.json` is only the fallback before an instance loads.
 - Tunnels: the manager owns the SSH processes; the Web `/tunnels` panel stays
   the per-instance detail. The drawer groups every instance by server, shows
   the local port and active/stopped state, and enforces a duplicate local-port

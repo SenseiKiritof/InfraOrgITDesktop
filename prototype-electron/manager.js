@@ -6,7 +6,6 @@ const els = {
   home: document.querySelector("#home-button"),
   paletteTrigger: document.querySelector("#palette-trigger"),
   paletteShortcut: document.querySelector("[data-shortcut]"),
-  themeToggle: document.querySelector("#theme-toggle"),
   tunnelToggle: document.querySelector("#tunnel-toggle"),
   tunnelBadge: document.querySelector("#tunnel-badge"),
   landing: document.querySelector("#landing"),
@@ -187,12 +186,6 @@ function renderChrome() {
   const active = state.tunnels.filter((tunnel) => tunnel.status === "Active");
   els.tunnelBadge.hidden = active.length === 0;
   els.tunnelBadge.textContent = String(active.length);
-  const dark = state.theme.resolved === "dark";
-  els.themeToggle.title = dark ? "Tema chiaro" : "Tema scuro";
-  els.themeToggle.setAttribute(
-    "aria-label",
-    dark ? "Passa al tema chiaro" : "Passa al tema scuro",
-  );
   els.home.classList.toggle("active", !state.activeUrl);
 }
 
@@ -960,29 +953,6 @@ function buildCommands() {
     kbd: `${modifierLabel} ⇧ T`,
     run: () => setDrawer(!drawerOpen),
   });
-  const themeLabel =
-    state.theme.preference === "system" ? "Sistema" : state.theme.preference;
-  commands.push({
-    id: "theme-light",
-    title: "Tema chiaro",
-    sub: `Attuale: ${themeLabel}`,
-    icon: "☀",
-    run: () => void api.setTheme("light"),
-  });
-  commands.push({
-    id: "theme-dark",
-    title: "Tema scuro",
-    sub: `Attuale: ${themeLabel}`,
-    icon: "☾",
-    run: () => void api.setTheme("dark"),
-  });
-  commands.push({
-    id: "theme-system",
-    title: "Segui il tema di sistema",
-    sub: `Attuale: ${themeLabel}`,
-    icon: "◐",
-    run: () => void api.setTheme("system"),
-  });
 
   for (const instance of state.instances) {
     commands.push({
@@ -1450,10 +1420,6 @@ els.tabAdd.addEventListener("click", () => openNewInstance());
 els.newInstance.addEventListener("click", () => openNewInstance());
 els.newInstanceCard.addEventListener("click", () => openNewInstance());
 els.home.addEventListener("click", () => void api.home());
-els.themeToggle.addEventListener("click", () => {
-  const next = state?.theme.resolved === "dark" ? "light" : "dark";
-  void api.setTheme(next);
-});
 els.tunnelToggle.addEventListener("click", () => setDrawer(!drawerOpen));
 els.drawerClose.addEventListener("click", () => setDrawer(false));
 els.drawerRefresh.addEventListener("click", async () => {
