@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   DownloadTracker,
   MAX_FILE_NAME,
+  fileNameFromUrl,
   sanitizeFileName,
   uniqueFilePath,
 } = require("../../downloads");
@@ -61,4 +62,15 @@ test("uniqueFilePath keeps the extension and avoids overwriting", () => {
     uniqueFilePath("/downloads", "../x.txt", () => false),
     "/downloads/.._x.txt",
   );
+});
+
+test("fileNameFromUrl keeps dotfiles and ignores other URLs", () => {
+  assert.equal(
+    fileNameFromUrl(
+      "https://localhost/api/servers/37/files/download?path=%2Fhome%2Fx3solutions%2F.viminfo",
+    ),
+    ".viminfo",
+  );
+  assert.equal(fileNameFromUrl("https://localhost/api/health"), "");
+  assert.equal(fileNameFromUrl("not a url"), "");
 });

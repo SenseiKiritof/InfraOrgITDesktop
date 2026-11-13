@@ -19,6 +19,18 @@ function sanitizeFileName(value, fallback = "download") {
   return `${raw.slice(0, MAX_FILE_NAME - extension.length)}${extension}`;
 }
 
+/** Nome originale dal parametro `path` dell'URL di download, se presente. */
+function fileNameFromUrl(value) {
+  try {
+    const url = new URL(String(value ?? ""));
+    const remotePath = url.searchParams.get("path");
+    if (!remotePath) return "";
+    return remotePath.split("/").filter(Boolean).at(-1) || "";
+  } catch {
+    return "";
+  }
+}
+
 /** Primo nome libero nella cartella, senza sovrascrivere file esistenti. */
 function uniqueFilePath(directory, fileName, exists = fs.existsSync) {
   const safe = sanitizeFileName(fileName);
@@ -86,6 +98,7 @@ class DownloadTracker {
 module.exports = {
   DownloadTracker,
   MAX_FILE_NAME,
+  fileNameFromUrl,
   sanitizeFileName,
   uniqueFilePath,
 };
