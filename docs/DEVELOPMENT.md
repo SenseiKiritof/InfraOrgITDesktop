@@ -106,6 +106,15 @@ session exchange with an injected fetch.
   Local, dynamic (SOCKS) and remote forwards map to `-L`, `-D` and `-R`; `-J`
   chains come from the API nearest-first.
 - A duplicate local port is rejected before spawning a second `ssh`.
+- Before start the manager reads `/api/connection-policy`. `Client` uses the
+  system `ssh`; `Server` opens a loopback listener and relays each TCP
+  connection over a WebSocket to `/api/tunnels/relay`; `Auto` tests the first
+  SSH hop and falls back to the relay when the client cannot reach it. The
+  relay accepts only Local services or deployments with a fixed target port;
+  Dynamic and Remote stay client-only.
+- The policy row is shared by all API nodes in a cluster. Relay WebSockets are
+  node-local and each local TCP connection gets its own relay, so no sticky
+  sessions are required; the load balancer must forward WebSocket upgrades.
 - Start, active heartbeat (every 30 seconds), stop and error are projected to
   the instance's `/api/tunnels` endpoints with the signed-in BFF session and
   CSRF token, so the central `/tunnels` page shows the same session.
@@ -134,7 +143,8 @@ produces `InfraOrgIT.app` inside `InfraOrgIT-darwin-<arch>/`, Windows
 `InfraOrgIT.exe` inside `InfraOrgIT-win32-<arch>/` and Linux the `InfraOrgIT`
 binary inside `InfraOrgIT-linux-<arch>/`. The scripts pass `--asar`,
 `--overwrite` and the bundle id `it.infraorgit.desktop`, and ignore `test/`,
-`node_modules`, `README.md` and `package-lock.json`. `dist/` is ignored.
+`README.md` and `package-lock.json`; production dependencies such as `ws` are
+packaged. `dist/` is ignored.
 
 ## CI
 

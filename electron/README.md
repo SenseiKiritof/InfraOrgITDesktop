@@ -44,6 +44,25 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Server tunnel anagrafica.** The drawer and the manage dialog link to the
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
+- **Connection policy.** The instance admin page `/settings` (SystemAdmin)
+  chooses `Server`, `Client` or `Auto` for the whole installation. The desktop
+  reads it before opening a tunnel:
+  - `Server`: the desktop opens a loopback listener and relays each TCP
+    connection over a WebSocket to `GET /api/tunnels/relay`; the API node opens
+    the SSH forward with the stored server credential. Only `Local` services
+    and deployment targets are relayed.
+  - `Client`: the system `ssh` opens the tunnel with the local agent, as
+    before; `Local`, `Dynamic` and `Remote` are available.
+  - `Auto`: the desktop tests the first SSH hop (direct target or jump host).
+    If it is reachable it uses the client; otherwise it falls back to the
+    server relay when the target is relayable.
+
+  The policy is one row in the shared database, so a cluster with several API
+  nodes uses the same mode everywhere. Relay connections are bound to the node
+  that accepts the WebSocket; the load balancer must forward WebSocket upgrades
+  and does not need sticky sessions because each local TCP connection opens
+  its own relay. The central `/tunnels` page shows the transport (`Client` or
+  `Server`) for every session.
 - **Theme.** The shell inherits the account theme read from `/api/session`
   (falling back to `settings.json` before any instance is available). There is
   no desktop theme button: the Web app's toggle is the only control and cycles
@@ -163,8 +182,8 @@ Output goes to `electron/dist/InfraOrgIT-<platform>-<arch>/`, with the app as
 Linux. The scripts select `assets/icon.icns`, `assets/icon.ico` or
 `assets/icon.png` per platform; `python3 scripts/make-icons.py` regenerates
 them from the brand mark. They enable `--asar`, overwrite an existing output
-and ignore `test/`, `node_modules`, `README.md`, `package-lock.json` and the
-packaging scripts.
+and ignore `test/`, `README.md`, `package-lock.json` and the packaging scripts;
+production dependencies such as `ws` are packaged.
 
 The `publish` workflow runs Electron Packager for all four release targets and
 builds these archives:
@@ -191,7 +210,7 @@ auth/refresh-store.js     safeStorage encrypted refresh-token file
 auth/desktop-auth.js      BFF/device restore, tunnel access tokens
 shell/instances.js        validation, atomic instances.json, old-list migration
 shell/settings.js         atomic settings.json (theme fallback)
-tunnels.js                SSH argument builder, process lifecycle, port guard
+tunnels.js                SSH argument builder, client SSH or server relay, port guard
 tunnel-projection.js      /api/tunnels start/stop/heartbeat projection
 manager.html/js/css       control-room landing, tabs, drawer, palette, modal
 preload.js                narrow SPA bridge, origin-gated
@@ -207,6 +226,13 @@ test/                     Electron shell test, fake SSH, unit tests
   origin; Keycloak pages and external links loaded in the tab do not get it.
 - External links open in the default browser. Remote instance URLs must use
   HTTPS; HTTP is accepted only for loopback development.
+- The server relay accepts only a `serverId` plus an allowlisted `serviceId` or
+  `serverApplicationId`; the target host and port are resolved server-side.
+  `Dynamic` and `Remote` are rejected. The API checks `ServerOperator` on the
+  environment, opens the SSH forward on `127.0.0.1` and relays bytes over the
+  WebSocket. The stored server credential is used, not the user's agent, so
+  this mode is a deliberate privilege boundary: only `Local` targets with a
+  fixed host and port are reachable.
 - safeStorage uses the macOS Keychain / Windows DPAPI / Linux Secret Service
   backend. If Linux has no keyring (`basic_text`), the store refuses to write
   and keeps the session in memory for that run. A native keychain wrapper is

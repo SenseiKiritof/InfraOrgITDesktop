@@ -31,7 +31,6 @@ packager({
   icon: icon ? path.join(root, icon) : undefined,
   ignore: [
     /^\/test($|\/)/,
-    /^\/node_modules($|\/)/,
     /^\/README\.md$/,
     /^\/package-lock\.json$/,
     /^\/scripts($|\/)/,

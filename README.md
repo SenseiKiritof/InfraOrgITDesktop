@@ -20,6 +20,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
   port. **Nuovo tunnel** searches by machine, IP, environment, application and
   service, keeping the environment groups. Start, stop, error and a 30-second
   heartbeat are projected to the central `/tunnels` page.
+- **Connection policy.** Each installation chooses whether tunnels are opened
+  by the server (`Server`), directly by the desktop (`Client`) or automatically
+  (`Auto`, direct when the client reaches the SSH host, relayed otherwise).
+  SystemAdmin sets it from **Impostazioni**. The row lives in the shared MySQL
+  database, so every API node in a cluster applies the same mode.
 - **Session reuse.** If the instance tab is already signed in, the desktop uses
   that BFF session for the tunnel API. The device flow with `offline_access`,
   or a personal `tunnels:operate` token, is only a fallback.

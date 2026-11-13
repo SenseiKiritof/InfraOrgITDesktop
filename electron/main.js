@@ -14,6 +14,7 @@ const {
 } = require("electron");
 const crypto = require("crypto");
 const fs = require("fs");
+const nodeNet = require("node:net");
 const path = require("path");
 
 const { DeviceAuthClient } = require("./auth/device-client");
@@ -21,7 +22,12 @@ const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
 const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
-const { TunnelManager } = require("./tunnels");
+const {
+  TunnelManager,
+  canRelay,
+  chooseTransport,
+  relayUrl,
+} = require("./tunnels");
 const { TunnelProjection } = require("./tunnel-projection");
 const {
   DownloadTracker,
@@ -255,6 +261,9 @@ function runtimeFor(url) {
       targets: null,
       targetsAt: 0,
       targetsError: null,
+      policy: null,
+      policyAt: 0,
+      policyError: null,
       loading: false,
       prepared: false,
       accountLoaded: false,
@@ -315,6 +324,7 @@ function publicState() {
       sessionTunnelCount: data.sessionTunnelCount,
       tunnelCount: localCount + (data.sessionTunnelCount || 0),
       targetsError: data.targetsError,
+      connectionPolicy: data.policy || "Auto",
       auth: authSnapshot(instance.url),
     };
   });
@@ -481,6 +491,99 @@ async function loadTargets(instance, { force = false } = {}) {
   }
 }
 
+async function loadConnectionPolicy(instance, { force = false } = {}) {
+  const data = runtimeFor(instance.url);
+  if (!authSnapshot(instance.url).tunnelAccess) return null;
+  if (!force && data.policy && Date.now() - data.policyAt < 30_000)
+    return data.policy;
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  try {
+    const mode = await desktopAuth.fetchConnectionPolicy(
+      instance.url,
+      sessionFetch(ses),
+      tokens.get(instance.url) || null,
+    );
+    data.policy = mode || "Auto";
+    data.policyAt = Date.now();
+    data.policyError = null;
+  } catch (error) {
+    // A policy outage must not block the desktop: Auto keeps the previous
+    // behaviour, while the relay still enforces RBAC and the allowlist.
+    data.policy = data.policy || "Auto";
+    data.policyAt = Date.now();
+    data.policyError = error.message;
+  }
+  sendState();
+  return data.policy;
+}
+
+function firstHop(server) {
+  const jump =
+    Array.isArray(server?.jumps) && server.jumps.length
+      ? server.jumps[0]
+      : server?.jump;
+  if (jump?.host) return { host: jump.host, port: Number(jump.port) || 22 };
+  const host = server?.sshHost || server?.ipAddress || server?.hostname;
+  return host ? { host, port: Number(server?.sshPort) || 22 } : null;
+}
+
+/** Client -> first SSH hop reachability, with a short timeout. */
+function isReachable(server, timeoutMs = 1500) {
+  const hop = firstHop(server);
+  if (!hop) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const socket = nodeNet.connect({ host: hop.host, port: hop.port });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function relayHeadersFor(instanceUrl) {
+  const instance = instanceStore.get(instanceUrl);
+  if (!instance) throw new Error("Istanza non trovata.");
+  const record = recordFor(instanceUrl);
+  const ses = record?.session || sessionFor(instance).session;
+  const headers = { Origin: new URL(instanceUrl).origin };
+  const cookies = await ses.cookies.get({ url: instanceUrl });
+  if (cookies.length > 0) {
+    headers.Cookie = cookies
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  } else if (tokens.has(instanceUrl)) {
+    headers.Authorization = `Bearer ${tokens.get(instanceUrl)}`;
+  } else if (desktopAuth) {
+    const token = await desktopAuth.ensureAccessToken(
+      instanceUrl,
+      sessionFetch(ses),
+    );
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  if (!headers.Cookie && !headers.Authorization)
+    throw new Error("Accedi per usare i tunnel dal desktop.");
+  return headers;
+}
+
+async function resolveTunnelTransport(instance, selection) {
+  const policy =
+    (await loadConnectionPolicy(instance, { force: true })) || "Auto";
+  const relayable = canRelay(selection.service, selection.target);
+  if (policy === "Client") return "client";
+  if (policy === "Server")
+    return chooseTransport(policy, relayable, false);
+  const reachable = await isReachable(selection.server);
+  return chooseTransport(policy, relayable, reachable);
+}
+
 async function primeInstanceCounts(instance) {
   const data = runtimeFor(instance.url);
   if (data.serverCount !== null) return;
@@ -545,7 +648,10 @@ async function refreshInstanceData(instance) {
   data.sessionTunnelCount = counts.sessionTunnelCount;
   sendState();
 
-  if (authSnapshot(instance.url).tunnelAccess) void loadTargets(instance);
+  if (authSnapshot(instance.url).tunnelAccess) {
+    void loadTargets(instance);
+    void loadConnectionPolicy(instance);
+  }
 }
 
 async function renewInstanceAuth(instance) {
@@ -894,6 +1000,7 @@ async function startTunnelForInstance(instance, input) {
     input.serviceId ? Number(input.serviceId) : null,
   );
   const id = input.id || `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+  const transport = await resolveTunnelTransport(instance, selection);
   return tunnels.start({
     id,
     url: instance.url,
@@ -902,6 +1009,7 @@ async function startTunnelForInstance(instance, input) {
     target: selection.target,
     service: selection.service,
     localPort: input.localPort,
+    transport,
   });
 }
 
@@ -1055,7 +1163,26 @@ function registerIpc() {
     return publicState();
   });
   handle("manager:restart-tunnel", async (id, url) => {
-    tunnels.restart(String(id), url ? String(url) : null);
+    const instance = instanceStore.get(url);
+    const row = tunnels.get(String(id));
+    let transport = row?.transport?.toLowerCase() || "client";
+    if (instance && row) {
+      const targetList = await loadTargets(instance);
+      if (targetList) {
+        const selection = tunnelSelection(
+          targetList,
+          row.serverId,
+          row.targetId,
+          row.serviceId,
+        );
+        transport = await resolveTunnelTransport(instance, selection);
+      }
+    }
+    await tunnels.restart(
+      String(id),
+      url ? String(url) : null,
+      transport,
+    );
     return publicState();
   });
   handle("manager:forget-tunnel", (id) => {
@@ -1197,6 +1324,7 @@ async function handleDesktopMessage(sender, raw) {
           forcedStatus: snapshot.status === "ready" ? "restored" : webAuthStatus(instance.url),
         });
         void loadTargets(instance).then(() => sendWebTargets(instance.url));
+        void loadConnectionPolicy(instance);
       } else {
         sendWebAuth(instance.url, { forcedStatus: "none" });
       }
@@ -1283,7 +1411,8 @@ async function handleDesktopMessage(sender, raw) {
           message.targetId ? Number(message.targetId) : null,
           message.serviceId ? Number(message.serviceId) : null,
         );
-        tunnels.start({
+        const transport = await resolveTunnelTransport(instance, selection);
+        await tunnels.start({
           id: `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
           url: instance.url,
           instanceName: instance.name,
@@ -1291,6 +1420,7 @@ async function handleDesktopMessage(sender, raw) {
           target: selection.target,
           service: selection.service,
           localPort: message.localPort,
+          transport,
         });
       } catch (error) {
         sendToView(instance.url, {
@@ -1480,7 +1610,7 @@ function seedTestInstances() {
   });
 }
 
-function startTestTunnels() {
+async function startTestTunnels() {
   if (!IS_TEST) return;
   process.env.SSH_BIN = path.join(__dirname, "test", "fake-ssh.js");
   process.env.FAKE_SSH_LOG = path.join(__dirname, "test", ".run", "ssh.log");
@@ -1606,7 +1736,7 @@ function startTestTunnels() {
     services: [],
   });
   try {
-    const first = tunnels.start({
+    const first = await tunnels.start({
       id: "demo-tunnel-active",
       url: instance.url,
       instanceName: instance.name,
@@ -1622,7 +1752,7 @@ function startTestTunnels() {
       localPort: 18081,
     });
     console.log("TEST_TUNNEL_ACTIVE", first.id);
-    tunnels.start({
+    await tunnels.start({
       id: "demo-tunnel-stopped",
       url: instance.url,
       instanceName: instance.name,
@@ -2104,7 +2234,10 @@ if (!hasLock) {
             });
             if (snapshot.status === "ready" && snapshot.tunnelAccess) {
               const instance = instanceStore.get(url);
-              if (instance) void loadTargets(instance);
+              if (instance) {
+                void loadTargets(instance);
+                void loadConnectionPolicy(instance);
+              }
             }
           }
         }
@@ -2112,13 +2245,36 @@ if (!hasLock) {
       },
     });
     tunnelProjection = new TunnelProjection({ post: postTunnelProjection });
-    tunnels = new TunnelManager(() => {
-      broadcastTunnels();
-      if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
-    });
+    tunnels = new TunnelManager(
+      () => {
+        broadcastTunnels();
+        if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
+      },
+      {
+        relayTarget: async (row) => {
+          const target = new URL(row.url);
+          return {
+            url: relayUrl(
+              row.url,
+              row.server.serverId,
+              row.service
+                ? { serviceId: row.service.id }
+                : { serverApplicationId: row.target.serverApplicationId },
+              row.id,
+            ),
+            headers: await relayHeadersFor(row.url),
+            // ws has its own TLS stack; mirror the loopback exception used by
+            // the instance partition during local development.
+            rejectUnauthorized: !(
+              allowLoopbackCertificates && isLoopback(target.hostname)
+            ),
+          };
+        },
+      },
+    );
 
     seedTestInstances();
-    startTestTunnels();
+    await startTestTunnels();
     createMainWindow();
     registerIpc();
     buildMenu();
