@@ -44,6 +44,11 @@ test("payloads carry the tunnel target and redact bearer details", () => {
   assert.equal(session.tunnelServiceId, 9);
   assert.equal(session.mode, "Remote");
   assert.equal(session.status, "active");
+  assert.equal(session.transport, "Client");
+  assert.equal(
+    sessionPayload(row({ transport: "Server" }), "active").transport,
+    "Server",
+  );
   assert.equal(cleanDetail("  "), null);
 });
 

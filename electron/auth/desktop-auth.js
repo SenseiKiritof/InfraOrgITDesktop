@@ -5,6 +5,10 @@ const {
   updateAccountTheme,
 } = require("./session-client");
 
+function normalizeConnectionPolicy(body) {
+  return ["Server", "Client", "Auto"].includes(body?.mode) ? body.mode : null;
+}
+
 function friendly(error) {
   if (error instanceof DeviceAuthError) return error.message;
   if (error instanceof Error && error.message) return error.message;
@@ -565,6 +569,70 @@ class DesktopAuth {
       );
     }
     return Array.isArray(result.body.items) ? result.body.items : [];
+  }
+
+  /**
+   * Installation-wide connection policy. Returns null when the session has no
+   * usable credential; callers fall back to Auto rather than blocking the UI.
+   * The relay endpoint still enforces RBAC and the allowlist server-side.
+   */
+  async fetchConnectionPolicy(instanceUrl, sessionFetch, personalToken = null) {
+    const url = `${instanceUrl.replace(/\/$/, "")}/api/connection-policy`;
+    const request = async (token) => {
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await sessionFetch(url, {
+        headers,
+        credentials: "include",
+      });
+      const body = await response.json().catch(() => ({}));
+      return { response, body };
+    };
+
+    let result;
+    if (personalToken) {
+      try {
+        result = await request(personalToken);
+      } catch {
+        throw new Error("Istanza non raggiungibile.");
+      }
+      if (result.response.ok) return normalizeConnectionPolicy(result.body);
+      if (![401, 403].includes(result.response.status)) {
+        throw new Error(
+          result.body?.detail ||
+            result.body?.title ||
+            `API connessioni: HTTP ${result.response.status}`,
+        );
+      }
+    }
+
+    // The partition cookie is the normal desktop path.
+    try {
+      result = await request(null);
+    } catch {
+      throw new Error("Istanza non raggiungibile.");
+    }
+    if (result.response.ok) return normalizeConnectionPolicy(result.body);
+    if (![401, 403].includes(result.response.status)) {
+      throw new Error(
+        result.body?.detail ||
+          result.body?.title ||
+          `API connessioni: HTTP ${result.response.status}`,
+      );
+    }
+
+    let token;
+    try {
+      token = await this.ensureAccessToken(instanceUrl, sessionFetch);
+    } catch {
+      return null;
+    }
+    try {
+      result = await request(token);
+    } catch {
+      return null;
+    }
+    return result.response.ok ? normalizeConnectionPolicy(result.body) : null;
   }
 
   async fetchCounts(instanceUrl, sessionFetch) {
