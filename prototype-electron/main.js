@@ -32,6 +32,8 @@ const windows = new Map();
 const runtime = new Map();
 const tokens = new Map();
 const authRenewals = new Map();
+const accountThemes = new Map();
+let lastThemeUrl = "";
 let authRenewTimer = null;
 let tabOrder = [];
 let activeUrl = null;
@@ -43,7 +45,6 @@ let settingsStore = null;
 let tokenStore = null;
 let desktopAuth = null;
 let tunnels = null;
-let themeTouched = false;
 let quitting = false;
 
 if (process.env.DESKTOP_USER_DATA) {
@@ -143,8 +144,14 @@ function runtimeFor(url) {
   return runtime.get(url);
 }
 
+function activeThemePreference() {
+  const url = activeUrl || lastThemeUrl;
+  if (url && accountThemes.has(url)) return accountThemes.get(url);
+  return settingsStore?.theme || "system";
+}
+
 function themeState() {
-  const preference = settingsStore?.theme || "system";
+  const preference = activeThemePreference();
   const resolved =
     preference === "system"
       ? nativeTheme.shouldUseDarkColors
@@ -346,9 +353,8 @@ async function refreshInstanceData(instance) {
     );
     if (account) {
       data.accountLoaded = true;
-      let preference = null;
-      if (account.theme) preference = account.theme;
-      else {
+      let preference = account.theme;
+      if (!THEMES.includes(preference)) {
         try {
           const stored = await record.view.webContents.executeJavaScript(
             'localStorage.getItem("infraorgit-theme")',
@@ -358,37 +364,20 @@ async function refreshInstanceData(instance) {
           // The SPA may still be on a login or error page.
         }
       }
-      if (preference && !themeTouched) {
+      if (THEMES.includes(preference)) {
+        accountThemes.set(instance.url, preference);
         settingsStore.setTheme(preference);
+        if (!activeUrl || activeUrl === instance.url)
+          lastThemeUrl = instance.url;
         applyThemeToManager();
-        for (const url of windows.keys())
-          syncThemeToView(url, preference);
-      }
-      if (themeTouched && settingsStore.theme !== account.theme) {
-        void desktopAuth
-          .setTheme(instance.url, fetcher, settingsStore.theme)
-          .catch(() => false);
       }
       desktopAuth.emit(instance.url, {});
-    } else {
-      try {
-        const stored = await record.view.webContents.executeJavaScript(
-          'localStorage.getItem("infraorgit-theme")',
-        );
-        if (stored && THEMES.includes(stored) && !themeTouched) {
-          settingsStore.setTheme(stored);
-          applyThemeToManager();
-        }
-      } catch {
-        // Offline fallback stays on the desktop setting.
-      }
     }
   }
 
   const counts = await desktopAuth.fetchCounts(instance.url, fetcher);
   data.serverCount = counts.serverCount;
   data.sessionTunnelCount = counts.sessionTunnelCount;
-  syncThemeToView(instance.url);
   sendState();
 
   if (authSnapshot(instance.url).tunnelAccess) void loadTargets(instance);
@@ -445,44 +434,34 @@ function applyThemeToManager() {
   sendState();
 }
 
-function syncThemeToView(url, preference = settingsStore.theme) {
+function sendThemeToView(url, preference) {
   const record = recordFor(url);
   if (!record || record.view.webContents.isDestroyed()) return;
-  if (!sameOrigin(record.view.webContents.getURL(), url)) return;
-  const resolved =
-    preference === "system"
-      ? nativeTheme.shouldUseDarkColors
-        ? "dark"
-        : "light"
-      : preference;
-  const script = `(() => {
-    try { localStorage.setItem("infraorgit-theme", ${JSON.stringify(preference)}); } catch {}
-    document.documentElement.classList.toggle("dark", ${resolved === "dark"});
-    document.documentElement.style.colorScheme = ${JSON.stringify(resolved)};
-  })()`;
-  record.view.webContents.executeJavaScript(script).catch(() => {});
+  sendToView(url, { type: "theme.apply", theme: preference });
 }
 
+/**
+ * The shell follows the account theme. The topbar switch is only a shortcut:
+ * it writes the same account preference instead of keeping a second desktop
+ * theme, and tells the open Web view to apply it immediately.
+ */
 function applyThemePreference(preference) {
   if (!THEMES.includes(preference)) throw new Error("Tema non valido.");
-  themeTouched = true;
+  const targets = activeUrl ? [activeUrl] : [...windows.keys()];
   settingsStore.setTheme(preference);
-  applyThemeToManager();
-  for (const url of windows.keys()) syncThemeToView(url, preference);
-  void persistThemeToAccounts(preference);
-}
-
-async function persistThemeToAccounts(preference) {
-  for (const url of windows.keys()) {
-    const snapshot = authSnapshot(url);
-    if (!snapshot.tunnelAccess && snapshot.status !== "ready") continue;
+  for (const url of targets) {
+    accountThemes.set(url, preference);
+    sendThemeToView(url, preference);
     const record = recordFor(url);
     if (!record) continue;
-    await desktopAuth
-      .setTheme(url, sessionFetch(record.session), preference)
+    const fetcher = sessionFetch(record.session);
+    void desktopAuth
+      .readAccount(url, fetcher, { emit: false })
+      .then(() => desktopAuth.setTheme(url, fetcher, preference))
       .catch(() => false);
-    syncThemeToView(url, preference);
   }
+  if (targets.length > 0) lastThemeUrl = targets[0];
+  applyThemeToManager();
 }
 
 function applyViewLayout() {
@@ -1054,6 +1033,16 @@ async function handleDesktopMessage(sender, raw) {
   if (!instance) return;
 
   switch (message.type) {
+    case "theme.changed": {
+      const theme = typeof message.theme === "string" ? message.theme : "";
+      if (!THEMES.includes(theme)) return;
+      accountThemes.set(instance.url, theme);
+      settingsStore.setTheme(theme);
+      if (!activeUrl || activeUrl === instance.url) lastThemeUrl = instance.url;
+      applyThemeToManager();
+      return;
+    }
+
     case "desktop.capabilities":
       sender.send(
         "desktop-message",
@@ -1871,11 +1860,10 @@ if (!hasLock) {
       tokenStore,
       openExternal: (url) => shell.openExternal(url),
       onChange: (url, snapshot) => {
-        if (snapshot.theme && !themeTouched) {
+        if (snapshot.theme && THEMES.includes(snapshot.theme)) {
+          accountThemes.set(url, snapshot.theme);
           settingsStore.setTheme(snapshot.theme);
-          applyThemeToManager();
-          for (const openUrl of windows.keys())
-            syncThemeToView(openUrl, snapshot.theme);
+          if (!activeUrl || activeUrl === url) lastThemeUrl = url;
         }
         const record = recordFor(url);
         const fingerprint = JSON.stringify(snapshot);
@@ -1913,10 +1901,7 @@ if (!hasLock) {
     });
 
     nativeTheme.on("updated", () => {
-      if (settingsStore.theme === "system") {
-        applyThemeToManager();
-        for (const url of windows.keys()) syncThemeToView(url);
-      }
+      if (activeThemePreference() === "system") applyThemeToManager();
     });
 
     openStartupTabs();
