@@ -758,47 +758,53 @@ function renderNewTunnel(instance) {
       return;
     }
 
-    let environment = null;
-    let section = null;
-    let serverId = null;
-    let serverBlock = null;
+    const environments = new Map();
     for (const item of visible) {
       const environmentLabel =
         item.server.environmentLabel || "Senza ambiente";
-      if (environmentLabel !== environment) {
-        environment = environmentLabel;
-        section = el("section", "new-tunnel-env");
-        section.append(el("h4", "new-tunnel-env-title", environmentLabel));
-        list.append(section);
-        serverId = null;
-      }
-      if (item.server.serverId !== serverId) {
-        serverId = item.server.serverId;
-        serverBlock = el("div", "new-tunnel-server");
+      if (!environments.has(environmentLabel))
+        environments.set(environmentLabel, new Map());
+      const servers = environments.get(environmentLabel);
+      const serverId = item.server.serverId;
+      if (!servers.has(serverId))
+        servers.set(serverId, { server: item.server, items: [] });
+      servers.get(serverId).items.push(item);
+    }
+
+    for (const [environmentLabel, servers] of environments) {
+      const section = el("section", "new-tunnel-env");
+      section.append(el("h4", "new-tunnel-env-title", environmentLabel));
+      list.append(section);
+      for (const [serverId, entry] of servers) {
+        const serverBlock = el("div", "new-tunnel-server");
         serverBlock.dataset.serverId = String(serverId);
         const head = el("div", "new-tunnel-server-head");
         head.append(
-          el("span", "new-tunnel-server-name", item.server.serverName),
+          el("span", "new-tunnel-server-name", entry.server.serverName),
         );
         head.append(
-          el("span", "new-tunnel-server-ip", item.server.sshHost || "—"),
+          el("span", "new-tunnel-server-ip", entry.server.sshHost || "—"),
         );
         serverBlock.append(head);
         section.append(serverBlock);
+        for (const item of entry.items) {
+          const option = el("button", "new-tunnel-option");
+          option.type = "button";
+          option.dataset.value = item.value;
+          option.setAttribute("aria-pressed", "false");
+          option.append(el("span", "new-tunnel-option-kind", item.kind));
+          option.append(el("span", "new-tunnel-option-label", item.label));
+          if (item.meta)
+            option.append(el("span", "new-tunnel-option-meta", item.meta));
+          if (item.port !== null && item.port !== undefined)
+            option.append(
+              el("span", "new-tunnel-option-port", `:${item.port}`),
+            );
+          option.addEventListener("click", () => applySelection(item.value));
+          optionButtons.set(item.value, option);
+          serverBlock.append(option);
+        }
       }
-      const option = el("button", "new-tunnel-option");
-      option.type = "button";
-      option.dataset.value = item.value;
-      option.setAttribute("aria-pressed", "false");
-      option.append(el("span", "new-tunnel-option-kind", item.kind));
-      option.append(el("span", "new-tunnel-option-label", item.label));
-      if (item.meta)
-        option.append(el("span", "new-tunnel-option-meta", item.meta));
-      if (item.port !== null && item.port !== undefined)
-        option.append(el("span", "new-tunnel-option-port", `:${item.port}`));
-      option.addEventListener("click", () => applySelection(item.value));
-      optionButtons.set(item.value, option);
-      serverBlock.append(option);
     }
     applySelection(value, { keepPort });
   };
