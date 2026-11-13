@@ -28,6 +28,18 @@ const {
   chooseTransport,
   relayUrl,
 } = require("./tunnels");
+const {
+  createDirectory,
+  deleteFile,
+  downloadFile,
+  listDirectory,
+  openShell,
+  openSftp,
+  remoteJoin,
+  renameFile,
+  runCommand,
+  uploadFile,
+} = require("./ssh-client");
 const { TunnelProjection } = require("./tunnel-projection");
 const {
   DownloadTracker,
@@ -45,6 +57,9 @@ const AUTH_RENEW_INTERVAL =
 const windows = new Map();
 const runtime = new Map();
 const tokens = new Map();
+const remoteConsoles = new Map();
+const remoteTargets = new Map();
+const remoteTransports = new Map();
 const authRenewals = new Map();
 const accountThemes = new Map();
 const downloadTracker = new DownloadTracker();
@@ -428,6 +443,445 @@ async function postTunnelProjection(row, kind, payload) {
   }
 }
 
+async function loadRemoteTarget(instance, serverId, scope = null) {
+  const key = `${instance.url}\u001f${serverId}\u001f${scope || "admin"}`;
+  const cached = remoteTargets.get(key);
+  if (cached && Date.now() - cached.at < 30_000) return cached.target;
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  const target = await desktopAuth.fetchRemoteTarget(
+    instance.url,
+    serverId,
+    sessionFetch(ses),
+    tokens.get(instance.url) || null,
+    scope,
+  );
+  if (!target?.host)
+    throw new Error("Server non disponibile per la console desktop.");
+  remoteTargets.set(key, { target, at: Date.now() });
+  return target;
+}
+
+async function resolveRemoteTransport(instance, serverId, scope = null) {
+  const key = `${instance.url}\u001f${serverId}\u001f${scope || "admin"}`;
+  const cached = remoteTransports.get(key);
+  if (cached && Date.now() - cached.at < 30_000) return cached.transport;
+
+  const policy = (await loadConnectionPolicy(instance)) || "Auto";
+  let transport;
+  if (policy === "Server") transport = "server";
+  else {
+    let target;
+    try {
+      target = await loadRemoteTarget(instance, serverId, scope);
+    } catch (error) {
+      if (policy === "Client") throw error;
+      transport = "server";
+    }
+    if (!transport)
+      transport =
+        policy === "Client"
+          ? "client"
+          : (await isReachable(target))
+            ? "client"
+            : "server";
+  }
+  remoteTransports.set(key, { transport, at: Date.now() });
+  return transport;
+}
+
+async function postRemoteJson(instance, path, body) {
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    Origin: new URL(instance.url).origin,
+  };
+  const cookies = await ses.cookies.get({ url: instance.url });
+  if (cookies.length > 0) {
+    let csrf = desktopAuth?.csrfToken(instance.url) || "";
+    if (!csrf && desktopAuth) {
+      await desktopAuth
+        .readAccount(instance.url, sessionFetch(ses), { emit: false })
+        .catch(() => null);
+      csrf = desktopAuth.csrfToken(instance.url) || "";
+    }
+    if (!csrf) throw new Error("Sessione desktop senza token CSRF.");
+    headers["X-CSRF-Token"] = csrf;
+  } else {
+    const token =
+      tokens.get(instance.url) ||
+      (await desktopAuth.ensureAccessToken(instance.url, sessionFetch(ses)));
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await sessionFetch(ses)(
+    `${instance.url.replace(/\/$/, "")}${path}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      credentials: "include",
+    },
+  );
+  const payload =
+    response.status === 204
+      ? null
+      : await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(
+      payload?.detail ||
+        payload?.title ||
+        `API desktop: HTTP ${response.status}`,
+    );
+  return payload;
+}
+
+function sendRemoteConsoleEvent(record, payload) {
+  sendToView(record.instance.url, payload);
+}
+
+async function finishRemoteConsole(record, error) {
+  if (record.closed) return;
+  record.closed = true;
+  remoteConsoles.delete(record.id);
+  sendRemoteConsoleEvent(record, {
+    type: "closed",
+    id: record.id,
+    error: error?.message || null,
+  });
+  if (record.executionId === null) return;
+  try {
+    await postRemoteJson(
+      record.instance,
+      `/api/remote/console-sessions/${record.executionId}/complete`,
+      {
+        exitCode: error ? null : 0,
+        output: record.output,
+        timedOut: false,
+      },
+    );
+  } catch (failure) {
+    console.warn("console audit completion failed", failure.message);
+  }
+}
+
+async function openRemoteConsole(instance, serverId, cols, rows) {
+  const target = await loadRemoteTarget(instance, serverId);
+  const id = crypto.randomUUID();
+  const started = await postRemoteJson(
+    instance,
+    "/api/remote/console-sessions",
+    { serverId, correlationId: id },
+  );
+  const executionId = started?.executionId ?? null;
+  let shell;
+  try {
+    shell = await openShell(target, { cols, rows });
+  } catch (error) {
+    if (executionId !== null) {
+      await postRemoteJson(
+        instance,
+        `/api/remote/console-sessions/${executionId}/complete`,
+        { exitCode: null, output: error.message, timedOut: false },
+      ).catch(() => null);
+    }
+    throw error;
+  }
+
+  if (target.hostKeyFingerprint == null && shell.fingerprint) {
+    void postRemoteJson(instance, "/api/remote/host-key", {
+      serverId,
+      fingerprint: `SHA256:${shell.fingerprint}`,
+    }).catch((error) =>
+      console.warn("host key projection failed", error.message),
+    );
+  }
+
+  const record = {
+    id,
+    instance,
+    serverId,
+    executionId,
+    shell,
+    output: "",
+    startedAt: Date.now(),
+    closed: false,
+  };
+  remoteConsoles.set(id, record);
+  const append = (chunk) => {
+    const text = String(chunk);
+    record.output = (record.output + text).slice(-200_000);
+    sendRemoteConsoleEvent(record, { type: "data", id, data: text });
+  };
+  shell.stream.on("data", append);
+  shell.stream.stderr?.on("data", append);
+  shell.stream.on("error", (error) => void finishRemoteConsole(record, error));
+  shell.stream.on("close", () => void finishRemoteConsole(record));
+  return { id };
+}
+
+function sendFileResult(instance, requestId, payload) {
+  sendToView(instance.url, { type: "files.result", requestId, ...payload });
+}
+
+async function recordFileEvent(
+  instance,
+  serverId,
+  operation,
+  path,
+  outcome,
+  error = null,
+) {
+  try {
+    await postRemoteJson(instance, "/api/remote/file-events", {
+      serverId,
+      operation,
+      path,
+      outcome,
+      error,
+    });
+  } catch (failure) {
+    console.warn("file event projection failed", failure.message);
+  }
+}
+
+async function handleFileRequest(instance, message) {
+  const requestId = String(message.requestId || "");
+  const serverId = Number(message.serverId);
+  if (!Number.isInteger(serverId) || serverId <= 0) {
+    sendFileResult(instance, requestId, {
+      ok: false,
+      error: "Server non valido.",
+    });
+    return;
+  }
+
+  let operation = null;
+  let remotePath = "";
+  let session = null;
+  try {
+    const transport = await resolveRemoteTransport(instance, serverId);
+    if (transport !== "client") {
+      sendFileResult(instance, requestId, { transport: "server" });
+      return;
+    }
+
+    const target = await loadRemoteTarget(instance, serverId);
+    session = await openSftp(target);
+    if (target.hostKeyFingerprint == null && session.fingerprint) {
+      void postRemoteJson(instance, "/api/remote/host-key", {
+        serverId,
+        fingerprint: `SHA256:${session.fingerprint}`,
+      }).catch((failure) =>
+        console.warn("host key projection failed", failure.message),
+      );
+    }
+
+    let data;
+    switch (message.type) {
+      case "files.list":
+        data = await listDirectory(session.sftp, message.path || null);
+        break;
+      case "files.mkdir": {
+        operation = "CreateDirectory";
+        remotePath = remoteJoin(message.directory, message.name);
+        await createDirectory(session.sftp, remotePath);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.rename": {
+        operation = "Rename";
+        if (String(message.newName || "").includes("/"))
+          throw new Error("Il nuovo nome non può contenere '/'.");
+        remotePath = path.posix.join(
+          path.posix.dirname(message.path),
+          String(message.newName),
+        );
+        await renameFile(session.sftp, message.path, remotePath);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.delete": {
+        operation = "Delete";
+        remotePath = message.path;
+        await deleteFile(
+          session.sftp,
+          remotePath,
+          Boolean(message.isDirectory),
+        );
+        data = null;
+        break;
+      }
+      case "files.upload": {
+        operation = "Upload";
+        if (String(message.name || "").includes("/"))
+          throw new Error("Il nome del file non può contenere '/'.");
+        const buffer = Buffer.from(String(message.data || ""), "base64");
+        if (buffer.length > MAX_BLOB_BYTES)
+          throw new Error(
+            "File troppo grande per il trasferimento diretto dal desktop.",
+          );
+        remotePath = remoteJoin(message.directory, message.name);
+        await uploadFile(session.sftp, remotePath, buffer);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.download": {
+        operation = "Download";
+        remotePath = message.path;
+        const temporary = await fs.promises.mkdtemp(
+          path.join(app.getPath("temp"), "infraorgit-"),
+        );
+        try {
+          const local = path.join(temporary, "download");
+          await downloadFile(session.sftp, remotePath, local);
+          const options = {
+            defaultPath: path.posix.basename(remotePath),
+          };
+          const chosen = mainWindow
+            ? await dialog.showSaveDialog(mainWindow, options)
+            : await dialog.showSaveDialog(options);
+          if (chosen.canceled || !chosen.filePath)
+            data = { saved: false };
+          else {
+            await fs.promises.copyFile(local, chosen.filePath);
+            data = { saved: true, path: chosen.filePath };
+          }
+        } finally {
+          await fs.promises.rm(temporary, { recursive: true, force: true });
+        }
+        break;
+      }
+      default:
+        throw new Error("Operazione file non supportata.");
+    }
+
+    sendFileResult(instance, requestId, { ok: true, data });
+    if (operation === "Download" && data?.saved === false) return;
+    if (operation)
+      void recordFileEvent(
+        instance,
+        serverId,
+        operation,
+        remotePath,
+        "Ok",
+      );
+  } catch (error) {
+    sendFileResult(instance, requestId, {
+      ok: false,
+      error: error.message,
+    });
+    if (operation)
+      void recordFileEvent(
+        instance,
+        serverId,
+        operation,
+        remotePath,
+        "Error",
+        error.message,
+      );
+  } finally {
+    session?.close();
+  }
+}
+
+function redactText(text, values) {
+  let output = String(text ?? "");
+  const secrets = Object.values(values || {})
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of secrets) output = output.split(secret).join("***");
+  return output;
+}
+
+async function handleActionRun(instance, message) {
+  const requestId = String(message.requestId || "");
+  const serverId = Number(message.serverId);
+  const executionId = Number(message.executionId);
+  const reply = (payload) =>
+    sendToView(instance.url, {
+      type: "action.result",
+      requestId,
+      ...payload,
+    });
+
+  if (
+    !Number.isInteger(serverId) ||
+    serverId <= 0 ||
+    !Number.isInteger(executionId) ||
+    executionId <= 0
+  ) {
+    reply({ ok: false, error: "Richiesta azione non valida." });
+    return;
+  }
+
+  try {
+    const transport = await resolveRemoteTransport(
+      instance,
+      serverId,
+      "actions",
+    );
+    if (transport !== "client") {
+      reply({ transport: "server" });
+      return;
+    }
+    const target = await loadRemoteTarget(instance, serverId, "actions");
+    const result = await runCommand(target, String(message.script || ""), {
+      timeoutSeconds: Number(message.timeoutSeconds) || 300,
+    });
+    if (target.hostKeyFingerprint == null && result.fingerprint) {
+      void postRemoteJson(instance, "/api/remote/host-key", {
+        serverId,
+        fingerprint: `SHA256:${result.fingerprint}`,
+      }).catch((error) =>
+        console.warn("host key projection failed", error.message),
+      );
+    }
+    const output = redactText(result.output, message.redactValues);
+    try {
+      await postRemoteJson(
+        instance,
+        `/api/remote/actions/${executionId}/complete`,
+        {
+          exitCode: result.exitCode,
+          output,
+          timedOut: result.timedOut,
+        },
+      );
+    } catch (error) {
+      console.warn("action audit completion failed", error.message);
+    }
+    reply({
+      ok: true,
+      data: {
+        exitCode: result.exitCode,
+        output,
+        timedOut: result.timedOut,
+      },
+    });
+  } catch (error) {
+    const output = redactText(error.message, message.redactValues);
+    try {
+      await postRemoteJson(
+        instance,
+        `/api/remote/actions/${executionId}/complete`,
+        { exitCode: null, output, timedOut: false },
+      );
+    } catch (failure) {
+      console.warn("action audit completion failed", failure.message);
+    }
+    reply({ ok: false, error: output });
+  }
+}
+
+function closeRemoteConsolesForUrl(url) {
+  for (const record of [...remoteConsoles.values()]) {
+    if (record.instance.url === url) record.shell.close();
+  }
+}
+
 function webAuthStatus(url) {
   const snapshot = authSnapshot(url);
   if (snapshot.status === "pending") return "pending";
@@ -524,7 +978,8 @@ function firstHop(server) {
       ? server.jumps[0]
       : server?.jump;
   if (jump?.host) return { host: jump.host, port: Number(jump.port) || 22 };
-  const host = server?.sshHost || server?.ipAddress || server?.hostname;
+  const host =
+    server?.sshHost || server?.ipAddress || server?.hostname || server?.host;
   return host ? { host, port: Number(server?.sshPort) || 22 } : null;
 }
 
@@ -922,6 +1377,7 @@ function activateTab(url) {
 function closeTab(url) {
   const record = recordFor(url);
   if (!record) return;
+  closeRemoteConsolesForUrl(url);
   if (activeUrl === url) showLanding();
   try {
     record.view.webContents.close();
@@ -1251,6 +1707,7 @@ function registerIpc() {
       message: null,
     };
   });
+
 }
 
 async function focusTunnelServices(record, serverId) {
@@ -1303,6 +1760,134 @@ async function handleDesktopMessage(sender, raw) {
       applyThemeToManager();
       return;
     }
+
+    case "remote.resolve": {
+      const requestId = String(message.requestId || "");
+      try {
+        const transport = await resolveRemoteTransport(
+          instance,
+          Number(message.serverId),
+          message.scope === "actions" ? "actions" : null,
+        );
+        sendToView(instance.url, {
+          type: "remote.resolved",
+          requestId,
+          transport,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "remote.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.resolve": {
+      const requestId = String(message.requestId || "");
+      try {
+        const transport = await resolveRemoteTransport(
+          instance,
+          Number(message.serverId),
+        );
+        sendToView(instance.url, {
+          type: "console.resolved",
+          requestId,
+          transport,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.open": {
+      const requestId = String(message.requestId || "");
+      const serverId = Number(message.serverId);
+      if (!Number.isInteger(serverId) || serverId <= 0) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: "Server non valido.",
+        });
+        return;
+      }
+      try {
+        const transport = await resolveRemoteTransport(instance, serverId);
+        if (transport !== "client") {
+          sendToView(instance.url, {
+            type: "console.resolved",
+            requestId,
+            transport,
+          });
+          return;
+        }
+        const opened = await openRemoteConsole(
+          instance,
+          serverId,
+          Number(message.cols) || 100,
+          Number(message.rows) || 30,
+        );
+        sendToView(instance.url, {
+          type: "console.opened",
+          requestId,
+          id: opened.id,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.write": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      try {
+        record.shell.stream.write(String(message.data ?? ""));
+      } catch {
+        // la sessione è già chiusa
+      }
+      return;
+    }
+
+    case "console.resize": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      record.shell.resize(
+        Math.max(10, Math.min(500, Number(message.cols) || 100)),
+        Math.max(5, Math.min(200, Number(message.rows) || 30)),
+      );
+      return;
+    }
+
+    case "console.close": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      record.shell.close();
+      return;
+    }
+
+    case "action.run":
+      await handleActionRun(instance, message);
+      return;
+
+    case "files.list":
+    case "files.mkdir":
+    case "files.rename":
+    case "files.delete":
+    case "files.upload":
+    case "files.download":
+      await handleFileRequest(instance, message);
+      return;
 
     case "desktop.capabilities":
       sender.send(
@@ -2304,6 +2889,7 @@ if (!hasLock) {
   app.on("before-quit", () => {
     quitting = true;
     if (authRenewTimer) clearInterval(authRenewTimer);
+    for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
     tunnelProjection?.dispose();
     desktopAuth?.dispose();

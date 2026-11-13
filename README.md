@@ -22,9 +22,7 @@ The screenshots use fictitious demo instances, servers and tunnels.
   heartbeat are projected to the central `/tunnels` page.
 - **Connection policy.** Each installation chooses whether tunnels are opened
   by the server (`Server`), directly by the desktop (`Client`) or automatically
-  (`Auto`, direct when the client reaches the SSH host, relayed otherwise).
-  SystemAdmin sets it from **Impostazioni**. The row lives in the shared MySQL
-  database, so every API node in a cluster applies the same mode.
+  (`Auto`, the default). See [Connection mode](#connection-mode).
 - **Session reuse.** If the instance tab is already signed in, the desktop uses
   that BFF session for the tunnel API. The device flow with `offline_access`,
   or a personal `tunnels:operate` token, is only a fallback.
@@ -36,6 +34,25 @@ The screenshots use fictitious demo instances, servers and tunnels.
   the native window, instance management and the process-level tunnel manager.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
+
+## Connection mode
+
+`SystemAdmin` sets one mode per installation in the Web app at
+**Impostazioni** (`/settings`). The default is **Auto**.
+
+| Mode | What the desktop does | Limits |
+|---|---|---|
+| **Auto** (default) | Tests the first SSH hop. If the client reaches it, runs tunnels, console, files and actions with the local `ssh`/SFTP; otherwise uses the server. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
+| **Server** | Binds the local port and relays each tunnel connection to the API over WebSocket. The API opens SSH with the stored server credential; console, files and actions also run on the API. | Only `Local` services and deployments with a fixed target port. `Dynamic` and `Remote` tunnels are unavailable. |
+| **Client** | Runs `ssh` and SFTP with the local agent for tunnels, console, files and actions. | Requires OpenSSH and an SSH agent on the client; no server relay. Direct uploads are capped at 8 MB. |
+
+The mode is stored in the shared MySQL database (`ConnectionPolicies`), so all
+API nodes in a cluster apply the same value. Relay connections are node-local;
+each local TCP connection opens its own WebSocket, so no sticky sessions are
+needed, only WebSocket upgrade support on the load balancer. The central
+`/tunnels` page shows the actual transport (`Client` or `Server`) of every
+active session; direct console and action runs appear in the execution log,
+and direct file operations in the audit log.
 
 ## Run locally
 

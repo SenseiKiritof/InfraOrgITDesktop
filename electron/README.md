@@ -45,24 +45,28 @@ The screenshots use fictitious demo instances, servers and tunnels.
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
 - **Connection policy.** The instance admin page `/settings` (SystemAdmin)
-  chooses `Server`, `Client` or `Auto` for the whole installation. The desktop
-  reads it before opening a tunnel:
+  chooses `Server`, `Client` or `Auto` for the whole installation; `Auto` is
+  the default. The desktop reads it before opening a tunnel, console, file
+  session or action:
   - `Server`: the desktop opens a loopback listener and relays each TCP
     connection over a WebSocket to `GET /api/tunnels/relay`; the API node opens
     the SSH forward with the stored server credential. Only `Local` services
-    and deployment targets are relayed.
-  - `Client`: the system `ssh` opens the tunnel with the local agent, as
-    before; `Local`, `Dynamic` and `Remote` are available.
+    and deployment targets are relayed. Console, console audit, files and
+    actions run on the API.
+  - `Client`: the system `ssh`/SFTP and `ssh2` open tunnels, console, files and
+    actions with the local agent; `Local`, `Dynamic` and `Remote` tunnels are
+    available. No SSH connection starts from the server.
   - `Auto`: the desktop tests the first SSH hop (direct target or jump host).
-    If it is reachable it uses the client; otherwise it falls back to the
-    server relay when the target is relayable.
+    If it is reachable it uses the client for every operation; otherwise it
+    falls back to the server.
 
   The policy is one row in the shared database, so a cluster with several API
   nodes uses the same mode everywhere. Relay connections are bound to the node
   that accepts the WebSocket; the load balancer must forward WebSocket upgrades
   and does not need sticky sessions because each local TCP connection opens
   its own relay. The central `/tunnels` page shows the transport (`Client` or
-  `Server`) for every session.
+  `Server`) for every session; direct console/actions and file operations are
+  also projected to the execution and audit logs.
 - **Theme.** The shell inherits the account theme read from `/api/session`
   (falling back to `settings.json` before any instance is available). There is
   no desktop theme button: the Web app's toggle is the only control and cycles
@@ -233,6 +237,12 @@ test/                     Electron shell test, fake SSH, unit tests
   WebSocket. The stored server credential is used, not the user's agent, so
   this mode is a deliberate privilege boundary: only `Local` targets with a
   fixed host and port are reachable.
+- Direct console/files/actions use `ssh2` with `SSH_AUTH_SOCK` (or the Windows
+  OpenSSH named pipe), never a private key. The API returns the stored host-key
+  fingerprint; the first direct connection stores it through
+  `/api/remote/host-key`, and later connections reject a mismatch. The API
+  still authorizes the target (`ServerAdmin` for console/files,
+  `ServerOperator` for actions) and records the execution/audit rows.
 - safeStorage uses the macOS Keychain / Windows DPAPI / Linux Secret Service
   backend. If Linux has no keyring (`basic_text`), the store refuses to write
   and keeps the session in memory for that run. A native keychain wrapper is
