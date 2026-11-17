@@ -42,7 +42,7 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 | Mode | What the desktop does | Limits |
 |---|---|---|
-| **Auto** (default) | Tests the first SSH hop. If the client reaches it, runs tunnels, console, files and actions with the local `ssh`/SFTP; otherwise uses the server. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
+| **Auto** (default) | Tests the first SSH hop. If the client reaches it **and the credential is key-based**, runs tunnels, console, files and actions with the local `ssh`/SFTP; otherwise uses the server. Password credentials always relay. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
 | **Server** | Binds the local port and relays each tunnel connection to the API over WebSocket. The API opens SSH with the stored server credential; console, files and actions also run on the API. | Only `Local` services and deployments with a fixed target port. `Dynamic` and `Remote` tunnels are unavailable. |
 | **Client** | Runs `ssh` and SFTP with the local agent for tunnels, console, files and actions. | Requires OpenSSH and an SSH agent on the client; no server relay. Direct uploads are capped at 8 MB. |
 

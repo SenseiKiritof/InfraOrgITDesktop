@@ -84,6 +84,16 @@ function chooseTransport(policy, relayable, reachable) {
   return reachable ? "client" : relayable ? "server" : "client";
 }
 
+/**
+ * Auto can only use the desktop SSH agent. When the credential is not a key
+ * (password or missing), the relay is the only viable path for Local targets.
+ */
+function transportFor(policy, relayable, reachable, clientAuth) {
+  if (policy === "Auto" && clientAuth === false)
+    return relayable ? "server" : "client";
+  return chooseTransport(policy, relayable, reachable);
+}
+
 function relayUrl(instanceUrl, serverId, target, tunnelId) {
   const url = new URL(instanceUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -446,6 +456,7 @@ module.exports = {
   buildSshArgs,
   canRelay,
   chooseTransport,
+  transportFor,
   publicTunnel,
   relayUrl,
 };
