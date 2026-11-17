@@ -11,10 +11,13 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ## Features
 
+- **Languages.** The manager and tunnel drawer are English by default. The
+  Settings dialog switches to Italian, French, German or Spanish; the choice is
+  stored locally, and missing strings fall back to English.
 - **Landing manager.** Instance cards show name, URL, environment, last use,
-  server count and tunnel count. **Nuova istanza**, **Apri**, **Gestisci** and
-  **Rimuovi** are in the card; **Istanze** is always one click away from a tab.
-  The top **+** opens a configured connection and offers **Nuova connessione**.
+  server count and tunnel count. **New instance**, **Open**, **Manage** and
+  **Remove** are in the card; **Instances** is always one click away from a tab.
+  The top **+** opens a configured connection and offers **New connection**.
 - **Isolated tabs.** Each instance URL has its own persistent Chromium
   partition. Cookies, the BFF login and storage never cross instances.
 - **Tunnel drawer.** Rows are grouped by instance and server and show the local
