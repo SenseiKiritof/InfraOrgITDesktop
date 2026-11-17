@@ -49,6 +49,10 @@ token archive. Packaged builds require a trusted certificate for the instance;
 the self-signed Caddy certificate. Loopback HTTP is accepted in development;
 remote instances must use HTTPS.
 
+Chromium trusts the OS keychain, the relay WebSocket uses Node TLS: for a
+private CA put the root PEM at `<userData>/relay-ca.pem` or set
+`DESKTOP_RELAY_CA`, in addition to the OS trust used by the tabs.
+
 ## Tests
 
 ```bash
