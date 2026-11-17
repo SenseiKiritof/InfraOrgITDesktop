@@ -186,11 +186,12 @@ workflow.
    updates the GitHub Release with `softprops/action-gh-release@v2`. It is the
    only job with `contents: write`.
 
-Packages are unsigned. Developer ID signing, macOS notarization, Windows
-Authenticode signing and auto-update are follow-ups; until then the release
-notes and root README must keep the Gatekeeper/SmartScreen warning and users
-must verify the published checksum. When signing is added, keep the signing
-material in repository secrets and never in the repository.
+Packages are unsigned. Developer ID signing, macOS notarization and Windows
+Authenticode signing are follow-ups. The app checks the latest GitHub release,
+verifies the published `.sha256` and installs only in a packaged build; the
+release notes and root README must keep the Gatekeeper/SmartScreen warning and
+users must verify the published checksum. When signing is added, keep the
+signing material in repository secrets and never in the repository.
 
 ### Manual release
 

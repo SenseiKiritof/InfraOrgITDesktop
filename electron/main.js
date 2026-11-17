@@ -12,6 +12,7 @@ const {
   session,
   shell,
 } = require("electron");
+const { spawn } = require("node:child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const nodeNet = require("node:net");
@@ -42,6 +43,7 @@ const {
   uploadFile,
 } = require("./ssh-client");
 const { TunnelProjection } = require("./tunnel-projection");
+const updates = require("./updates");
 const {
   DownloadTracker,
   fileNameFromUrl,
@@ -82,6 +84,7 @@ let desktopAuth = null;
 let tunnels = null;
 let tunnelProjection = null;
 let quitting = false;
+let shuttingDown = false;
 
 if (process.env.DESKTOP_USER_DATA) {
   app.setPath("userData", path.resolve(process.env.DESKTOP_USER_DATA));
@@ -325,6 +328,126 @@ function publicTargets(url) {
   return data.targets;
 }
 
+let updateState = {
+  status: "idle",
+  currentVersion: app.getVersion(),
+  message: "",
+};
+let updateCheck = null;
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function broadcastUpdate() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("updates:state", updateState);
+}
+
+async function runUpdateCheck() {
+  if (updateCheck) return updateCheck;
+  updateState = {
+    ...updateState,
+    status: "checking",
+    currentVersion: app.getVersion(),
+    message: "Controllo aggiornamenti…",
+  };
+  broadcastUpdate();
+  sendState();
+  updateCheck = updates
+    .checkForUpdates({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    })
+    .then((next) => {
+      updateState = next;
+      return next;
+    })
+    .catch((error) => {
+      updateState = {
+        ...updateState,
+        status: "error",
+        message: error?.message || "Controllo aggiornamenti non riuscito.",
+      };
+      return updateState;
+    })
+    .finally(() => {
+      updateCheck = null;
+      broadcastUpdate();
+      sendState();
+    });
+  return updateCheck;
+}
+
+function startUpdateScheduler() {
+  setTimeout(() => void runUpdateCheck(), 5000).unref?.();
+  setInterval(() => void runUpdateCheck(), UPDATE_INTERVAL_MS).unref?.();
+}
+
+async function installUpdateNow() {
+  if (!app.isPackaged)
+    throw new Error(
+      "L'installazione automatica è disponibile solo nell'app pacchettizzata.",
+    );
+  if (updateState.status !== "update" || !updateState.archive)
+    throw new Error("Nessun aggiornamento da installare.");
+  const dir = await fs.promises.mkdtemp(
+    path.join(app.getPath("temp"), "infraorgit-update-"),
+  );
+  const archivePath = path.join(dir, updateState.archive.name);
+  const checksumPath = path.join(dir, updateState.checksum.name);
+  updateState = {
+    ...updateState,
+    status: "installing",
+    message: "Download del pacchetto…",
+  };
+  broadcastUpdate();
+  sendState();
+  try {
+    await updates.downloadFile(updateState.archive.url, archivePath);
+    await updates.downloadFile(updateState.checksum.url, checksumPath);
+    await updates.verifyChecksum(
+      archivePath,
+      await fs.promises.readFile(checksumPath, "utf8"),
+    );
+    const appRoot = updates.appRootFor(process.platform, app.getPath("exe"));
+    if (!appRoot) throw new Error("Percorso dell'app non riconosciuto.");
+    const plan = updates.installPlan({
+      platform: process.platform,
+      archivePath,
+      appRoot,
+      pid: process.pid,
+    });
+    updateState = {
+      ...updateState,
+      status: "installing",
+      message: "Installazione e riavvio…",
+    };
+    broadcastUpdate();
+    sendState();
+    let args = plan.args;
+    if (process.platform !== "win32") {
+      const scriptPath = path.join(dir, "install.sh");
+      await fs.promises.writeFile(scriptPath, plan.script, { mode: 0o755 });
+      args = [scriptPath];
+    }
+    const child = spawn(plan.command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    setTimeout(() => app.quit(), 800);
+    return updateState;
+  } catch (error) {
+    updateState = {
+      ...updateState,
+      status: "error",
+      message: error?.message || "Installazione non riuscita.",
+    };
+    broadcastUpdate();
+    sendState();
+    throw error;
+  }
+}
+
 function publicState() {
   downloadTracker.prune();
   const instances = instanceStore.list().map((instance) => {
@@ -369,6 +492,7 @@ function publicState() {
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
+    updates: updateState,
     targets,
     version: app.getVersion(),
   };
@@ -1524,6 +1648,9 @@ function registerIpc() {
   });
 
   handle("manager:state", () => publicState());
+  handle("updates:state", () => updateState);
+  handle("updates:check", () => runUpdateCheck());
+  handle("updates:install", () => installUpdateNow());
   handle("manager:list", () => instanceStore.list());
   handle("manager:add", (value) => {
     instanceStore.add(value);
@@ -2141,9 +2268,9 @@ function buildMenu() {
       label: "File",
       submenu: [
         {
-          label: "Nuova istanza",
+          label: "Apri connessione…",
           accelerator: "CmdOrCtrl+N",
-          click: () => sendCommand("new-instance"),
+          click: () => sendCommand("open-connection"),
         },
         { type: "separator" },
         { role: "close" },
@@ -2165,7 +2292,7 @@ function buildMenu() {
         },
         {
           label: "Tunnel",
-          accelerator: "CmdOrCtrl+Shift+T",
+          accelerator: "CmdOrCtrl+T",
           click: () => sendCommand("toggle-drawer"),
         },
         { type: "separator" },
@@ -2739,6 +2866,64 @@ async function runTest() {
     check(manageModal.title === "Produzione", "manage modal title", manageModal.title);
     check(manageModal.servers > 0, "manage modal lists server anagrafica", String(manageModal.servers));
 
+    const picker = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector("#tab-add").click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const visible = !document.querySelector("#modal").hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      const rows = document.querySelectorAll(".connection-row").length;
+      const create = [...document.querySelectorAll("#modal-footer button")]
+        .find((node) => node.textContent === "Nuova connessione");
+      create.click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const newTitle = document.querySelector("#modal-title").textContent;
+      document.querySelector("#modal-close").click();
+      return {visible, title, rows, newTitle};
+    })()`);
+    check(picker.visible === true, "top + opens the connection picker");
+    check(picker.title === "Apri connessione", "connection picker title", picker.title);
+    check(picker.rows === 3, "connection picker lists configured instances", String(picker.rows));
+    check(picker.newTitle === "Nuova istanza", "picker opens the new connection form", picker.newTitle);
+
+    const shortcuts = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const press = (key) => document.dispatchEvent(
+        new KeyboardEvent("keydown", {key, metaKey: true, ctrlKey: true, bubbles: true}),
+      );
+      document.querySelector("#drawer-close").click();
+      press("t");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const drawer = document.body.dataset.drawer === "open";
+      press("t");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      press("n");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const pickerTitle = document.querySelector("#modal-title").textContent;
+      document.querySelector("#modal-close").click();
+      return {drawer, pickerTitle};
+    })()`);
+    check(shortcuts.drawer === true, "cmd+T opens the tunnel drawer");
+    check(shortcuts.pickerTitle === "Apri connessione", "cmd+N opens the connection picker", shortcuts.pickerTitle);
+
+    const settingsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector("#settings-button").click();
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const modal = document.querySelector("#modal");
+      const visible = !modal.hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      const body = document.querySelector("#modal-body").textContent;
+      const rect = modal.getBoundingClientRect();
+      const style = getComputedStyle(modal);
+      return {visible, title, body, rect: {width: rect.width, height: rect.height},
+        display: style.display, zIndex: style.zIndex,
+        drawer: document.body.dataset.drawer};
+    })()`);
+    check(settingsModal.visible === true, "settings modal opens");
+    check(settingsModal.title === "Aggiornamenti", "settings modal title", settingsModal.title);
+    check(settingsModal.body.includes("Versione installata"), "settings modal shows the version");
+    await mainWindow.webContents.executeJavaScript(
+      'document.querySelector("#modal-close").click()',
+    );
+
     const secondTab = publicState().instances[1];
     activateTab(secondTab.url);
     await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -2870,6 +3055,7 @@ if (!hasLock) {
     await startTestTunnels();
     createMainWindow();
     registerIpc();
+    if (!IS_TEST) startUpdateScheduler();
     buildMenu();
 
     ipcMain.on("desktop-message", (event, raw) => {
@@ -2894,13 +3080,22 @@ if (!hasLock) {
     }
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    shuttingDown = true;
     quitting = true;
     if (authRenewTimer) clearInterval(authRenewTimer);
     for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
-    tunnelProjection?.dispose();
-    desktopAuth?.dispose();
+    void (async () => {
+      // Publish the stopped sessions so the central /tunnels page does not
+      // keep ghost rows until the stale cleanup runs.
+      await tunnelProjection?.flush(2000);
+      tunnelProjection?.dispose();
+      desktopAuth?.dispose();
+      app.quit();
+    })();
   });
 
   app.on("window-all-closed", () => {

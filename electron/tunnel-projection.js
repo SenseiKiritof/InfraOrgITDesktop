@@ -62,6 +62,7 @@ class TunnelProjection {
     this.clearIntervalFn = clearIntervalFn;
     this.logger = logger;
     this.states = new Map();
+    this.pending = new Set();
   }
 
   sync(rows = []) {
@@ -100,6 +101,25 @@ class TunnelProjection {
   }
 
   async publish(state, kind) {
+    const task = this.send(state, kind);
+    this.pending.add(task);
+    try {
+      await task;
+    } finally {
+      this.pending.delete(task);
+    }
+  }
+
+  /** Waits for the in-flight stop/session posts before the app exits. */
+  async flush(timeoutMs = 2000) {
+    if (this.pending.size === 0) return;
+    await Promise.race([
+      Promise.allSettled([...this.pending]),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  }
+
+  async send(state, kind) {
     const row = state.row;
     try {
       if (kind === "active") {

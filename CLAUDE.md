@@ -50,10 +50,13 @@ Desktop app for InfraOrgIT: an Electron shell in `electron/`. Sibling of
 - `shell/instances.js` and `shell/settings.js` are the only file persistence:
   keep saves atomic, validate every value and never write secrets. Tunnel rows
   kept as “stopped” are in memory only.
-- Release packages are unsigned: Developer ID signing, notarization, Windows
-  Authenticode signing and auto-update are follow-ups. Keep the
-  Gatekeeper/SmartScreen warning and the `.sha256` checksums accurate; never
-  claim a package is signed.
+- Release packages are unsigned: Developer ID signing, notarization and Windows
+  Authenticode signing are follow-ups. `electron/updates.js` checks GitHub
+  releases, verifies the published `.sha256` and installs only in a packaged
+  build; keep the Gatekeeper/SmartScreen warning and the checksums accurate and
+  never claim a package is signed.
+- Quit must stop every tunnel, close relay sockets and console shells, and let
+  the projection publish the stopped sessions before the process exits.
 - `node_modules/` and `dist/` are ignored; never commit them.
 - Keep the root `README.md`, `electron/README.md` and `docs/DEVELOPMENT.md`
   aligned when commands, packages or security boundaries change.
