@@ -2629,6 +2629,27 @@ async function runTest() {
       String(managerBridge.shortcut),
     );
 
+    const i18n = await mainWindow.webContents.executeJavaScript(
+      "({bridge: typeof window.desktopI18n, languages: window.desktopI18n?.languages.map((entry) => entry.code), lang: document.documentElement.lang, sample: window.desktopI18n?.translate('Tunnel attivi', 'en'), relative: window.desktopI18n?.translate('Oggi 14:30', 'de')})",
+    );
+    check(i18n.bridge === "object", "manager i18n exposed", JSON.stringify(i18n));
+    check(
+      i18n.languages?.join(",") === "en,it,fr,de,es",
+      "manager languages",
+      String(i18n.languages),
+    );
+    check(i18n.lang === "en", "manager default english", String(i18n.lang));
+    check(
+      i18n.sample === "Active tunnels",
+      "manager english translation",
+      String(i18n.sample),
+    );
+    check(
+      i18n.relative === "Heute 14:30",
+      "manager relative date translation",
+      String(i18n.relative),
+    );
+
     const invalid = await mainWindow.webContents.executeJavaScript(
       "window.desktopManager.addInstance({name:'Bad',url:'http://remote.example.com'}).then(() => 'accepted').catch((error) => error.message)",
     );
@@ -2859,11 +2880,11 @@ async function runTest() {
       return {visible, title};
     })()`);
     check(newModal.visible === true, "new instance modal opens");
-    check(newModal.title === "Nuova istanza", "new instance modal title", newModal.title);
+    check(newModal.title === "New instance", "new instance modal title", newModal.title);
 
     const manageModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       const card = [...document.querySelectorAll(".instance-card")].find((item) => item.textContent.includes("Produzione"));
-      [...card.querySelectorAll("button")].find((button) => button.textContent === "Gestisci").click();
+      [...card.querySelectorAll("button")].find((button) => button.textContent === "Manage").click();
       await new Promise((resolve) => setTimeout(resolve, 3000));
       const visible = !document.querySelector("#modal").hidden;
       const title = document.querySelector("#modal-title").textContent;
@@ -2882,7 +2903,7 @@ async function runTest() {
       const title = document.querySelector("#modal-title").textContent;
       const rows = document.querySelectorAll(".connection-row").length;
       const create = [...document.querySelectorAll("#modal-footer button")]
-        .find((node) => node.textContent === "Nuova connessione");
+        .find((node) => node.textContent === "New connection");
       create.click();
       await new Promise((resolve) => setTimeout(resolve, 150));
       const newTitle = document.querySelector("#modal-title").textContent;
@@ -2890,9 +2911,9 @@ async function runTest() {
       return {visible, title, rows, newTitle};
     })()`);
     check(picker.visible === true, "top + opens the connection picker");
-    check(picker.title === "Apri connessione", "connection picker title", picker.title);
+    check(picker.title === "Open connection", "connection picker title", picker.title);
     check(picker.rows === 3, "connection picker lists configured instances", String(picker.rows));
-    check(picker.newTitle === "Nuova istanza", "picker opens the new connection form", picker.newTitle);
+    check(picker.newTitle === "New instance", "picker opens the new connection form", picker.newTitle);
 
     const shortcuts = await mainWindow.webContents.executeJavaScript(`(async () => {
       const press = (key) => document.dispatchEvent(
@@ -2911,7 +2932,7 @@ async function runTest() {
       return {drawer, pickerTitle};
     })()`);
     check(shortcuts.drawer === true, "cmd+T opens the tunnel drawer");
-    check(shortcuts.pickerTitle === "Apri connessione", "cmd+N opens the connection picker", shortcuts.pickerTitle);
+    check(shortcuts.pickerTitle === "Open connection", "cmd+N opens the connection picker", shortcuts.pickerTitle);
 
     const drawerTools = await mainWindow.webContents.executeJavaScript(`(async () => {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -2986,8 +3007,9 @@ async function runTest() {
         drawer: document.body.dataset.drawer};
     })()`);
     check(settingsModal.visible === true, "settings modal opens");
-    check(settingsModal.title === "Aggiornamenti", "settings modal title", settingsModal.title);
-    check(settingsModal.body.includes("Versione installata"), "settings modal shows the version");
+    check(settingsModal.title === "Updates", "settings modal title", settingsModal.title);
+    check(settingsModal.body.includes("Installed version"), "settings modal shows the version");
+    check(settingsModal.body.includes("Italiano"), "settings modal shows the language picker");
     await mainWindow.webContents.executeJavaScript(
       'document.querySelector("#modal-close").click()',
     );
