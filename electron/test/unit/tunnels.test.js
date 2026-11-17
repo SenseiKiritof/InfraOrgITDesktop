@@ -128,6 +128,23 @@ test("transport policy picks client, server or relayable service", () => {
   );
 });
 
+test("remove stops an active tunnel before deleting it", async () => {
+  const manager = fakeManager();
+  await manager.start({
+    id: "t1",
+    url: "https://infra.example.com",
+    instanceName: "Produzione",
+    server,
+    target,
+    service: null,
+    localPort: 18098,
+  });
+  assert.equal(manager.active().length, 1);
+  assert.equal(manager.remove("t1"), true);
+  assert.equal(manager.get("t1"), null);
+  assert.equal(manager.active().length, 0);
+});
+
 test("tunnel manager rejects duplicate local ports and keeps stopped rows", async () => {
   const manager = fakeManager();
   const first = await manager.start({

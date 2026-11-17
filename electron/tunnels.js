@@ -449,6 +449,14 @@ class TunnelManager {
     if (!row || row.status === "Active") return false;
     return this.rows.delete(id);
   }
+
+  /** The drawer remove button: stop an active row first, then drop it. */
+  remove(id) {
+    const row = this.rows.get(id);
+    if (!row) return false;
+    if (row.status === "Active") this.stop(id);
+    return this.rows.delete(id);
+  }
 }
 
 module.exports = {

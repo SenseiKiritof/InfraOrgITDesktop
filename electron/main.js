@@ -1777,8 +1777,8 @@ function registerIpc() {
     return publicState();
   });
   handle("manager:forget-tunnel", (id) => {
-    if (!tunnels.forget(String(id)))
-      throw new Error("Ferma il tunnel prima di rimuoverlo.");
+    if (!tunnels.remove(String(id)))
+      throw new Error("Tunnel non trovato.");
     return publicState();
   });
 
