@@ -23,6 +23,7 @@ const els = {
   stageName: document.querySelector("#stage-backdrop-name"),
   drawer: document.querySelector("#drawer"),
   drawerBody: document.querySelector("#drawer-body"),
+  drawerSearch: document.querySelector("#drawer-search"),
   drawerClose: document.querySelector("#drawer-close"),
   drawerRefresh: document.querySelector("#drawer-refresh"),
   palette: document.querySelector("#palette"),
@@ -58,6 +59,8 @@ let modalToken = 0;
 let toastTimer = null;
 let lastDrawerKey = "";
 let drawerDraft = null;
+let drawerSearch = "";
+const collapsedServers = new Set();
 let lastBounds = "";
 
 const isMac = api?.platform === "darwin";
@@ -411,7 +414,9 @@ function captureDrawerDraft() {
 
 function renderDrawer() {
   drawerDraft = captureDrawerDraft();
+  const query = drawerSearch.trim().toLowerCase();
   const key = JSON.stringify({
+    search: drawerSearch,
     tunnels: state.tunnels,
     auth: state.instances.map((instance) => [instance.url, instance.auth]),
     targets: Object.fromEntries(
@@ -445,12 +450,47 @@ function renderDrawer() {
     return;
   }
 
+  let shown = 0;
   for (const instance of state.instances) {
-    els.drawerBody.append(renderInstanceGroup(instance));
+    const own = state.tunnels.filter((item) => item.url === instance.url);
+    const instanceHit =
+      query.length === 0 ||
+      [instance.name, instance.url, instance.environment].some((value) =>
+        String(value || "").toLowerCase().includes(query),
+      );
+    const tunnels = instanceHit
+      ? own
+      : own.filter((tunnel) => tunnelMatches(tunnel, query));
+    if (query && !instanceHit && tunnels.length === 0) continue;
+    els.drawerBody.append(
+      renderInstanceGroup(instance, tunnels, { searching: query.length > 0 }),
+    );
+    shown += 1;
+  }
+  if (query && shown === 0) {
+    els.drawerBody.append(
+      el("p", "drawer-empty", "Nessun tunnel corrisponde alla ricerca."),
+    );
   }
 }
 
-function renderInstanceGroup(instance) {
+function tunnelMatches(tunnel, query) {
+  return [
+    tunnel.instanceName,
+    tunnel.serverName,
+    tunnel.ip,
+    tunnel.application,
+    tunnel.source,
+    tunnel.mode,
+    tunnel.transport,
+    tunnel.localPort,
+    tunnel.remotePort,
+  ].some((value) =>
+    String(value ?? "").toLowerCase().includes(query),
+  );
+}
+
+function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
   const group = el("section", "instance-group");
   group.dataset.instanceGroup = instance.url;
 
@@ -564,13 +604,13 @@ function renderInstanceGroup(instance) {
   }
 
   const grouped = new Map();
-  for (const tunnel of state.tunnels.filter((item) => item.url === instance.url)) {
+  for (const tunnel of tunnels) {
     const key = `${tunnel.serverName}::${tunnel.ip}`;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(tunnel);
   }
 
-  if (grouped.size === 0 && auth.tunnelAccess) {
+  if (grouped.size === 0 && auth.tunnelAccess && !searching) {
     group.append(
       el("p", "drawer-empty", "Nessun tunnel aperto per questa istanza."),
     );
@@ -580,8 +620,25 @@ function renderInstanceGroup(instance) {
     const server = el("div", "server-group");
     const titleRow = el("div", "server-group-title");
     const [serverName, ip] = key.split("::");
+    const collapseKey = `${instance.url}\u001f${key}`;
+    const collapsed = collapsedServers.has(collapseKey);
+    const toggle = button(
+      collapsed ? "▸" : "▾",
+      "server-toggle",
+      () => {
+        if (collapsed) collapsedServers.delete(collapseKey);
+        else collapsedServers.add(collapseKey);
+        lastDrawerKey = "";
+        renderDrawer();
+      },
+      collapsed ? "Espandi server" : "Comprimi server",
+    );
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", `${toggle.title} ${serverName}`);
+    titleRow.append(toggle);
     titleRow.append(el("span", "server-name", serverName));
     const right = el("span", "server-group-actions");
+    right.append(el("span", "server-count", String(rows.length)));
     right.append(el("span", "server-ip", ip || "—"));
     const serverId = rows.find((row) => row.serverId)?.serverId;
     if (serverId)
@@ -595,11 +652,13 @@ function renderInstanceGroup(instance) {
       );
     titleRow.append(right);
     server.append(titleRow);
-    for (const tunnel of rows) server.append(renderTunnelRow(tunnel));
+    if (!collapsed) {
+      for (const tunnel of rows) server.append(renderTunnelRow(tunnel));
+    }
     group.append(server);
   }
 
-  if (auth.tunnelAccess) group.append(renderNewTunnel(instance));
+  if (auth.tunnelAccess && !searching) group.append(renderNewTunnel(instance));
   return group;
 }
 
@@ -1671,6 +1730,14 @@ els.newInstance.addEventListener("click", () => openNewInstance());
 els.newInstanceCard.addEventListener("click", () => openNewInstance());
 els.home.addEventListener("click", () => void api.home());
 els.tunnelToggle.addEventListener("click", () => setDrawer(!drawerOpen));
+if (els.drawerSearch) {
+  els.drawerSearch.value = drawerSearch;
+  els.drawerSearch.addEventListener("input", () => {
+    drawerSearch = els.drawerSearch.value;
+    lastDrawerKey = "";
+    renderDrawer();
+  });
+}
 els.drawerClose.addEventListener("click", () => setDrawer(false));
 els.drawerRefresh.addEventListener("click", async () => {
   for (const instance of state?.instances || []) {
