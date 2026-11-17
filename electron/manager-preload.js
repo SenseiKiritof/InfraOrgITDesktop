@@ -48,4 +48,9 @@ contextBridge.exposeInMainWorld("desktopManager", {
   openServerPage: (url, serverId) =>
     invoke("manager:open-server-page", url, serverId),
   serverList: (url) => invoke("manager:server-list", url),
+
+  updatesState: () => invoke("updates:state"),
+  checkUpdates: () => invoke("updates:check"),
+  installUpdate: () => invoke("updates:install"),
+  onUpdate: (handler) => subscribe("updates:state", handler),
 });

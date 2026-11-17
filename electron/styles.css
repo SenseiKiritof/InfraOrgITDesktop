@@ -1720,3 +1720,126 @@ body[data-drawer="open"] .drawer {
     display: none;
   }
 }
+
+.update-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 33px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.update-button:hover {
+  border-color: var(--accent);
+}
+
+.update-button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.update-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.update-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.update-status {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.update-status.update {
+  color: var(--accent);
+}
+
+.update-status.error {
+  color: var(--danger);
+}
+
+.update-notes {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connection-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.connection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  text-align: left;
+}
+
+.connection-row:hover {
+  border-color: var(--accent);
+}
+
+.connection-name {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.connection-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-row .chip {
+  margin-left: auto;
+}

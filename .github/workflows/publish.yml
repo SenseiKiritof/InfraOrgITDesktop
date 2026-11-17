@@ -2,7 +2,8 @@ name: publish
 
 # Packages the Electron shell for macOS (arm64 and x64), Windows x64 and
 # Linux x64. The packages are unsigned: Developer ID signing, macOS
-# notarization, Windows Authenticode signing and auto-update are follow-ups.
+# notarization and Windows Authenticode signing are follow-ups. Every archive
+# ships with a .sha256 file that the in-app updater verifies before install.
 # A v* tag publishes or updates a GitHub Release from the tag that already
 # exists: the workflow never creates tags. Manual runs only upload workflow
 # artifacts.

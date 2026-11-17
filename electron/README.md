@@ -200,9 +200,10 @@ builds these archives:
 | Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` | `InfraOrgIT-linux-x64/` |
 
 Every archive is published with a `.sha256` checksum next to it. The packages
-are unsigned: Developer ID signing, macOS notarization, Windows Authenticode
-signing and auto-update are follow-ups, so the first launch needs the explicit
-Gatekeeper or SmartScreen confirmation described in the root README.
+are unsigned: Developer ID signing, macOS notarization and Windows Authenticode
+signing are follow-ups, so the first launch needs the explicit Gatekeeper or
+SmartScreen confirmation described in the root README. The in-app updater
+verifies the published `.sha256` before installing.
 
 ## Structure
 
@@ -259,14 +260,14 @@ test/                     Electron shell test, fake SSH, unit tests
 - Tunnel definitions kept as “stopped” rows live in memory only. The OS port
   can still be occupied by another process; the app guards duplicate desktop
   tunnels and lets `ssh ExitOnForwardFailure` report the rest.
-- Release packages are unsigned. Developer ID signing, notarization,
-  auto-update and a signed installer are follow-ups; verify the published
-  SHA-256 checksum before running an archive.
+- Release packages are unsigned. Developer ID signing, notarization and a
+  signed installer are follow-ups; the updater verifies the published SHA-256
+  checksum before installing an archive.
 
 ## Packaging path
 
 Release packaging uses Electron Packager (see the `package*` scripts and
 `.github/workflows/publish.yml`). Keep the `preload`/IPC boundary, keep the
 loopback certificate exception out of production, sign the macOS and Windows
-builds before enabling auto-update, and keep the local manager page free of
+builds, and keep the local manager page free of
 remote content. Do not disable the Chromium sandbox to work around packaging.
