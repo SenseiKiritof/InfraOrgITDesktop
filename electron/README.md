@@ -44,6 +44,29 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Server tunnel anagrafica.** The drawer and the manage dialog link to the
   existing Web server page (`/servers/{id}`) and the `/tunnels` page. The
   desktop does not duplicate the tunnel-service form.
+- **Connection policy.** The instance admin page `/settings` (SystemAdmin)
+  chooses `Server`, `Client` or `Auto` for the whole installation; `Auto` is
+  the default. The desktop reads it before opening a tunnel, console, file
+  session or action:
+  - `Server`: the desktop opens a loopback listener and relays each TCP
+    connection over a WebSocket to `GET /api/tunnels/relay`; the API node opens
+    the SSH forward with the stored server credential. Only `Local` services
+    and deployment targets are relayed. Console, console audit, files and
+    actions run on the API.
+  - `Client`: the system `ssh`/SFTP and `ssh2` open tunnels, console, files and
+    actions with the local agent; `Local`, `Dynamic` and `Remote` tunnels are
+    available. No SSH connection starts from the server.
+  - `Auto`: the desktop tests the first SSH hop (direct target or jump host).
+    If it is reachable it uses the client for every operation; otherwise it
+    falls back to the server.
+
+  The policy is one row in the shared database, so a cluster with several API
+  nodes uses the same mode everywhere. Relay connections are bound to the node
+  that accepts the WebSocket; the load balancer must forward WebSocket upgrades
+  and does not need sticky sessions because each local TCP connection opens
+  its own relay. The central `/tunnels` page shows the transport (`Client` or
+  `Server`) for every session; direct console/actions and file operations are
+  also projected to the execution and audit logs.
 - **Theme.** The shell inherits the account theme read from `/api/session`
   (falling back to `settings.json` before any instance is available). There is
   no desktop theme button: the Web app's toggle is the only control and cycles
@@ -163,8 +186,8 @@ Output goes to `electron/dist/InfraOrgIT-<platform>-<arch>/`, with the app as
 Linux. The scripts select `assets/icon.icns`, `assets/icon.ico` or
 `assets/icon.png` per platform; `python3 scripts/make-icons.py` regenerates
 them from the brand mark. They enable `--asar`, overwrite an existing output
-and ignore `test/`, `node_modules`, `README.md`, `package-lock.json` and the
-packaging scripts.
+and ignore `test/`, `README.md`, `package-lock.json` and the packaging scripts;
+production dependencies such as `ws` are packaged.
 
 The `publish` workflow runs Electron Packager for all four release targets and
 builds these archives:
@@ -177,9 +200,10 @@ builds these archives:
 | Linux x64 | `InfraOrgIT-Desktop-<version>-linux-x64.tar.gz` | `InfraOrgIT-linux-x64/` |
 
 Every archive is published with a `.sha256` checksum next to it. The packages
-are unsigned: Developer ID signing, macOS notarization, Windows Authenticode
-signing and auto-update are follow-ups, so the first launch needs the explicit
-Gatekeeper or SmartScreen confirmation described in the root README.
+are unsigned: Developer ID signing, macOS notarization and Windows Authenticode
+signing are follow-ups, so the first launch needs the explicit Gatekeeper or
+SmartScreen confirmation described in the root README. The in-app updater
+verifies the published `.sha256` before installing.
 
 ## Structure
 
@@ -191,7 +215,7 @@ auth/refresh-store.js     safeStorage encrypted refresh-token file
 auth/desktop-auth.js      BFF/device restore, tunnel access tokens
 shell/instances.js        validation, atomic instances.json, old-list migration
 shell/settings.js         atomic settings.json (theme fallback)
-tunnels.js                SSH argument builder, process lifecycle, port guard
+tunnels.js                SSH argument builder, client SSH or server relay, port guard
 tunnel-projection.js      /api/tunnels start/stop/heartbeat projection
 manager.html/js/css       control-room landing, tabs, drawer, palette, modal
 preload.js                narrow SPA bridge, origin-gated
@@ -207,6 +231,19 @@ test/                     Electron shell test, fake SSH, unit tests
   origin; Keycloak pages and external links loaded in the tab do not get it.
 - External links open in the default browser. Remote instance URLs must use
   HTTPS; HTTP is accepted only for loopback development.
+- The server relay accepts only a `serverId` plus an allowlisted `serviceId` or
+  `serverApplicationId`; the target host and port are resolved server-side.
+  `Dynamic` and `Remote` are rejected. The API checks `ServerOperator` on the
+  environment, opens the SSH forward on `127.0.0.1` and relays bytes over the
+  WebSocket. The stored server credential is used, not the user's agent, so
+  this mode is a deliberate privilege boundary: only `Local` targets with a
+  fixed host and port are reachable.
+- Direct console/files/actions use `ssh2` with `SSH_AUTH_SOCK` (or the Windows
+  OpenSSH named pipe), never a private key. The API returns the stored host-key
+  fingerprint; the first direct connection stores it through
+  `/api/remote/host-key`, and later connections reject a mismatch. The API
+  still authorizes the target (`ServerAdmin` for console/files,
+  `ServerOperator` for actions) and records the execution/audit rows.
 - safeStorage uses the macOS Keychain / Windows DPAPI / Linux Secret Service
   backend. If Linux has no keyring (`basic_text`), the store refuses to write
   and keeps the session in memory for that run. A native keychain wrapper is
@@ -223,14 +260,14 @@ test/                     Electron shell test, fake SSH, unit tests
 - Tunnel definitions kept as “stopped” rows live in memory only. The OS port
   can still be occupied by another process; the app guards duplicate desktop
   tunnels and lets `ssh ExitOnForwardFailure` report the rest.
-- Release packages are unsigned. Developer ID signing, notarization,
-  auto-update and a signed installer are follow-ups; verify the published
-  SHA-256 checksum before running an archive.
+- Release packages are unsigned. Developer ID signing, notarization and a
+  signed installer are follow-ups; the updater verifies the published SHA-256
+  checksum before installing an archive.
 
 ## Packaging path
 
 Release packaging uses Electron Packager (see the `package*` scripts and
 `.github/workflows/publish.yml`). Keep the `preload`/IPC boundary, keep the
 loopback certificate exception out of production, sign the macOS and Windows
-builds before enabling auto-update, and keep the local manager page free of
+builds, and keep the local manager page free of
 remote content. Do not disable the Chromium sandbox to work around packaging.

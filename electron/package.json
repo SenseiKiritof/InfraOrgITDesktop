@@ -1,7 +1,7 @@
 {
   "name": "infraorgit-desktop",
   "productName": "InfraOrgIT",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Electron desktop shell for InfraOrgIT",
   "main": "main.js",
@@ -23,5 +23,9 @@
   "devDependencies": {
     "@electron/packager": "20.3.0",
     "electron": "45.3.1"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0",
+    "ws": "^8.23.0"
   }
 }

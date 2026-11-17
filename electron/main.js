@@ -12,8 +12,10 @@ const {
   session,
   shell,
 } = require("electron");
+const { spawn } = require("node:child_process");
 const crypto = require("crypto");
 const fs = require("fs");
+const nodeNet = require("node:net");
 const path = require("path");
 
 const { DeviceAuthClient } = require("./auth/device-client");
@@ -21,8 +23,27 @@ const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
 const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
-const { TunnelManager } = require("./tunnels");
+const {
+  TunnelManager,
+  canRelay,
+  chooseTransport,
+  relayUrl,
+  transportFor,
+} = require("./tunnels");
+const {
+  createDirectory,
+  deleteFile,
+  downloadFile,
+  listDirectory,
+  openShell,
+  openSftp,
+  remoteJoin,
+  renameFile,
+  runCommand,
+  uploadFile,
+} = require("./ssh-client");
 const { TunnelProjection } = require("./tunnel-projection");
+const updates = require("./updates");
 const {
   DownloadTracker,
   fileNameFromUrl,
@@ -39,6 +60,9 @@ const AUTH_RENEW_INTERVAL =
 const windows = new Map();
 const runtime = new Map();
 const tokens = new Map();
+const remoteConsoles = new Map();
+const remoteTargets = new Map();
+const remoteTransports = new Map();
 const authRenewals = new Map();
 const accountThemes = new Map();
 const downloadTracker = new DownloadTracker();
@@ -60,6 +84,7 @@ let desktopAuth = null;
 let tunnels = null;
 let tunnelProjection = null;
 let quitting = false;
+let shuttingDown = false;
 
 if (process.env.DESKTOP_USER_DATA) {
   app.setPath("userData", path.resolve(process.env.DESKTOP_USER_DATA));
@@ -255,6 +280,9 @@ function runtimeFor(url) {
       targets: null,
       targetsAt: 0,
       targetsError: null,
+      policy: null,
+      policyAt: 0,
+      policyError: null,
       loading: false,
       prepared: false,
       accountLoaded: false,
@@ -300,6 +328,126 @@ function publicTargets(url) {
   return data.targets;
 }
 
+let updateState = {
+  status: "idle",
+  currentVersion: app.getVersion(),
+  message: "",
+};
+let updateCheck = null;
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function broadcastUpdate() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("updates:state", updateState);
+}
+
+async function runUpdateCheck() {
+  if (updateCheck) return updateCheck;
+  updateState = {
+    ...updateState,
+    status: "checking",
+    currentVersion: app.getVersion(),
+    message: "Controllo aggiornamenti…",
+  };
+  broadcastUpdate();
+  sendState();
+  updateCheck = updates
+    .checkForUpdates({
+      currentVersion: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    })
+    .then((next) => {
+      updateState = next;
+      return next;
+    })
+    .catch((error) => {
+      updateState = {
+        ...updateState,
+        status: "error",
+        message: error?.message || "Controllo aggiornamenti non riuscito.",
+      };
+      return updateState;
+    })
+    .finally(() => {
+      updateCheck = null;
+      broadcastUpdate();
+      sendState();
+    });
+  return updateCheck;
+}
+
+function startUpdateScheduler() {
+  setTimeout(() => void runUpdateCheck(), 5000).unref?.();
+  setInterval(() => void runUpdateCheck(), UPDATE_INTERVAL_MS).unref?.();
+}
+
+async function installUpdateNow() {
+  if (!app.isPackaged)
+    throw new Error(
+      "L'installazione automatica è disponibile solo nell'app pacchettizzata.",
+    );
+  if (updateState.status !== "update" || !updateState.archive)
+    throw new Error("Nessun aggiornamento da installare.");
+  const dir = await fs.promises.mkdtemp(
+    path.join(app.getPath("temp"), "infraorgit-update-"),
+  );
+  const archivePath = path.join(dir, updateState.archive.name);
+  const checksumPath = path.join(dir, updateState.checksum.name);
+  updateState = {
+    ...updateState,
+    status: "installing",
+    message: "Download del pacchetto…",
+  };
+  broadcastUpdate();
+  sendState();
+  try {
+    await updates.downloadFile(updateState.archive.url, archivePath);
+    await updates.downloadFile(updateState.checksum.url, checksumPath);
+    await updates.verifyChecksum(
+      archivePath,
+      await fs.promises.readFile(checksumPath, "utf8"),
+    );
+    const appRoot = updates.appRootFor(process.platform, app.getPath("exe"));
+    if (!appRoot) throw new Error("Percorso dell'app non riconosciuto.");
+    const plan = updates.installPlan({
+      platform: process.platform,
+      archivePath,
+      appRoot,
+      pid: process.pid,
+    });
+    updateState = {
+      ...updateState,
+      status: "installing",
+      message: "Installazione e riavvio…",
+    };
+    broadcastUpdate();
+    sendState();
+    let args = plan.args;
+    if (process.platform !== "win32") {
+      const scriptPath = path.join(dir, "install.sh");
+      await fs.promises.writeFile(scriptPath, plan.script, { mode: 0o755 });
+      args = [scriptPath];
+    }
+    const child = spawn(plan.command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    setTimeout(() => app.quit(), 800);
+    return updateState;
+  } catch (error) {
+    updateState = {
+      ...updateState,
+      status: "error",
+      message: error?.message || "Installazione non riuscita.",
+    };
+    broadcastUpdate();
+    sendState();
+    throw error;
+  }
+}
+
 function publicState() {
   downloadTracker.prune();
   const instances = instanceStore.list().map((instance) => {
@@ -315,6 +463,7 @@ function publicState() {
       sessionTunnelCount: data.sessionTunnelCount,
       tunnelCount: localCount + (data.sessionTunnelCount || 0),
       targetsError: data.targetsError,
+      connectionPolicy: data.policy || "Auto",
       auth: authSnapshot(instance.url),
     };
   });
@@ -343,6 +492,7 @@ function publicState() {
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
+    updates: updateState,
     targets,
     version: app.getVersion(),
   };
@@ -418,6 +568,447 @@ async function postTunnelProjection(row, kind, payload) {
   }
 }
 
+async function loadRemoteTarget(instance, serverId, scope = null) {
+  const key = `${instance.url}\u001f${serverId}\u001f${scope || "admin"}`;
+  const cached = remoteTargets.get(key);
+  if (cached && Date.now() - cached.at < 30_000) return cached.target;
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  const target = await desktopAuth.fetchRemoteTarget(
+    instance.url,
+    serverId,
+    sessionFetch(ses),
+    tokens.get(instance.url) || null,
+    scope,
+  );
+  if (!target?.host)
+    throw new Error("Server non disponibile per la console desktop.");
+  remoteTargets.set(key, { target, at: Date.now() });
+  return target;
+}
+
+async function resolveRemoteTransport(instance, serverId, scope = null) {
+  const key = `${instance.url}\u001f${serverId}\u001f${scope || "admin"}`;
+  const cached = remoteTransports.get(key);
+  if (cached && Date.now() - cached.at < 30_000) return cached.transport;
+
+  const policy = (await loadConnectionPolicy(instance)) || "Auto";
+  let transport;
+  if (policy === "Server") transport = "server";
+  else {
+    let target;
+    try {
+      target = await loadRemoteTarget(instance, serverId, scope);
+    } catch (error) {
+      if (policy === "Client") throw error;
+      transport = "server";
+    }
+    if (!transport)
+      transport =
+        policy === "Client"
+          ? "client"
+          : target.clientAuth === false
+            ? "server"
+            : (await isReachable(target))
+              ? "client"
+              : "server";
+  }
+  remoteTransports.set(key, { transport, at: Date.now() });
+  return transport;
+}
+
+async function postRemoteJson(instance, path, body) {
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    Origin: new URL(instance.url).origin,
+  };
+  const cookies = await ses.cookies.get({ url: instance.url });
+  if (cookies.length > 0) {
+    let csrf = desktopAuth?.csrfToken(instance.url) || "";
+    if (!csrf && desktopAuth) {
+      await desktopAuth
+        .readAccount(instance.url, sessionFetch(ses), { emit: false })
+        .catch(() => null);
+      csrf = desktopAuth.csrfToken(instance.url) || "";
+    }
+    if (!csrf) throw new Error("Sessione desktop senza token CSRF.");
+    headers["X-CSRF-Token"] = csrf;
+  } else {
+    const token =
+      tokens.get(instance.url) ||
+      (await desktopAuth.ensureAccessToken(instance.url, sessionFetch(ses)));
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await sessionFetch(ses)(
+    `${instance.url.replace(/\/$/, "")}${path}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      credentials: "include",
+    },
+  );
+  const payload =
+    response.status === 204
+      ? null
+      : await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(
+      payload?.detail ||
+        payload?.title ||
+        `API desktop: HTTP ${response.status}`,
+    );
+  return payload;
+}
+
+function sendRemoteConsoleEvent(record, payload) {
+  sendToView(record.instance.url, payload);
+}
+
+async function finishRemoteConsole(record, error) {
+  if (record.closed) return;
+  record.closed = true;
+  remoteConsoles.delete(record.id);
+  sendRemoteConsoleEvent(record, {
+    type: "closed",
+    id: record.id,
+    error: error?.message || null,
+  });
+  if (record.executionId === null) return;
+  try {
+    await postRemoteJson(
+      record.instance,
+      `/api/remote/console-sessions/${record.executionId}/complete`,
+      {
+        exitCode: error ? null : 0,
+        output: record.output,
+        timedOut: false,
+      },
+    );
+  } catch (failure) {
+    console.warn("console audit completion failed", failure.message);
+  }
+}
+
+async function openRemoteConsole(instance, serverId, cols, rows) {
+  const target = await loadRemoteTarget(instance, serverId);
+  const id = crypto.randomUUID();
+  const started = await postRemoteJson(
+    instance,
+    "/api/remote/console-sessions",
+    { serverId, correlationId: id },
+  );
+  const executionId = started?.executionId ?? null;
+  let shell;
+  try {
+    shell = await openShell(target, { cols, rows });
+  } catch (error) {
+    if (executionId !== null) {
+      await postRemoteJson(
+        instance,
+        `/api/remote/console-sessions/${executionId}/complete`,
+        { exitCode: null, output: error.message, timedOut: false },
+      ).catch(() => null);
+    }
+    throw error;
+  }
+
+  if (target.hostKeyFingerprint == null && shell.fingerprint) {
+    void postRemoteJson(instance, "/api/remote/host-key", {
+      serverId,
+      fingerprint: `SHA256:${shell.fingerprint}`,
+    }).catch((error) =>
+      console.warn("host key projection failed", error.message),
+    );
+  }
+
+  const record = {
+    id,
+    instance,
+    serverId,
+    executionId,
+    shell,
+    output: "",
+    startedAt: Date.now(),
+    closed: false,
+  };
+  remoteConsoles.set(id, record);
+  const append = (chunk) => {
+    const text = String(chunk);
+    record.output = (record.output + text).slice(-200_000);
+    sendRemoteConsoleEvent(record, { type: "data", id, data: text });
+  };
+  shell.stream.on("data", append);
+  shell.stream.stderr?.on("data", append);
+  shell.stream.on("error", (error) => void finishRemoteConsole(record, error));
+  shell.stream.on("close", () => void finishRemoteConsole(record));
+  return { id };
+}
+
+function sendFileResult(instance, requestId, payload) {
+  sendToView(instance.url, { type: "files.result", requestId, ...payload });
+}
+
+async function recordFileEvent(
+  instance,
+  serverId,
+  operation,
+  path,
+  outcome,
+  error = null,
+) {
+  try {
+    await postRemoteJson(instance, "/api/remote/file-events", {
+      serverId,
+      operation,
+      path,
+      outcome,
+      error,
+    });
+  } catch (failure) {
+    console.warn("file event projection failed", failure.message);
+  }
+}
+
+async function handleFileRequest(instance, message) {
+  const requestId = String(message.requestId || "");
+  const serverId = Number(message.serverId);
+  if (!Number.isInteger(serverId) || serverId <= 0) {
+    sendFileResult(instance, requestId, {
+      ok: false,
+      error: "Server non valido.",
+    });
+    return;
+  }
+
+  let operation = null;
+  let remotePath = "";
+  let session = null;
+  try {
+    const transport = await resolveRemoteTransport(instance, serverId);
+    if (transport !== "client") {
+      sendFileResult(instance, requestId, { transport: "server" });
+      return;
+    }
+
+    const target = await loadRemoteTarget(instance, serverId);
+    session = await openSftp(target);
+    if (target.hostKeyFingerprint == null && session.fingerprint) {
+      void postRemoteJson(instance, "/api/remote/host-key", {
+        serverId,
+        fingerprint: `SHA256:${session.fingerprint}`,
+      }).catch((failure) =>
+        console.warn("host key projection failed", failure.message),
+      );
+    }
+
+    let data;
+    switch (message.type) {
+      case "files.list":
+        data = await listDirectory(session.sftp, message.path || null);
+        break;
+      case "files.mkdir": {
+        operation = "CreateDirectory";
+        remotePath = remoteJoin(message.directory, message.name);
+        await createDirectory(session.sftp, remotePath);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.rename": {
+        operation = "Rename";
+        if (String(message.newName || "").includes("/"))
+          throw new Error("Il nuovo nome non può contenere '/'.");
+        remotePath = path.posix.join(
+          path.posix.dirname(message.path),
+          String(message.newName),
+        );
+        await renameFile(session.sftp, message.path, remotePath);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.delete": {
+        operation = "Delete";
+        remotePath = message.path;
+        await deleteFile(
+          session.sftp,
+          remotePath,
+          Boolean(message.isDirectory),
+        );
+        data = null;
+        break;
+      }
+      case "files.upload": {
+        operation = "Upload";
+        if (String(message.name || "").includes("/"))
+          throw new Error("Il nome del file non può contenere '/'.");
+        const buffer = Buffer.from(String(message.data || ""), "base64");
+        if (buffer.length > MAX_BLOB_BYTES)
+          throw new Error(
+            "File troppo grande per il trasferimento diretto dal desktop.",
+          );
+        remotePath = remoteJoin(message.directory, message.name);
+        await uploadFile(session.sftp, remotePath, buffer);
+        data = { path: remotePath };
+        break;
+      }
+      case "files.download": {
+        operation = "Download";
+        remotePath = message.path;
+        const temporary = await fs.promises.mkdtemp(
+          path.join(app.getPath("temp"), "infraorgit-"),
+        );
+        try {
+          const local = path.join(temporary, "download");
+          await downloadFile(session.sftp, remotePath, local);
+          const options = {
+            defaultPath: path.posix.basename(remotePath),
+          };
+          const chosen = mainWindow
+            ? await dialog.showSaveDialog(mainWindow, options)
+            : await dialog.showSaveDialog(options);
+          if (chosen.canceled || !chosen.filePath)
+            data = { saved: false };
+          else {
+            await fs.promises.copyFile(local, chosen.filePath);
+            data = { saved: true, path: chosen.filePath };
+          }
+        } finally {
+          await fs.promises.rm(temporary, { recursive: true, force: true });
+        }
+        break;
+      }
+      default:
+        throw new Error("Operazione file non supportata.");
+    }
+
+    sendFileResult(instance, requestId, { ok: true, data });
+    if (operation === "Download" && data?.saved === false) return;
+    if (operation)
+      void recordFileEvent(
+        instance,
+        serverId,
+        operation,
+        remotePath,
+        "Ok",
+      );
+  } catch (error) {
+    sendFileResult(instance, requestId, {
+      ok: false,
+      error: error.message,
+    });
+    if (operation)
+      void recordFileEvent(
+        instance,
+        serverId,
+        operation,
+        remotePath,
+        "Error",
+        error.message,
+      );
+  } finally {
+    session?.close();
+  }
+}
+
+function redactText(text, values) {
+  let output = String(text ?? "");
+  const secrets = Object.values(values || {})
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of secrets) output = output.split(secret).join("***");
+  return output;
+}
+
+async function handleActionRun(instance, message) {
+  const requestId = String(message.requestId || "");
+  const serverId = Number(message.serverId);
+  const executionId = Number(message.executionId);
+  const reply = (payload) =>
+    sendToView(instance.url, {
+      type: "action.result",
+      requestId,
+      ...payload,
+    });
+
+  if (
+    !Number.isInteger(serverId) ||
+    serverId <= 0 ||
+    !Number.isInteger(executionId) ||
+    executionId <= 0
+  ) {
+    reply({ ok: false, error: "Richiesta azione non valida." });
+    return;
+  }
+
+  try {
+    const transport = await resolveRemoteTransport(
+      instance,
+      serverId,
+      "actions",
+    );
+    if (transport !== "client") {
+      reply({ transport: "server" });
+      return;
+    }
+    const target = await loadRemoteTarget(instance, serverId, "actions");
+    const result = await runCommand(target, String(message.script || ""), {
+      timeoutSeconds: Number(message.timeoutSeconds) || 300,
+    });
+    if (target.hostKeyFingerprint == null && result.fingerprint) {
+      void postRemoteJson(instance, "/api/remote/host-key", {
+        serverId,
+        fingerprint: `SHA256:${result.fingerprint}`,
+      }).catch((error) =>
+        console.warn("host key projection failed", error.message),
+      );
+    }
+    const output = redactText(result.output, message.redactValues);
+    try {
+      await postRemoteJson(
+        instance,
+        `/api/remote/actions/${executionId}/complete`,
+        {
+          exitCode: result.exitCode,
+          output,
+          timedOut: result.timedOut,
+        },
+      );
+    } catch (error) {
+      console.warn("action audit completion failed", error.message);
+    }
+    reply({
+      ok: true,
+      data: {
+        exitCode: result.exitCode,
+        output,
+        timedOut: result.timedOut,
+      },
+    });
+  } catch (error) {
+    const output = redactText(error.message, message.redactValues);
+    try {
+      await postRemoteJson(
+        instance,
+        `/api/remote/actions/${executionId}/complete`,
+        { exitCode: null, output, timedOut: false },
+      );
+    } catch (failure) {
+      console.warn("action audit completion failed", failure.message);
+    }
+    reply({ ok: false, error: output });
+  }
+}
+
+function closeRemoteConsolesForUrl(url) {
+  for (const record of [...remoteConsoles.values()]) {
+    if (record.instance.url === url) record.shell.close();
+  }
+}
+
 function webAuthStatus(url) {
   const snapshot = authSnapshot(url);
   if (snapshot.status === "pending") return "pending";
@@ -479,6 +1070,105 @@ async function loadTargets(instance, { force = false } = {}) {
     sendState();
     return null;
   }
+}
+
+async function loadConnectionPolicy(instance, { force = false } = {}) {
+  const data = runtimeFor(instance.url);
+  if (!authSnapshot(instance.url).tunnelAccess) return null;
+  if (!force && data.policy && Date.now() - data.policyAt < 30_000)
+    return data.policy;
+  const record = recordFor(instance.url);
+  const ses = record?.session || sessionFor(instance).session;
+  try {
+    const mode = await desktopAuth.fetchConnectionPolicy(
+      instance.url,
+      sessionFetch(ses),
+      tokens.get(instance.url) || null,
+    );
+    data.policy = mode || "Auto";
+    data.policyAt = Date.now();
+    data.policyError = null;
+  } catch (error) {
+    // A policy outage must not block the desktop: Auto keeps the previous
+    // behaviour, while the relay still enforces RBAC and the allowlist.
+    data.policy = data.policy || "Auto";
+    data.policyAt = Date.now();
+    data.policyError = error.message;
+  }
+  sendState();
+  return data.policy;
+}
+
+function firstHop(server) {
+  const jump =
+    Array.isArray(server?.jumps) && server.jumps.length
+      ? server.jumps[0]
+      : server?.jump;
+  if (jump?.host) return { host: jump.host, port: Number(jump.port) || 22 };
+  const host =
+    server?.sshHost || server?.ipAddress || server?.hostname || server?.host;
+  return host ? { host, port: Number(server?.sshPort) || 22 } : null;
+}
+
+/** Client -> first SSH hop reachability, with a short timeout. */
+function isReachable(server, timeoutMs = 1500) {
+  const hop = firstHop(server);
+  if (!hop) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const socket = nodeNet.connect({ host: hop.host, port: hop.port });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function relayHeadersFor(instanceUrl) {
+  const instance = instanceStore.get(instanceUrl);
+  if (!instance) throw new Error("Istanza non trovata.");
+  const record = recordFor(instanceUrl);
+  const ses = record?.session || sessionFor(instance).session;
+  const headers = { Origin: new URL(instanceUrl).origin };
+  const cookies = await ses.cookies.get({ url: instanceUrl });
+  if (cookies.length > 0) {
+    headers.Cookie = cookies
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  } else if (tokens.has(instanceUrl)) {
+    headers.Authorization = `Bearer ${tokens.get(instanceUrl)}`;
+  } else if (desktopAuth) {
+    const token = await desktopAuth.ensureAccessToken(
+      instanceUrl,
+      sessionFetch(ses),
+    );
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  if (!headers.Cookie && !headers.Authorization)
+    throw new Error("Accedi per usare i tunnel dal desktop.");
+  return headers;
+}
+
+async function resolveTunnelTransport(instance, selection) {
+  const policy =
+    (await loadConnectionPolicy(instance, { force: true })) || "Auto";
+  const relayable = canRelay(selection.service, selection.target);
+  if (policy === "Client") return "client";
+  if (policy === "Server")
+    return chooseTransport(policy, relayable, false);
+  const reachable = await isReachable(selection.server);
+  return transportFor(
+    policy,
+    relayable,
+    reachable,
+    selection.server.clientAuth,
+  );
 }
 
 async function primeInstanceCounts(instance) {
@@ -545,7 +1235,10 @@ async function refreshInstanceData(instance) {
   data.sessionTunnelCount = counts.sessionTunnelCount;
   sendState();
 
-  if (authSnapshot(instance.url).tunnelAccess) void loadTargets(instance);
+  if (authSnapshot(instance.url).tunnelAccess) {
+    void loadTargets(instance);
+    void loadConnectionPolicy(instance);
+  }
 }
 
 async function renewInstanceAuth(instance) {
@@ -816,6 +1509,7 @@ function activateTab(url) {
 function closeTab(url) {
   const record = recordFor(url);
   if (!record) return;
+  closeRemoteConsolesForUrl(url);
   if (activeUrl === url) showLanding();
   try {
     record.view.webContents.close();
@@ -894,6 +1588,7 @@ async function startTunnelForInstance(instance, input) {
     input.serviceId ? Number(input.serviceId) : null,
   );
   const id = input.id || `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+  const transport = await resolveTunnelTransport(instance, selection);
   return tunnels.start({
     id,
     url: instance.url,
@@ -902,6 +1597,7 @@ async function startTunnelForInstance(instance, input) {
     target: selection.target,
     service: selection.service,
     localPort: input.localPort,
+    transport,
   });
 }
 
@@ -952,6 +1648,9 @@ function registerIpc() {
   });
 
   handle("manager:state", () => publicState());
+  handle("updates:state", () => updateState);
+  handle("updates:check", () => runUpdateCheck());
+  handle("updates:install", () => installUpdateNow());
   handle("manager:list", () => instanceStore.list());
   handle("manager:add", (value) => {
     instanceStore.add(value);
@@ -1055,12 +1754,31 @@ function registerIpc() {
     return publicState();
   });
   handle("manager:restart-tunnel", async (id, url) => {
-    tunnels.restart(String(id), url ? String(url) : null);
+    const instance = instanceStore.get(url);
+    const row = tunnels.get(String(id));
+    let transport = row?.transport?.toLowerCase() || "client";
+    if (instance && row) {
+      const targetList = await loadTargets(instance);
+      if (targetList) {
+        const selection = tunnelSelection(
+          targetList,
+          row.serverId,
+          row.targetId,
+          row.serviceId,
+        );
+        transport = await resolveTunnelTransport(instance, selection);
+      }
+    }
+    await tunnels.restart(
+      String(id),
+      url ? String(url) : null,
+      transport,
+    );
     return publicState();
   });
   handle("manager:forget-tunnel", (id) => {
-    if (!tunnels.forget(String(id)))
-      throw new Error("Ferma il tunnel prima di rimuoverlo.");
+    if (!tunnels.remove(String(id)))
+      throw new Error("Tunnel non trovato.");
     return publicState();
   });
 
@@ -1124,6 +1842,7 @@ function registerIpc() {
       message: null,
     };
   });
+
 }
 
 async function focusTunnelServices(record, serverId) {
@@ -1177,6 +1896,134 @@ async function handleDesktopMessage(sender, raw) {
       return;
     }
 
+    case "remote.resolve": {
+      const requestId = String(message.requestId || "");
+      try {
+        const transport = await resolveRemoteTransport(
+          instance,
+          Number(message.serverId),
+          message.scope === "actions" ? "actions" : null,
+        );
+        sendToView(instance.url, {
+          type: "remote.resolved",
+          requestId,
+          transport,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "remote.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.resolve": {
+      const requestId = String(message.requestId || "");
+      try {
+        const transport = await resolveRemoteTransport(
+          instance,
+          Number(message.serverId),
+        );
+        sendToView(instance.url, {
+          type: "console.resolved",
+          requestId,
+          transport,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.open": {
+      const requestId = String(message.requestId || "");
+      const serverId = Number(message.serverId);
+      if (!Number.isInteger(serverId) || serverId <= 0) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: "Server non valido.",
+        });
+        return;
+      }
+      try {
+        const transport = await resolveRemoteTransport(instance, serverId);
+        if (transport !== "client") {
+          sendToView(instance.url, {
+            type: "console.resolved",
+            requestId,
+            transport,
+          });
+          return;
+        }
+        const opened = await openRemoteConsole(
+          instance,
+          serverId,
+          Number(message.cols) || 100,
+          Number(message.rows) || 30,
+        );
+        sendToView(instance.url, {
+          type: "console.opened",
+          requestId,
+          id: opened.id,
+        });
+      } catch (error) {
+        sendToView(instance.url, {
+          type: "console.error",
+          requestId,
+          message: error.message,
+        });
+      }
+      return;
+    }
+
+    case "console.write": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      try {
+        record.shell.stream.write(String(message.data ?? ""));
+      } catch {
+        // la sessione è già chiusa
+      }
+      return;
+    }
+
+    case "console.resize": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      record.shell.resize(
+        Math.max(10, Math.min(500, Number(message.cols) || 100)),
+        Math.max(5, Math.min(200, Number(message.rows) || 30)),
+      );
+      return;
+    }
+
+    case "console.close": {
+      const record = remoteConsoles.get(String(message.id));
+      if (!record || record.instance.url !== instance.url) return;
+      record.shell.close();
+      return;
+    }
+
+    case "action.run":
+      await handleActionRun(instance, message);
+      return;
+
+    case "files.list":
+    case "files.mkdir":
+    case "files.rename":
+    case "files.delete":
+    case "files.upload":
+    case "files.download":
+      await handleFileRequest(instance, message);
+      return;
+
     case "desktop.capabilities":
       sender.send(
         "desktop-message",
@@ -1197,6 +2044,7 @@ async function handleDesktopMessage(sender, raw) {
           forcedStatus: snapshot.status === "ready" ? "restored" : webAuthStatus(instance.url),
         });
         void loadTargets(instance).then(() => sendWebTargets(instance.url));
+        void loadConnectionPolicy(instance);
       } else {
         sendWebAuth(instance.url, { forcedStatus: "none" });
       }
@@ -1283,7 +2131,8 @@ async function handleDesktopMessage(sender, raw) {
           message.targetId ? Number(message.targetId) : null,
           message.serviceId ? Number(message.serviceId) : null,
         );
-        tunnels.start({
+        const transport = await resolveTunnelTransport(instance, selection);
+        await tunnels.start({
           id: `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
           url: instance.url,
           instanceName: instance.name,
@@ -1291,6 +2140,7 @@ async function handleDesktopMessage(sender, raw) {
           target: selection.target,
           service: selection.service,
           localPort: message.localPort,
+          transport,
         });
       } catch (error) {
         sendToView(instance.url, {
@@ -1418,9 +2268,9 @@ function buildMenu() {
       label: "File",
       submenu: [
         {
-          label: "Nuova istanza",
+          label: "Apri connessione…",
           accelerator: "CmdOrCtrl+N",
-          click: () => sendCommand("new-instance"),
+          click: () => sendCommand("open-connection"),
         },
         { type: "separator" },
         { role: "close" },
@@ -1442,7 +2292,7 @@ function buildMenu() {
         },
         {
           label: "Tunnel",
-          accelerator: "CmdOrCtrl+Shift+T",
+          accelerator: "CmdOrCtrl+T",
           click: () => sendCommand("toggle-drawer"),
         },
         { type: "separator" },
@@ -1480,7 +2330,7 @@ function seedTestInstances() {
   });
 }
 
-function startTestTunnels() {
+async function startTestTunnels() {
   if (!IS_TEST) return;
   process.env.SSH_BIN = path.join(__dirname, "test", "fake-ssh.js");
   process.env.FAKE_SSH_LOG = path.join(__dirname, "test", ".run", "ssh.log");
@@ -1606,7 +2456,7 @@ function startTestTunnels() {
     services: [],
   });
   try {
-    const first = tunnels.start({
+    const first = await tunnels.start({
       id: "demo-tunnel-active",
       url: instance.url,
       instanceName: instance.name,
@@ -1622,7 +2472,7 @@ function startTestTunnels() {
       localPort: 18081,
     });
     console.log("TEST_TUNNEL_ACTIVE", first.id);
-    tunnels.start({
+    await tunnels.start({
       id: "demo-tunnel-stopped",
       url: instance.url,
       instanceName: instance.name,
@@ -2016,6 +2866,64 @@ async function runTest() {
     check(manageModal.title === "Produzione", "manage modal title", manageModal.title);
     check(manageModal.servers > 0, "manage modal lists server anagrafica", String(manageModal.servers));
 
+    const picker = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector("#tab-add").click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const visible = !document.querySelector("#modal").hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      const rows = document.querySelectorAll(".connection-row").length;
+      const create = [...document.querySelectorAll("#modal-footer button")]
+        .find((node) => node.textContent === "Nuova connessione");
+      create.click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const newTitle = document.querySelector("#modal-title").textContent;
+      document.querySelector("#modal-close").click();
+      return {visible, title, rows, newTitle};
+    })()`);
+    check(picker.visible === true, "top + opens the connection picker");
+    check(picker.title === "Apri connessione", "connection picker title", picker.title);
+    check(picker.rows === 3, "connection picker lists configured instances", String(picker.rows));
+    check(picker.newTitle === "Nuova istanza", "picker opens the new connection form", picker.newTitle);
+
+    const shortcuts = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const press = (key) => document.dispatchEvent(
+        new KeyboardEvent("keydown", {key, metaKey: true, ctrlKey: true, bubbles: true}),
+      );
+      document.querySelector("#drawer-close").click();
+      press("t");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const drawer = document.body.dataset.drawer === "open";
+      press("t");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      press("n");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const pickerTitle = document.querySelector("#modal-title").textContent;
+      document.querySelector("#modal-close").click();
+      return {drawer, pickerTitle};
+    })()`);
+    check(shortcuts.drawer === true, "cmd+T opens the tunnel drawer");
+    check(shortcuts.pickerTitle === "Apri connessione", "cmd+N opens the connection picker", shortcuts.pickerTitle);
+
+    const settingsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector("#settings-button").click();
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const modal = document.querySelector("#modal");
+      const visible = !modal.hidden;
+      const title = document.querySelector("#modal-title").textContent;
+      const body = document.querySelector("#modal-body").textContent;
+      const rect = modal.getBoundingClientRect();
+      const style = getComputedStyle(modal);
+      return {visible, title, body, rect: {width: rect.width, height: rect.height},
+        display: style.display, zIndex: style.zIndex,
+        drawer: document.body.dataset.drawer};
+    })()`);
+    check(settingsModal.visible === true, "settings modal opens");
+    check(settingsModal.title === "Aggiornamenti", "settings modal title", settingsModal.title);
+    check(settingsModal.body.includes("Versione installata"), "settings modal shows the version");
+    await mainWindow.webContents.executeJavaScript(
+      'document.querySelector("#modal-close").click()',
+    );
+
     const secondTab = publicState().instances[1];
     activateTab(secondTab.url);
     await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -2104,7 +3012,10 @@ if (!hasLock) {
             });
             if (snapshot.status === "ready" && snapshot.tunnelAccess) {
               const instance = instanceStore.get(url);
-              if (instance) void loadTargets(instance);
+              if (instance) {
+                void loadTargets(instance);
+                void loadConnectionPolicy(instance);
+              }
             }
           }
         }
@@ -2112,15 +3023,39 @@ if (!hasLock) {
       },
     });
     tunnelProjection = new TunnelProjection({ post: postTunnelProjection });
-    tunnels = new TunnelManager(() => {
-      broadcastTunnels();
-      if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
-    });
+    tunnels = new TunnelManager(
+      () => {
+        broadcastTunnels();
+        if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
+      },
+      {
+        relayTarget: async (row) => {
+          const target = new URL(row.url);
+          return {
+            url: relayUrl(
+              row.url,
+              row.server.serverId,
+              row.service
+                ? { serviceId: row.service.id }
+                : { serverApplicationId: row.target.serverApplicationId },
+              row.id,
+            ),
+            headers: await relayHeadersFor(row.url),
+            // ws has its own TLS stack; mirror the loopback exception used by
+            // the instance partition during local development.
+            rejectUnauthorized: !(
+              allowLoopbackCertificates && isLoopback(target.hostname)
+            ),
+          };
+        },
+      },
+    );
 
     seedTestInstances();
-    startTestTunnels();
+    await startTestTunnels();
     createMainWindow();
     registerIpc();
+    if (!IS_TEST) startUpdateScheduler();
     buildMenu();
 
     ipcMain.on("desktop-message", (event, raw) => {
@@ -2145,12 +3080,22 @@ if (!hasLock) {
     }
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    shuttingDown = true;
     quitting = true;
     if (authRenewTimer) clearInterval(authRenewTimer);
+    for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
-    tunnelProjection?.dispose();
-    desktopAuth?.dispose();
+    void (async () => {
+      // Publish the stopped sessions so the central /tunnels page does not
+      // keep ghost rows until the stale cleanup runs.
+      await tunnelProjection?.flush(2000);
+      tunnelProjection?.dispose();
+      desktopAuth?.dispose();
+      app.quit();
+    })();
   });
 
   app.on("window-all-closed", () => {

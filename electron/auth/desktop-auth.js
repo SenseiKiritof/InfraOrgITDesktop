@@ -5,6 +5,10 @@ const {
   updateAccountTheme,
 } = require("./session-client");
 
+function normalizeConnectionPolicy(body) {
+  return ["Server", "Client", "Auto"].includes(body?.mode) ? body.mode : null;
+}
+
 function friendly(error) {
   if (error instanceof DeviceAuthError) return error.message;
   if (error instanceof Error && error.message) return error.message;
@@ -565,6 +569,106 @@ class DesktopAuth {
       );
     }
     return Array.isArray(result.body.items) ? result.body.items : [];
+  }
+
+  /**
+   * Installation-wide connection policy. Returns null when the session has no
+   * usable credential; callers fall back to Auto rather than blocking the UI.
+   * The relay endpoint still enforces RBAC and the allowlist server-side.
+   */
+  /**
+   * GET with the same credential ladder used by the tunnel API: explicit
+   * personal token, partition cookie, device-flow access token. Returns null
+   * when every credential is missing or rejected; other failures throw.
+   */
+  async fetchAuthorizedJson(
+    instanceUrl,
+    path,
+    sessionFetch,
+    personalToken = null,
+  ) {
+    const url = `${instanceUrl.replace(/\/$/, "")}${path}`;
+    const request = async (token) => {
+      const headers = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await sessionFetch(url, {
+        headers,
+        credentials: "include",
+      });
+      const body = await response.json().catch(() => ({}));
+      return { response, body };
+    };
+
+    let result;
+    if (personalToken) {
+      try {
+        result = await request(personalToken);
+      } catch {
+        throw new Error("Istanza non raggiungibile.");
+      }
+      if (result.response.ok) return result.body;
+      if (![401, 403].includes(result.response.status)) {
+        throw new Error(
+          result.body?.detail ||
+            result.body?.title ||
+            `API desktop: HTTP ${result.response.status}`,
+        );
+      }
+    }
+
+    // The partition cookie is the normal desktop path.
+    try {
+      result = await request(null);
+    } catch {
+      throw new Error("Istanza non raggiungibile.");
+    }
+    if (result.response.ok) return result.body;
+    if (![401, 403].includes(result.response.status)) {
+      throw new Error(
+        result.body?.detail ||
+          result.body?.title ||
+          `API desktop: HTTP ${result.response.status}`,
+      );
+    }
+
+    let token;
+    try {
+      token = await this.ensureAccessToken(instanceUrl, sessionFetch);
+    } catch {
+      return null;
+    }
+    try {
+      result = await request(token);
+    } catch {
+      return null;
+    }
+    return result.response.ok ? result.body : null;
+  }
+
+  async fetchConnectionPolicy(instanceUrl, sessionFetch, personalToken = null) {
+    const body = await this.fetchAuthorizedJson(
+      instanceUrl,
+      "/api/connection-policy",
+      sessionFetch,
+      personalToken,
+    );
+    return normalizeConnectionPolicy(body);
+  }
+
+  async fetchRemoteTarget(
+    instanceUrl,
+    serverId,
+    sessionFetch,
+    personalToken = null,
+    scope = null,
+  ) {
+    const query = scope === "actions" ? "?scope=actions" : "";
+    return this.fetchAuthorizedJson(
+      instanceUrl,
+      `/api/remote/targets/${serverId}${query}`,
+      sessionFetch,
+      personalToken,
+    );
   }
 
   async fetchCounts(instanceUrl, sessionFetch) {

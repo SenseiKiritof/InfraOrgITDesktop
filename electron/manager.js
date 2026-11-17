@@ -8,6 +8,9 @@ const els = {
   paletteShortcut: document.querySelector("[data-shortcut]"),
   tunnelToggle: document.querySelector("#tunnel-toggle"),
   tunnelBadge: document.querySelector("#tunnel-badge"),
+  updateButton: document.querySelector("#update-button"),
+  updateLabel: document.querySelector("#update-label"),
+  settingsButton: document.querySelector("#settings-button"),
   landing: document.querySelector("#landing"),
   summary: document.querySelector("#summary"),
   downloads: document.querySelector("#downloads"),
@@ -48,6 +51,7 @@ const ENV_COLORS = [
 ];
 
 let state = null;
+let updateState = null;
 let drawerOpen = false;
 let palette = { open: false, index: 0, query: "", commands: [] };
 let modalToken = 0;
@@ -180,6 +184,7 @@ function render() {
   renderTabs();
   renderDrawer();
   renderChrome();
+  renderUpdate();
   scheduleBounds();
   if (palette.open) renderPaletteItems();
 }
@@ -189,6 +194,24 @@ function renderChrome() {
   els.tunnelBadge.hidden = active.length === 0;
   els.tunnelBadge.textContent = String(active.length);
   els.home.classList.toggle("active", !state.activeUrl);
+}
+
+function renderUpdate() {
+  const next = state?.updates || updateState;
+  updateState = next;
+  if (!next || !["update", "installing"].includes(next.status)) {
+    els.updateButton.hidden = true;
+    return;
+  }
+  els.updateButton.hidden = false;
+  els.updateButton.disabled = next.status === "installing";
+  els.updateLabel.textContent =
+    next.status === "installing"
+      ? "Aggiornamento…"
+      : next.latestVersion
+        ? `Aggiorna ${next.latestVersion}`
+        : "Aggiorna";
+  els.updateButton.title = next.message || "";
 }
 
 function renderSummary() {
@@ -297,6 +320,7 @@ function renderCards() {
         : String(instance.serverCount);
     meta.append(metaItem("Server", serverValue));
     meta.append(metaItem("Tunnel attivi", String(instance.tunnelCount || 0)));
+    meta.append(metaItem("Connessioni", policyLabel(instance.connectionPolicy)));
     meta.append(metaItem("Ultimo uso", formatLastUsed(instance.lastUsedAt), true));
     card.append(meta);
 
@@ -330,6 +354,10 @@ function renderCards() {
     els.instances.append(els.newInstanceCard);
     els.newInstanceCard.hidden = false;
   }
+}
+
+function policyLabel(value) {
+  return value === "Server" ? "Server" : value === "Client" ? "Client" : "Auto";
 }
 
 function metaItem(label, value, dim = false) {
@@ -431,6 +459,14 @@ function renderInstanceGroup(instance) {
   const dot = el("span", "env-dot");
   dot.style.setProperty("--env", envColor(instance.environment));
   title.append(dot, el("span", "", instance.name));
+  const policy = el(
+    "span",
+    "chip",
+    `Connessioni: ${policyLabel(instance.connectionPolicy)}`,
+  );
+  policy.title =
+    "Modalità connessioni dell'installazione: Server, Client o Auto.";
+  title.append(policy);
   const info = el("div");
   info.append(title);
   const url = el("p", "instance-group-url", instance.url);
@@ -591,6 +627,13 @@ function renderTunnelRow(tunnel) {
   const sub = el("div", "tunnel-sub");
   sub.append(el("span", "", tunnel.source || tunnel.application || "Tunnel"));
   sub.append(el("span", "", `· ${tunnel.mode}${tunnel.remotePort ? ` :${tunnel.remotePort}` : ""}`));
+  sub.append(
+    el(
+      "span",
+      "",
+      tunnel.transport === "Server" ? "· via server" : "· diretto",
+    ),
+  );
   sub.append(
     el(
       "span",
@@ -993,19 +1036,40 @@ function buildCommands() {
     run: () => void api.home(),
   });
   commands.push({
+    id: "open-connection",
+    title: "Apri connessione",
+    sub: "Istanze configurate o nuova connessione",
+    icon: "→",
+    kbd: `${modifierLabel} N`,
+    run: () => openConnectionPicker(),
+  });
+  commands.push({
     id: "new",
-    title: "Nuova istanza",
+    title: "Nuova connessione",
     sub: "Aggiungi un’installazione InfraOrgIT",
     icon: "+",
-    kbd: `${modifierLabel} N`,
     run: () => openNewInstance(),
+  });
+  commands.push({
+    id: "settings",
+    title: "Impostazioni",
+    sub: "Aggiornamenti e versione desktop",
+    icon: "⚙",
+    run: () => openSettings(),
+  });
+  commands.push({
+    id: "update",
+    title: "Controlla aggiornamenti",
+    sub: "GitHub releases",
+    icon: "↑",
+    run: () => void checkUpdates(),
   });
   commands.push({
     id: "drawer",
     title: drawerOpen ? "Chiudi drawer Tunnel" : "Apri drawer Tunnel",
     sub: "Vista globale multi-istanza",
     icon: "⇄",
-    kbd: `${modifierLabel} ⇧ T`,
+    kbd: `${modifierLabel} T`,
     run: () => setDrawer(!drawerOpen),
   });
 
@@ -1450,6 +1514,132 @@ function confirmRemove(instance) {
   });
 }
 
+async function checkUpdates() {
+  try {
+    const next = await api.checkUpdates();
+    updateState = next;
+    if (state) state.updates = next;
+    renderUpdate();
+    if (els.modalBody.querySelector("[data-update-card]")) openSettings();
+    toast(
+      next.status === "update"
+        ? `Disponibile la versione ${next.latestVersion}.`
+        : next.message || "Controllo completato.",
+    );
+  } catch (error) {
+    toast(error.message || "Controllo non riuscito.", "error");
+  }
+}
+
+async function installUpdate() {
+  if (!window.confirm("Installare l'aggiornamento e riavviare l'app?")) return;
+  try {
+    await api.installUpdate();
+    toast("Installazione avviata: l'app si riavvierà.");
+  } catch (error) {
+    toast(error.message || "Installazione non riuscita.", "error");
+  }
+}
+
+function openConnectionPicker() {
+  const instances = state?.instances || [];
+  if (instances.length === 0) {
+    openNewInstance();
+    return;
+  }
+  const body = el("div", "connection-picker");
+  body.append(
+    el(
+      "p",
+      "muted",
+      "Scegli una connessione già configurata oppure creane una nuova.",
+    ),
+  );
+  const list = el("div", "connection-list");
+  for (const instance of instances) {
+    const row = button("", "connection-row", () => {
+      closeModal();
+      void openInstance(instance.url);
+    });
+    row.append(el("span", "connection-name", instance.name));
+    row.append(el("span", "connection-url", instance.url));
+    if (instance.environment) {
+      const chip = el("span", "chip env", instance.environment);
+      chip.style.setProperty("--env", envColor(instance.environment));
+      row.append(chip);
+    }
+    list.append(row);
+  }
+  body.append(list);
+  openModal({
+    eyebrow: "Connessioni",
+    title: "Apri connessione",
+    body,
+    footer: (footer) => {
+      footer.append(button("Annulla", "secondary", () => closeModal()));
+      footer.append(
+        button("Nuova connessione", "primary", () => openNewInstance()),
+      );
+    },
+  });
+}
+
+function openSettings() {
+  setDrawer(false);
+  const current = state?.updates || updateState || { status: "idle" };
+  const body = el("div", "update-card");
+  body.dataset.updateCard = "true";
+  const meta = el("div", "update-meta");
+  meta.append(
+    metaItem(
+      "Versione installata",
+      current.currentVersion || state?.version || "—",
+    ),
+  );
+  meta.append(metaItem("Ultima release", current.latestVersion || "—"));
+  meta.append(
+    metaItem(
+      "Ultimo controllo",
+      current.checkedAt
+        ? new Date(current.checkedAt).toLocaleString("it-IT")
+        : "—",
+    ),
+  );
+  body.append(meta);
+  body.append(
+    el(
+      "p",
+      `update-status ${current.status || "idle"}`,
+      current.message || "Nessun controllo eseguito.",
+    ),
+  );
+  if (current.notes) body.append(el("pre", "update-notes", current.notes));
+  const actions = el("div", "update-actions");
+  actions.append(
+    button("Controlla aggiornamenti", "secondary", () => void checkUpdates()),
+  );
+  if (current.status === "update") {
+    actions.append(
+      button("Installa e riavvia", "primary", () => void installUpdate()),
+    );
+  }
+  if (current.releaseUrl) {
+    actions.append(
+      button("Apri release", "ghost", () =>
+        void api.openExternal(current.releaseUrl),
+      ),
+    );
+  }
+  body.append(actions);
+  openModal({
+    eyebrow: "Impostazioni",
+    title: "Aggiornamenti",
+    body,
+    footer: (footer) =>
+      footer.append(button("Chiudi", "secondary", () => closeModal())),
+  });
+}
+
 function openModal({ eyebrow, title, body, footer, extra }) {
   els.modalEyebrow.textContent = eyebrow || "Istanza";
   els.modalTitle.textContent = title || "";
@@ -1474,7 +1664,9 @@ function closeModal() {
   updateStage();
 }
 
-els.tabAdd.addEventListener("click", () => openNewInstance());
+els.settingsButton.addEventListener("click", () => openSettings());
+els.updateButton.addEventListener("click", () => openSettings());
+els.tabAdd.addEventListener("click", () => openConnectionPicker());
 els.newInstance.addEventListener("click", () => openNewInstance());
 els.newInstanceCard.addEventListener("click", () => openNewInstance());
 els.home.addEventListener("click", () => void api.home());
@@ -1532,14 +1724,14 @@ document.addEventListener("keydown", (event) => {
     void api.home();
     return;
   }
-  if (modifier && event.shiftKey && event.key.toLowerCase() === "t") {
+  if (modifier && event.key.toLowerCase() === "t") {
     event.preventDefault();
     setDrawer(!drawerOpen);
     return;
   }
   if (modifier && event.key.toLowerCase() === "n") {
     event.preventDefault();
-    openNewInstance();
+    openConnectionPicker();
     return;
   }
   if (event.key === "Escape") {
@@ -1553,6 +1745,8 @@ api.onCommand((command) => {
   if (command === "palette") {
     if (palette.open) closePalette();
     else openPalette();
+  } else if (command === "open-connection") {
+    openConnectionPicker();
   } else if (command === "new-instance") {
     openNewInstance();
   } else if (command === "toggle-drawer") {
@@ -1562,7 +1756,15 @@ api.onCommand((command) => {
 
 api.onState((next) => {
   state = next;
+  updateState = next.updates || updateState;
   render();
+});
+
+api.onUpdate?.((next) => {
+  updateState = next;
+  if (state) state.updates = next;
+  renderUpdate();
+  if (els.modalBody.querySelector("[data-update-card]")) openSettings();
 });
 
 window.addEventListener("resize", () => {
@@ -1573,5 +1775,6 @@ new ResizeObserver(() => scheduleBounds()).observe(els.slot);
 
 void api.state().then((next) => {
   state = next;
+  updateState = next.updates || updateState;
   render();
 });

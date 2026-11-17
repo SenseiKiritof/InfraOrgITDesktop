@@ -14,12 +14,22 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Landing manager.** Instance cards show name, URL, environment, last use,
   server count and tunnel count. **Nuova istanza**, **Apri**, **Gestisci** and
   **Rimuovi** are in the card; **Istanze** is always one click away from a tab.
+  The top **+** opens a configured connection and offers **Nuova connessione**.
 - **Isolated tabs.** Each instance URL has its own persistent Chromium
   partition. Cookies, the BFF login and storage never cross instances.
 - **Tunnel drawer.** Rows are grouped by instance and server and show the local
   port. **Nuovo tunnel** searches by machine, IP, environment, application and
   service, keeping the environment groups. Start, stop, error and a 30-second
   heartbeat are projected to the central `/tunnels` page.
+- **Connection policy.** Each installation chooses whether tunnels are opened
+  by the server (`Server`), directly by the desktop (`Client`) or automatically
+  (`Auto`, the default). See [Connection mode](#connection-mode).
+- **Updates.** The shell checks the latest GitHub release on startup and every
+  six hours; the top bar shows **Aggiorna <version>** and **Impostazioni →
+  Aggiornamenti** checks, downloads, verifies and installs the package.
+- **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
+  sockets and console shells, then publishes the stopped sessions before the
+  process exits.
 - **Session reuse.** If the instance tab is already signed in, the desktop uses
   that BFF session for the tunnel API. The device flow with `offline_access`,
   or a personal `tunnels:operate` token, is only a fallback.
@@ -31,6 +41,34 @@ The screenshots use fictitious demo instances, servers and tunnels.
   the native window, instance management and the process-level tunnel manager.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
+
+## Keyboard
+
+| Shortcut | Action |
+|---|---|
+| ⌘N / Ctrl+N | Open the connection picker: a configured instance or **Nuova connessione** |
+| ⌘T / Ctrl+T | Open or close the tunnel drawer |
+| ⌘K / Ctrl+K | Command palette |
+| ⌘0 / Ctrl+0 | Back to the instances landing |
+
+## Connection mode
+
+`SystemAdmin` sets one mode per installation in the Web app at
+**Impostazioni** (`/settings`). The default is **Auto**.
+
+| Mode | What the desktop does | Limits |
+|---|---|---|
+| **Auto** (default) | Tests the first SSH hop. If the client reaches it **and the credential is key-based**, runs tunnels, console, files and actions with the local `ssh`/SFTP; otherwise uses the server. Password credentials always relay. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
+| **Server** | Binds the local port and relays each tunnel connection to the API over WebSocket. The API opens SSH with the stored server credential; console, files and actions also run on the API. | Only `Local` services and deployments with a fixed target port. `Dynamic` and `Remote` tunnels are unavailable. |
+| **Client** | Runs `ssh` and SFTP with the local agent for tunnels, console, files and actions. | Requires OpenSSH and an SSH agent on the client; no server relay. Direct uploads are capped at 8 MB. |
+
+The mode is stored in the shared MySQL database (`ConnectionPolicies`), so all
+API nodes in a cluster apply the same value. Relay connections are node-local;
+each local TCP connection opens its own WebSocket, so no sticky sessions are
+needed, only WebSocket upgrade support on the load balancer. The central
+`/tunnels` page shows the actual transport (`Client` or `Server`) of every
+active session; direct console and action runs appear in the execution log,
+and direct file operations in the audit log.
 
 ## Run locally
 
@@ -104,8 +142,26 @@ A `<archive>.sha256` checksum is published next to every archive.
 > is allowed in **System Settings → Privacy & Security** (or the quarantine
 > attribute is removed with `xattr -dr com.apple.quarantine InfraOrgIT.app`),
 > and Windows SmartScreen shows an unknown-publisher warning. Developer ID
-> signing, macOS notarization, Windows Authenticode signing and auto-update are
+> signing, macOS notarization and Windows Authenticode signing remain
 > follow-ups. Verify the SHA-256 checksum before running an archive.
+
+## Updates
+
+The shell queries `releases/latest` on startup and every six hours; the same
+check is available in **Impostazioni → Aggiornamenti**. When the release is
+newer, the top bar shows **Aggiorna <version>** and the card offers
+**Installa e riavvia**.
+
+Install runs only in a packaged app. It downloads the archive for the current
+platform, verifies the published `<archive>.sha256`, then starts a detached
+helper that waits for the app to exit, replaces the bundle and relaunches it
+(`ditto` on macOS, PowerShell on Windows, `tar` on Linux). The helper is
+platform-specific and tested on macOS against a temporary bundle.
+
+The packages are still unsigned, so TLS and the GitHub-published checksum are
+the integrity controls; code signing remains a follow-up. Unauthenticated
+GitHub checks are limited to 60 requests per hour, which the six-hour schedule
+stays well below.
 
 ## Learn more
 

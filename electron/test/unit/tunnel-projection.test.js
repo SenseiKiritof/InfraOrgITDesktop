@@ -44,6 +44,11 @@ test("payloads carry the tunnel target and redact bearer details", () => {
   assert.equal(session.tunnelServiceId, 9);
   assert.equal(session.mode, "Remote");
   assert.equal(session.status, "active");
+  assert.equal(session.transport, "Client");
+  assert.equal(
+    sessionPayload(row({ transport: "Server" }), "active").transport,
+    "Server",
+  );
   assert.equal(cleanDetail("  "), null);
 });
 
@@ -124,4 +129,33 @@ test("sync posts a stop when the tunnel closes cleanly", async () => {
     1,
   );
   projection.dispose();
+});
+
+test("flush waits for in-flight projection posts", async () => {
+  let release;
+  let posts = 0;
+  const projection = new TunnelProjection({
+    post: () => {
+      posts += 1;
+      if (posts === 1) return new Promise((resolve) => {
+        release = resolve;
+      });
+      return Promise.resolve(true);
+    },
+    setIntervalFn: () => ({ unref: () => {} }),
+    clearIntervalFn: () => {},
+    logger: { warn: () => {} },
+  });
+
+  projection.sync([row()]);
+  await new Promise((resolve) => setImmediate(resolve));
+  let flushed = false;
+  const done = projection.flush(1000).then(() => {
+    flushed = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(flushed, false);
+  release(true);
+  await done;
+  assert.equal(flushed, true);
 });
