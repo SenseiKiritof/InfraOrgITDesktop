@@ -994,8 +994,38 @@ body[data-drawer="open"] .drawer {
   font-size: 13px;
 }
 
+.instance-mark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 4px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--env, var(--accent)) 14%, var(--panel-3));
+}
+
+.instance-mark .mark-bar {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--env, var(--accent));
+}
+
+.instance-mark .mark-bar:nth-child(1) {
+  height: 6px;
+  opacity: 0.75;
+}
+
+.instance-mark .mark-bar:nth-child(2) {
+  height: 9px;
+}
+
+.instance-mark .mark-bar:nth-child(3) {
+  height: 12px;
+}
+
 .instance-group-url {
-  margin: 5px 0 0 17px;
+  margin: 5px 0 0 60px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1871,7 +1901,8 @@ body[data-drawer="open"] .drawer {
   margin-left: auto;
 }
 
-.server-toggle {
+.server-toggle,
+.instance-toggle {
   display: grid;
   place-items: center;
   width: 22px;
@@ -1884,7 +1915,8 @@ body[data-drawer="open"] .drawer {
   line-height: 1;
 }
 
-.server-toggle:hover {
+.server-toggle:hover,
+.instance-toggle:hover {
   border-color: var(--border-strong);
   color: var(--text);
 }

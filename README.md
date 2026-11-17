@@ -18,8 +18,8 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Isolated tabs.** Each instance URL has its own persistent Chromium
   partition. Cookies, the BFF login and storage never cross instances.
 - **Tunnel drawer.** Rows are grouped by instance and server and show the local
-  port. A search filters instances, servers and tunnels, and every server group
-  collapses or expands independently. **Nuovo tunnel** searches by machine, IP,
+  port. A search filters instances, servers and tunnels, and every instance and
+  server group collapses or expands independently. **Nuovo tunnel** searches by machine, IP,
   environment, application and service, keeping the environment groups. Start,
   stop, error and a 30-second heartbeat are projected to the central `/tunnels`
   page.

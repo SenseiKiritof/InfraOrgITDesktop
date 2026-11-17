@@ -61,6 +61,7 @@ let lastDrawerKey = "";
 let drawerDraft = null;
 let drawerSearch = "";
 const collapsedServers = new Set();
+const collapsedInstances = new Set();
 let lastBounds = "";
 
 const isMac = api?.platform === "darwin";
@@ -496,9 +497,29 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
 
   const header = el("div", "instance-group-header");
   const title = el("div", "instance-group-title");
-  const dot = el("span", "env-dot");
-  dot.style.setProperty("--env", envColor(instance.environment));
-  title.append(dot, el("span", "", instance.name));
+  const collapsed =
+    collapsedInstances.has(instance.url) && !searching;
+  const toggle = button(
+    collapsed ? "▸" : "▾",
+    "instance-toggle",
+    () => {
+      if (collapsed) collapsedInstances.delete(instance.url);
+      else collapsedInstances.add(instance.url);
+      lastDrawerKey = "";
+      renderDrawer();
+    },
+    collapsed ? "Espandi istanza" : "Comprimi istanza",
+  );
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  toggle.setAttribute("aria-label", `${toggle.title} ${instance.name}`);
+  const mark = el("span", "instance-mark");
+  mark.style.setProperty("--env", envColor(instance.environment));
+  mark.append(
+    el("span", "mark-bar"),
+    el("span", "mark-bar"),
+    el("span", "mark-bar"),
+  );
+  title.append(toggle, mark, el("span", "", instance.name));
   const policy = el(
     "span",
     "chip",
@@ -527,6 +548,7 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
   );
   header.append(actions);
   group.append(header);
+  if (collapsed) return group;
 
   const auth = instance.auth || {};
   if (auth.status === "pending" || auth.status === "restoring") {

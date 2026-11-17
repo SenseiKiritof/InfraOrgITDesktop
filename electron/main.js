@@ -2951,6 +2951,27 @@ async function runTest() {
     check(drawerTools.expanded === "false", "collapsed server aria state", String(drawerTools.expanded));
     check(drawerTools.restored === drawerTools.before, "server group expands again", JSON.stringify(drawerTools));
 
+    const instanceTools = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const toggle = document.querySelector(".instance-toggle");
+      const group = toggle.closest(".instance-group");
+      const before = group.querySelectorAll(".server-group").length;
+      toggle.click();
+      await wait(180);
+      const collapsedToggle = document.querySelector(".instance-toggle");
+      const after = collapsedToggle.closest(".instance-group")
+        .querySelectorAll(".server-group").length;
+      const expanded = collapsedToggle.getAttribute("aria-expanded");
+      collapsedToggle.click();
+      await wait(180);
+      const restored = document.querySelector(".instance-toggle")
+        .closest(".instance-group").querySelectorAll(".server-group").length;
+      return {before, after, expanded, restored};
+    })()`);
+    check(instanceTools.before > 0 && instanceTools.after === 0, "instance group collapses", JSON.stringify(instanceTools));
+    check(instanceTools.expanded === "false", "collapsed instance aria state", String(instanceTools.expanded));
+    check(instanceTools.restored === instanceTools.before, "instance group expands again", JSON.stringify(instanceTools));
+
     const settingsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.querySelector("#settings-button").click();
       await new Promise((resolve) => setTimeout(resolve, 700));
