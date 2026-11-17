@@ -2913,6 +2913,65 @@ async function runTest() {
     check(shortcuts.drawer === true, "cmd+T opens the tunnel drawer");
     check(shortcuts.pickerTitle === "Apri connessione", "cmd+N opens the connection picker", shortcuts.pickerTitle);
 
+    const drawerTools = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      if (document.body.dataset.drawer !== "open")
+        document.querySelector("#tunnel-toggle").click();
+      await wait(150);
+      const input = document.querySelector("#drawer-search");
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, "value").set;
+      const type = async (value) => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", {bubbles: true}));
+        await wait(180);
+      };
+      await type("db-01");
+      const filteredGroups = document.querySelectorAll(".server-group").length;
+      await type("");
+      const allGroups = document.querySelectorAll(".server-group").length;
+      const toggle = document.querySelector(".server-toggle");
+      const group = toggle.closest(".server-group");
+      const before = group.querySelectorAll(".tunnel-row").length;
+      toggle.click();
+      await wait(180);
+      const collapsed = document.querySelector(".server-toggle");
+      const after = collapsed.closest(".server-group")
+        .querySelectorAll(".tunnel-row").length;
+      const expanded = collapsed.getAttribute("aria-expanded");
+      collapsed.click();
+      await wait(180);
+      const restored = document.querySelector(".server-toggle")
+        .closest(".server-group").querySelectorAll(".tunnel-row").length;
+      return {filteredGroups, allGroups, before, after, expanded, restored};
+    })()`);
+    check(drawerTools.filteredGroups === 1, "tunnel search filters server groups", String(drawerTools.filteredGroups));
+    check(drawerTools.allGroups === 2, "tunnel search restores all groups", String(drawerTools.allGroups));
+    check(drawerTools.before > 0 && drawerTools.after === 0, "server group collapses", JSON.stringify(drawerTools));
+    check(drawerTools.expanded === "false", "collapsed server aria state", String(drawerTools.expanded));
+    check(drawerTools.restored === drawerTools.before, "server group expands again", JSON.stringify(drawerTools));
+
+    const instanceTools = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const toggle = document.querySelector(".instance-toggle");
+      const group = toggle.closest(".instance-group");
+      const before = group.querySelectorAll(".server-group").length;
+      toggle.click();
+      await wait(180);
+      const collapsedToggle = document.querySelector(".instance-toggle");
+      const after = collapsedToggle.closest(".instance-group")
+        .querySelectorAll(".server-group").length;
+      const expanded = collapsedToggle.getAttribute("aria-expanded");
+      collapsedToggle.click();
+      await wait(180);
+      const restored = document.querySelector(".instance-toggle")
+        .closest(".instance-group").querySelectorAll(".server-group").length;
+      return {before, after, expanded, restored};
+    })()`);
+    check(instanceTools.before > 0 && instanceTools.after === 0, "instance group collapses", JSON.stringify(instanceTools));
+    check(instanceTools.expanded === "false", "collapsed instance aria state", String(instanceTools.expanded));
+    check(instanceTools.restored === instanceTools.before, "instance group expands again", JSON.stringify(instanceTools));
+
     const settingsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.querySelector("#settings-button").click();
       await new Promise((resolve) => setTimeout(resolve, 700));
