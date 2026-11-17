@@ -1,7 +1,7 @@
 {
   "name": "infraorgit-desktop",
   "productName": "InfraOrgIT",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Electron desktop shell for InfraOrgIT",
   "main": "main.js",
