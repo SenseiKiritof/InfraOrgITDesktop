@@ -995,33 +995,12 @@ body[data-drawer="open"] .drawer {
 }
 
 .instance-mark {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
+  display: inline-block;
   width: 22px;
   height: 22px;
-  padding: 4px;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--env, var(--accent)) 14%, var(--panel-3));
-}
-
-.instance-mark .mark-bar {
-  width: 3px;
-  border-radius: 2px;
-  background: var(--env, var(--accent));
-}
-
-.instance-mark .mark-bar:nth-child(1) {
-  height: 6px;
-  opacity: 0.75;
-}
-
-.instance-mark .mark-bar:nth-child(2) {
-  height: 9px;
-}
-
-.instance-mark .mark-bar:nth-child(3) {
-  height: 12px;
+  background: url("assets/brand-mark.svg") center / contain no-repeat;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--env, var(--accent)) 40%, transparent);
 }
 
 .instance-group-url {

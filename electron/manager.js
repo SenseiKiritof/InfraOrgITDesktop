@@ -514,11 +514,6 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
   toggle.setAttribute("aria-label", `${toggle.title} ${instance.name}`);
   const mark = el("span", "instance-mark");
   mark.style.setProperty("--env", envColor(instance.environment));
-  mark.append(
-    el("span", "mark-bar"),
-    el("span", "mark-bar"),
-    el("span", "mark-bar"),
-  );
   title.append(toggle, mark, el("span", "", instance.name));
   const policy = el(
     "span",
