@@ -18,6 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # All three legs are required checks; only the packaging smoke test is
+        # heavy, so it runs on main and manual dispatches.
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
@@ -25,6 +27,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
       - name: Install
         run: npm ci --prefix electron
       - name: Unit tests
@@ -32,8 +36,10 @@ jobs:
       # Unsigned packaging smoke test: the script packages for the current
       # platform and architecture, so every OS exercises its own output.
       - name: Package
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         run: npm --prefix electron run package
       - name: Verify package output
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
