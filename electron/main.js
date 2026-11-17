@@ -925,6 +925,15 @@ function redactText(text, values) {
 
 async function handleActionRun(instance, message) {
   const requestId = String(message.requestId || "");
+  if (message.requiresSudo === true) {
+    sendToView(instance.url, {
+      type: "action.result",
+      requestId,
+      ok: false,
+      error: "Le azioni sudo vengono eseguite dal server.",
+    });
+    return;
+  }
   const serverId = Number(message.serverId);
   const executionId = Number(message.executionId);
   const reply = (payload) =>
