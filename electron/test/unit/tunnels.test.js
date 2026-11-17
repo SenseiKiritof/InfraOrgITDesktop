@@ -9,6 +9,7 @@ const {
   buildSshArgs,
   canRelay,
   chooseTransport,
+  transportFor,
   relayUrl,
 } = require("../../tunnels");
 
@@ -98,6 +99,14 @@ test("transport policy picks client, server or relayable service", () => {
   assert.equal(chooseTransport("Auto", true, false), "server");
   assert.equal(chooseTransport("Auto", false, false), "client");
   assert.throws(() => chooseTransport("Server", false, false), /Local/);
+
+  // Password credentials cannot use the desktop SSH agent: Auto relays.
+  assert.equal(transportFor("Auto", true, true, false), "server");
+  assert.equal(transportFor("Auto", false, true, false), "client");
+  assert.equal(transportFor("Auto", true, true, true), "client");
+  assert.equal(transportFor("Auto", true, false, true), "server");
+  assert.equal(transportFor("Server", true, true, false), "server");
+  assert.equal(transportFor("Client", true, true, false), "client");
 
   assert.equal(canRelay(service, null), true);
   assert.equal(canRelay({ ...service, mode: "Dynamic" }, null), false);

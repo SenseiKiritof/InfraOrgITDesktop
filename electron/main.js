@@ -27,6 +27,7 @@ const {
   canRelay,
   chooseTransport,
   relayUrl,
+  transportFor,
 } = require("./tunnels");
 const {
   createDirectory,
@@ -482,9 +483,11 @@ async function resolveRemoteTransport(instance, serverId, scope = null) {
       transport =
         policy === "Client"
           ? "client"
-          : (await isReachable(target))
-            ? "client"
-            : "server";
+          : target.clientAuth === false
+            ? "server"
+            : (await isReachable(target))
+              ? "client"
+              : "server";
   }
   remoteTransports.set(key, { transport, at: Date.now() });
   return transport;
@@ -1036,7 +1039,12 @@ async function resolveTunnelTransport(instance, selection) {
   if (policy === "Server")
     return chooseTransport(policy, relayable, false);
   const reachable = await isReachable(selection.server);
-  return chooseTransport(policy, relayable, reachable);
+  return transportFor(
+    policy,
+    relayable,
+    reachable,
+    selection.server.clientAuth,
+  );
 }
 
 async function primeInstanceCounts(instance) {
