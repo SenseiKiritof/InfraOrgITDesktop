@@ -27,6 +27,7 @@ const {
   TunnelManager,
   canRelay,
   chooseTransport,
+  relayCaBundle,
   relayUrl,
   transportFor,
 } = require("./tunnels");
@@ -3113,6 +3114,8 @@ if (!hasLock) {
       },
     });
     tunnelProjection = new TunnelProjection({ post: postTunnelProjection });
+    // Node TLS ignores the OS keychain; private CA for the relay only.
+    const relayCa = relayCaBundle({ userData: app.getPath("userData") });
     tunnels = new TunnelManager(
       () => {
         broadcastTunnels();
@@ -3136,6 +3139,7 @@ if (!hasLock) {
             rejectUnauthorized: !(
               allowLoopbackCertificates && isLoopback(target.hostname)
             ),
+            ca: relayCa,
           };
         },
       },

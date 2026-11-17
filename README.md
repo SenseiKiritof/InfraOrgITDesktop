@@ -92,6 +92,11 @@ development the shell can accept loopback certificates;
 `DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is the explicit override for a packaged
 local test.
 
+The relay WebSocket runs on Node TLS, which does not read the macOS keychain:
+for a private CA also copy the root PEM to
+`~/Library/Application Support/InfraOrgIT/relay-ca.pem` or set
+`DESKTOP_RELAY_CA` to it. The OS trust is still needed for the instance tabs.
+
 For tests, packaging and the security boundaries, see
 [`electron/README.md`](electron/README.md) and
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
