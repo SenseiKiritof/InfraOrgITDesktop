@@ -143,6 +143,13 @@ npm start
 In development the shell accepts the local self-signed certificate only for
 loopback hosts. Packaged builds require a trusted certificate; set
 `DESKTOP_ALLOW_INSECURE_LOCALHOST=1` only for an explicit local test.
+
+Chromium and Node use different trust stores: the instance tab reads the OS
+keychain, the relay WebSocket (`ws`) does not. For a private CA, keep it
+trusted by the OS and also put the root PEM at `<userData>/relay-ca.pem` or
+point `DESKTOP_RELAY_CA` at it. Verification stays enabled and the bundle adds
+the private root to Node's default roots.
+
 `DESKTOP_USER_DATA=/path` redirects all app files (instances, settings and the
 encrypted token archive).
 

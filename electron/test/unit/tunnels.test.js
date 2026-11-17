@@ -1,6 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+const tls = require("node:tls");
 const { EventEmitter } = require("node:events");
 const { WebSocketServer } = require("ws");
 
@@ -10,6 +14,8 @@ const {
   canRelay,
   chooseTransport,
   transportFor,
+  relayCaBundle,
+  relayFailure,
   relayUrl,
 } = require("../../tunnels");
 
@@ -292,4 +298,34 @@ test("server relay bridges a local TCP connection over WebSocket", async () => {
     manager.stopAll();
     await new Promise((resolve) => wss.close(resolve));
   }
+});
+
+test("relay CA bundle adds a private root without dropping the defaults", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-ca-"));
+  const file = path.join(directory, "root.crt");
+  fs.writeFileSync(file, "-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n");
+
+  const bundle = relayCaBundle({ env: { DESKTOP_RELAY_CA: file } });
+  assert.ok(bundle.includes("TEST"));
+  assert.ok(bundle.includes(tls.rootCertificates[0]));
+
+  const fromUserData = relayCaBundle({
+    env: {},
+    userData: directory,
+  });
+  assert.equal(fromUserData, undefined);
+
+  fs.copyFileSync(file, path.join(directory, "relay-ca.pem"));
+  assert.ok(relayCaBundle({ env: {}, userData: directory }).includes("TEST"));
+  assert.equal(relayCaBundle({ env: {}, userData: "" }), undefined);
+
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("TLS trust failures get an actionable relay hint", () => {
+  const error = Object.assign(new Error("unable to get local issuer certificate"), {
+    code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  });
+  assert.match(relayFailure(error), /relay-ca\.pem/);
+  assert.equal(relayFailure(new Error("boom")), "relay: boom");
 });

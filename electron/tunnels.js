@@ -1,8 +1,45 @@
+const fs = require("node:fs");
 const net = require("node:net");
+const path = require("node:path");
+const tls = require("node:tls");
 const { spawn } = require("node:child_process");
 const WebSocket = require("ws");
 
 const MAX_RELAY_CONNECTIONS = 32;
+const TLS_TRUST_ERRORS = new Set([
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+]);
+
+/**
+ * Extra CA for the relay WebSocket only. Node's TLS stack ignores the OS
+ * keychain, so a private CA trusted by Chromium still fails here. The bundle
+ * adds the custom root to the default roots and keeps verification enabled.
+ */
+function relayCaBundle({ env = process.env, userData = "" } = {}) {
+  const candidates = [
+    env.DESKTOP_RELAY_CA,
+    userData ? path.join(userData, "relay-ca.pem") : "",
+  ].filter(Boolean);
+  for (const file of candidates) {
+    try {
+      const custom = fs.readFileSync(file, "utf8").trim();
+      if (custom) return [...tls.rootCertificates, custom].join("\n");
+    } catch {
+      // Missing or unreadable custom CA: keep the default roots.
+    }
+  }
+  return undefined;
+}
+
+function relayFailure(error) {
+  const message = `relay: ${error?.message || error}`;
+  return TLS_TRUST_ERRORS.has(error?.code)
+    ? `${message} (CA non attendibile: configura relay-ca.pem)`
+    : message;
+}
 
 function sshTarget(server) {
   const host = server.sshHost || server.ipAddress || server.hostname;
@@ -359,9 +396,10 @@ class TunnelManager {
         headers: target.headers,
         perMessageDeflate: false,
         rejectUnauthorized: target.rejectUnauthorized,
+        ca: target.ca,
       });
     } catch (error) {
-      row.error = `relay: ${error.message}`;
+      row.error = relayFailure(error);
       row.relaySockets.delete(socket);
       socket.destroy();
       this.onState(this.list());
@@ -377,7 +415,7 @@ class TunnelManager {
     });
     ws.on("error", (error) => {
       // A single failed connection must not stop the tunnel.
-      row.error = `relay: ${error.message}`;
+      row.error = relayFailure(error);
       row.relayWs.delete(ws);
       row.relaySockets.delete(socket);
       socket.destroy();
@@ -466,5 +504,7 @@ module.exports = {
   chooseTransport,
   transportFor,
   publicTunnel,
+  relayCaBundle,
+  relayFailure,
   relayUrl,
 };
