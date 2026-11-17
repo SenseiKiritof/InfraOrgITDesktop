@@ -64,6 +64,8 @@ const collapsedServers = new Set();
 const collapsedInstances = new Set();
 let lastBounds = "";
 
+const shellLocale = () => window.desktopI18n?.locale || "en-GB";
+
 const isMac = api?.platform === "darwin";
 const modifierLabel = isMac ? "⌘" : "Ctrl";
 els.paletteShortcut.textContent = isMac ? "⌘K" : "Ctrl K";
@@ -107,11 +109,11 @@ function formatLastUsed(value) {
   if (minutes < 60) return `${minutes} min fa`;
   const sameDay = date.toDateString() === now.toDateString();
   if (sameDay)
-    return `Oggi ${date.toLocaleTimeString("it-IT", {
+    return `Oggi ${date.toLocaleTimeString(shellLocale(), {
       hour: "2-digit",
       minute: "2-digit",
     })}`;
-  return date.toLocaleDateString("it-IT", {
+  return date.toLocaleDateString(shellLocale(), {
     day: "2-digit",
     month: "short",
   });
@@ -1677,7 +1679,7 @@ function openSettings() {
     metaItem(
       "Ultimo controllo",
       current.checkedAt
-        ? new Date(current.checkedAt).toLocaleString("it-IT")
+        ? new Date(current.checkedAt).toLocaleString(shellLocale())
         : "—",
     ),
   );
@@ -1707,6 +1709,24 @@ function openSettings() {
     );
   }
   body.append(actions);
+  const languageBlock = el("div", "settings-language");
+  const languageRow = el("div", "language-options");
+  for (const option of window.desktopI18n?.languages || []) {
+    const control = button(
+      option.label,
+      window.desktopI18n?.language === option.code ? "primary" : "secondary",
+      () => window.desktopI18n?.setLanguage(option.code),
+    );
+    control.dataset.language = option.code;
+    control.setAttribute(
+      "aria-pressed",
+      String(window.desktopI18n?.language === option.code),
+    );
+    languageRow.append(control);
+  }
+  languageBlock.append(el("span", "meta-label", "Lingua / Language"));
+  languageBlock.append(languageRow);
+  body.append(languageBlock);
   openModal({
     eyebrow: "Impostazioni",
     title: "Aggiornamenti",

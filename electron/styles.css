@@ -1909,3 +1909,18 @@ body[data-drawer="open"] .drawer {
   font-size: 10.5px;
   text-align: center;
 }
+
+.settings-language {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.language-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
