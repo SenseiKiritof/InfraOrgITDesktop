@@ -251,13 +251,19 @@ function installPlan({
 }) {
   const wait = `while kill -0 ${pid} 2>/dev/null; do sleep 1; done`;
   if (platform === "darwin") {
+    const incoming = `${appRoot}.new`;
+    const previous = `${appRoot}.old`;
     const script = [
       "#!/bin/sh",
       "set -e",
       pid > 0 ? wait : "",
-      `rm -rf ${shellQuote(appRoot)}`,
+      pid > 0 ? "sleep 1" : "",
       `ditto -x -k ${shellQuote(archivePath)} ${shellQuote(tempDir)}`,
-      `ditto ${shellQuote(path.join(tempDir, "InfraOrgIT.app"))} ${shellQuote(appRoot)}`,
+      `rm -rf ${shellQuote(incoming)} ${shellQuote(previous)}`,
+      `ditto ${shellQuote(path.join(tempDir, "InfraOrgIT.app"))} ${shellQuote(incoming)}`,
+      `mv ${shellQuote(appRoot)} ${shellQuote(previous)}`,
+      `mv ${shellQuote(incoming)} ${shellQuote(appRoot)}`,
+      `rm -rf ${shellQuote(previous)}`,
       relaunch ? `open ${shellQuote(appRoot)}` : "",
       "",
     ]
@@ -266,11 +272,18 @@ function installPlan({
     return { command: "/bin/sh", args: [], script, tempDir };
   }
   if (platform === "win32") {
+    const incoming = `${appRoot}.new`;
+    const previous = `${appRoot}.old`;
     const script = [
       `while (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }`,
+      pid > 0 ? "Start-Sleep -Seconds 1" : "",
       `Expand-Archive -LiteralPath ${shellQuote(archivePath)} -DestinationPath ${shellQuote(tempDir)} -Force`,
-      `Remove-Item -LiteralPath ${shellQuote(appRoot)} -Recurse -Force`,
-      `Move-Item -LiteralPath ${shellQuote(path.join(tempDir, "InfraOrgIT-win32-x64"))} -Destination ${shellQuote(appRoot)}`,
+      `if (Test-Path -LiteralPath ${shellQuote(incoming)}) { Remove-Item -LiteralPath ${shellQuote(incoming)} -Recurse -Force }`,
+      `if (Test-Path -LiteralPath ${shellQuote(previous)}) { Remove-Item -LiteralPath ${shellQuote(previous)} -Recurse -Force }`,
+      `Move-Item -LiteralPath ${shellQuote(path.join(tempDir, "InfraOrgIT-win32-x64"))} -Destination ${shellQuote(incoming)}`,
+      `if (Test-Path -LiteralPath ${shellQuote(appRoot)}) { Move-Item -LiteralPath ${shellQuote(appRoot)} -Destination ${shellQuote(previous)} }`,
+      `Move-Item -LiteralPath ${shellQuote(incoming)} -Destination ${shellQuote(appRoot)}`,
+      `if (Test-Path -LiteralPath ${shellQuote(previous)}) { Remove-Item -LiteralPath ${shellQuote(previous)} -Recurse -Force }`,
       relaunch
         ? `Start-Process -FilePath ${shellQuote(path.join(appRoot, "InfraOrgIT.exe"))}`
         : "",
@@ -279,13 +292,19 @@ function installPlan({
       .join("\n");
     return { command: "powershell.exe", args: ["-NoProfile", "-Command", script], script, tempDir };
   }
+  const incoming = `${appRoot}.new`;
+  const previous = `${appRoot}.old`;
   const script = [
     "#!/bin/sh",
     "set -e",
     pid > 0 ? wait : "",
-    `rm -rf ${shellQuote(appRoot)}`,
+    pid > 0 ? "sleep 1" : "",
     `tar -xzf ${shellQuote(archivePath)} -C ${shellQuote(tempDir)}`,
-    `mv ${shellQuote(path.join(tempDir, "InfraOrgIT-linux-x64"))} ${shellQuote(appRoot)}`,
+    `rm -rf ${shellQuote(incoming)} ${shellQuote(previous)}`,
+    `mv ${shellQuote(path.join(tempDir, "InfraOrgIT-linux-x64"))} ${shellQuote(incoming)}`,
+    `if [ -e ${shellQuote(appRoot)} ]; then mv ${shellQuote(appRoot)} ${shellQuote(previous)}; fi`,
+    `mv ${shellQuote(incoming)} ${shellQuote(appRoot)}`,
+    `rm -rf ${shellQuote(previous)}`,
     relaunch ? `nohup ${shellQuote(path.join(appRoot, "InfraOrgIT"))} >/dev/null 2>&1 &` : "",
     "",
   ]
