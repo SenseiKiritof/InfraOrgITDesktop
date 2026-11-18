@@ -429,6 +429,32 @@ test("device login opens the browser, stores only the refresh token and reloads 
   auth.dispose();
 });
 
+test("keepAlive refreshes a web session and reports its loss once", async () => {
+  const changes = [];
+  const auth = new DesktopAuth({
+    deviceClient: fakeDevice(),
+    tokenStore: tokenStore(),
+    openExternal: async () => {},
+    onChange: (url, snapshot) => changes.push(snapshot),
+    logger: { warn: () => {} },
+  });
+
+  await auth.readAccount(instance.url, sessionFetch());
+  const settled = changes.length;
+  const healthy = await auth.keepAlive(instance, sessionFetch());
+  assert.equal(healthy.user.username, "admin");
+  assert.equal(changes.length, settled);
+
+  const lost = await auth.keepAlive(
+    instance,
+    sessionFetch({ accountStatus: 401 }),
+  );
+  assert.equal(lost, null);
+  assert.equal(changes.length, settled + 1);
+  assert.equal(auth.snapshot(instance.url).requiresLogin, true);
+  auth.dispose();
+});
+
 test("logout keeps the BFF session and only forgets the saved token", async () => {
   const store = tokenStore(new Map([[instance.url, "refresh-old"]]));
   const auth = new DesktopAuth({
