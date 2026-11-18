@@ -29,6 +29,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Connection policy.** Each installation chooses whether tunnels are opened
   by the server (`Server`), directly by the desktop (`Client`) or automatically
   (`Auto`, the default). See [Connection mode](#connection-mode).
+- **Offline mode.** If the instance is unreachable, the manager keeps the last
+  encrypted inventory and still opens key-based Client tunnels; local TCP, TLS
+  and HTTP checks run from this Mac or through the first jump host. Cached data
+  is removed on logout or instance removal. Password credentials still require
+  the server.
 - **Updates.** The shell checks the latest GitHub release on startup and every
   six hours; the top bar shows **Aggiorna <version>** and **Impostazioni →
   Aggiornamenti** checks, downloads, verifies and installs the package.
