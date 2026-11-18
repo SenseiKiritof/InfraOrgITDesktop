@@ -574,6 +574,8 @@ function publicState() {
     theme: themeState(),
     downloadDirectory: downloadDirectory(),
     downloadDirectoryCustom: Boolean(settingsStore?.downloadDirectory),
+    standaloneEnabled: Boolean(settingsStore?.standaloneEnabled),
+    standaloneRunning: Boolean(standaloneServer),
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
@@ -2339,6 +2341,11 @@ function registerIpc() {
     setDownloadDirectory(directory),
   );
   handle("manager:reset-download-directory", () => setDownloadDirectory(""));
+  handle("manager:set-standalone-enabled", (enabled) => {
+    settingsStore.setStandaloneEnabled(Boolean(enabled));
+    sendState();
+    return Boolean(settingsStore.standaloneEnabled);
+  });
   handle("updates:state", () => updateState);
   handle("updates:check", () => runUpdateCheck());
   handle("updates:install", () => installUpdateNow());
@@ -3820,6 +3827,7 @@ async function runTest() {
     check(settingsModal.title === "Updates", "settings modal title", settingsModal.title);
     check(settingsModal.body.includes("Installed version"), "settings modal shows the version");
     check(settingsModal.body.includes("Download folder"), "settings modal shows the download folder");
+    check(settingsModal.body.includes("Local instance"), "settings modal shows the local instance toggle");
     check(settingsModal.body.includes("Italiano"), "settings modal shows the language picker");
     await mainWindow.webContents.executeJavaScript(
       'document.querySelector("#modal-close").click()',
@@ -3978,12 +3986,26 @@ if (!hasLock) {
       },
     );
 
-    if (!IS_TEST) {
+    const standaloneEnabled =
+      !IS_TEST &&
+      (process.env.DESKTOP_STANDALONE === "1" ||
+        settingsStore.standaloneEnabled);
+    if (!standaloneEnabled && !IS_TEST) {
+      for (const instance of instanceStore.list()) {
+        if (
+          instance.environment === "Locale" &&
+          instance.url.startsWith("http://127.0.0.1:")
+        )
+          instanceStore.remove(instance.url);
+      }
+    }
+    if (standaloneEnabled) {
       try {
         standaloneServer = await startStandalone({
           app,
           safeStorage,
           root: __dirname,
+          enabled: true,
         });
         if (standaloneServer) {
           for (const instance of instanceStore.list()) {

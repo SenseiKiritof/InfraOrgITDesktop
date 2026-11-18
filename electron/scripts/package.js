@@ -55,4 +55,7 @@ packager({
   .catch((error) => {
     console.error(error);
     process.exitCode = 1;
+  })
+  .finally(() => {
+    if (staged) fs.rmSync(staged, { recursive: true, force: true });
   });

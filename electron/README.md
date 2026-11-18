@@ -77,6 +77,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, reloads the active tab and opens tunnel URLs.
+- **Local instance.** **Settings → Local instance** starts the bundled
+  self-contained API on loopback with SQLite under `userData/standalone` and
+  signs in the local SystemAdmin without Keycloak. The sidecar is restarted
+  once after an unexpected exit; the packaged app ships
+  `Resources/standalone` and `Resources/web`.
 - **Credentials.** The manager enrolls an RSA device key, lists downloadable
   server credentials, stores device-encrypted payloads in the `safeStorage`
   vault only with `AllowOffline`, and uses them in memory for console,

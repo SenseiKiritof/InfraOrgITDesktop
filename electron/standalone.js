@@ -32,22 +32,43 @@ function health(url) {
   });
 }
 
-function localSecret(file, safeStorage) {
-  try {
-    const encrypted = fs.readFileSync(file);
-    return safeStorage.decryptString(encrypted);
-  } catch {
-    const secret = crypto.randomBytes(32).toString("base64");
-    if (safeStorage?.isEncryptionAvailable?.()) {
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(file, safeStorage.encryptString(secret), { mode: 0o600 });
-      } catch {
-        // In-memory only when the OS store is unavailable.
-      }
+function localSecret(file, safeStorage, logger = console) {
+  const fallback = `${file}.fallback`;
+  if (fs.existsSync(file)) {
+    try {
+      return safeStorage.decryptString(fs.readFileSync(file));
+    } catch {
+      throw new Error(
+        "Chiave delle credenziali locali illeggibile. Ripristina il backup o rimuovi il file solo se accetti di perdere le credenziali cifrate.",
+      );
     }
-    return secret;
   }
+  if (fs.existsSync(fallback)) {
+    const stored = fs.readFileSync(fallback, "utf8").trim();
+    if (stored) return stored;
+  }
+  const secret = crypto.randomBytes(32).toString("base64");
+  let available = false;
+  try {
+    available = Boolean(safeStorage?.isEncryptionAvailable?.());
+  } catch {
+    available = false;
+  }
+  if (available) {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(file, safeStorage.encryptString(secret), { mode: 0o600 });
+      return secret;
+    } catch {
+      // Fall through to the explicit 0600 fallback.
+    }
+  }
+  fs.mkdirSync(path.dirname(fallback), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(fallback, secret, { mode: 0o600 });
+  logger.warn(
+    "Archivio protetto non disponibile: chiave credenziali locale salvata in un file 0600.",
+  );
+  return secret;
 }
 
 function apiCommand({ isPackaged, resourcesPath, root }) {
@@ -94,8 +115,10 @@ async function startStandalone({
   safeStorage,
   root = __dirname,
   logger = console,
+  enabled = process.env.DESKTOP_STANDALONE === "1",
+  spawnProcess = spawn,
+  healthCheck = health,
 } = {}) {
-  const enabled = process.env.DESKTOP_STANDALONE === "1";
   if (!enabled) return null;
 
   const dataRoot = path.join(app.getPath("userData"), "standalone");
@@ -128,6 +151,7 @@ async function startStandalone({
   const key = localSecret(
     path.join(dataRoot, "credential-key.bin"),
     safeStorage,
+    logger,
   );
   const logFile = path.join(logDirectory, "standalone-api.log");
   const log = fs.createWriteStream(logFile, { flags: "a", mode: 0o600 });
@@ -146,10 +170,6 @@ async function startStandalone({
     Auth__SecureCookies: "false",
     Auth__BootstrapAdminUsername: "local",
     Frontend__BaseUrl: url,
-    Oidc__Issuer: "https://localhost.invalid/realms/infraorgit",
-    Oidc__ClientId: "infraorgit",
-    Oidc__DesktopClientId: "infraorgit-mcp-desktop",
-    Oidc__RedirectUri: `${url}/auth/callback`,
     ServerAccess__CredentialKeys__1: key,
     ServerAccess__CurrentKeyVersion: "1",
     Mcp__Enabled: "false",
@@ -157,48 +177,77 @@ async function startStandalone({
     DOTNET_CLI_TELEMETRY_OPTOUT: "1",
   };
 
-  const child = spawn(command.command, [...command.args, "--urls", url], {
+  const spawnOptions = {
     env,
     cwd: dataRoot,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-  });
-  child.stdout.pipe(log, { end: false });
-  child.stderr.pipe(log, { end: false });
+  };
+  const spawnSidecar = () => {
+    const processHandle = spawnProcess(
+      command.command,
+      [...command.args, "--urls", url],
+      spawnOptions,
+    );
+    processHandle.stdout.pipe(log, { end: false });
+    processHandle.stderr.pipe(log, { end: false });
+    return processHandle;
+  };
+  let child = spawnSidecar();
   let stopped = false;
+  let restarted = false;
+  const waitUntilHealthy = async (timeoutMs = HEALTH_TIMEOUT_MS) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await healthCheck(url)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  };
+  const restartOnce = async () => {
+    if (stopped || restarted) return;
+    restarted = true;
+    logger.warn("Sidecar locale terminato: nuovo tentativo.");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    child = spawnSidecar();
+    child.once("exit", (code, signal) => {
+      log.write(`\nsidecar exit code=${code} signal=${signal}\n`);
+      if (!stopped) logger.error("Sidecar locale terminato dopo il riavvio.");
+    });
+    if (!(await waitUntilHealthy())) {
+      logger.error("Sidecar locale non disponibile dopo il riavvio.");
+    }
+  };
   child.once("exit", (code, signal) => {
     log.write(`\nsidecar exit code=${code} signal=${signal}\n`);
+    if (!stopped) void restartOnce();
   });
 
-  const deadline = Date.now() + HEALTH_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (await health(url)) {
-      logger.log(`standalone api ready on ${url}`);
-      return {
-        url,
-        secret,
-        port,
-        dataRoot,
-        database,
-        stop() {
-          if (stopped) return;
-          stopped = true;
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            // already exited
-          }
-          log.end();
-        },
-      };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  if (!(await waitUntilHealthy())) {
+    child.kill("SIGTERM");
+    log.end();
+    throw new Error(
+      `Il sidecar locale non risponde su ${url}. Log: ${logFile}`,
+    );
   }
-  child.kill("SIGTERM");
-  log.end();
-  throw new Error(
-    `Il sidecar locale non risponde su ${url}. Log: ${logFile}`,
-  );
+  logger.log(`standalone api ready on ${url}`);
+  return {
+    url,
+    secret,
+    port,
+    dataRoot,
+    database,
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // already exited
+      }
+      log.end();
+    },
+  };
 }
 
 module.exports = { startStandalone, freePort, health };
