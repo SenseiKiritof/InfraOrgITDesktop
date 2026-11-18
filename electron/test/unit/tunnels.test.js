@@ -241,6 +241,97 @@ test("tunnel manager rejects invalid ports and missing targets", async () => {
   manager.stopAll();
 });
 
+test("downloaded credentials drive a local SSH2 forward", async () => {
+  const echo = net.createServer((socket) => socket.pipe(socket));
+  await new Promise((resolve) => echo.listen(0, "127.0.0.1", resolve));
+  const echoPort = echo.address().port;
+  const localPort = await freePort();
+  const calls = [];
+  const manager = fakeManager({
+    connectTarget: async (target) => {
+      calls.push({ kind: "connect", target });
+      return {
+        client: { id: "ssh" },
+        fingerprint: "fp",
+        dispose: () => calls.push({ kind: "dispose" }),
+      };
+    },
+    forwardOut: async (client, host, port) => {
+      calls.push({ kind: "forward", client, host, port });
+      return net.connect({ host, port });
+    },
+  });
+
+  try {
+    const row = await manager.start({
+      id: "credential",
+      url: "https://infra.example.com",
+      instanceName: "Produzione",
+      server: { ...server, credentialId: 3, hostKeyFingerprint: "SHA256:abc" },
+      target: { ...target, targetPort: echoPort },
+      service: null,
+      localPort,
+      credential: { authType: "Password", secret: "s3cret" },
+    });
+    assert.equal(row.status, "Active");
+    assert.equal(row.transport, "Client");
+
+    const echoed = await new Promise((resolve, reject) => {
+      const socket = net.connect({ host: "127.0.0.1", port: localPort });
+      const timer = setTimeout(() => reject(new Error("timeout")), 3000);
+      timer.unref?.();
+      socket.once("connect", () => socket.write("hello"));
+      socket.once("data", (data) => {
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(String(data));
+      });
+      socket.once("error", reject);
+    });
+    assert.equal(echoed, "hello");
+
+    const connect = calls.find((item) => item.kind === "connect");
+    assert.equal(connect.target.credential.secret, "s3cret");
+    assert.equal(connect.target.hostKeyFingerprint, "SHA256:abc");
+    assert.equal(connect.target.jumps.length, 1);
+    assert.equal(
+      calls.some((item) => item.kind === "forward" && item.port === echoPort),
+      true,
+    );
+
+    manager.stop("credential");
+    assert.equal(calls.some((item) => item.kind === "dispose"), true);
+  } finally {
+    manager.stopAll();
+    await new Promise((resolve) => echo.close(resolve));
+  }
+});
+
+test("downloaded credentials reject dynamic and remote tunnels", async () => {
+  const manager = fakeManager({
+    connectTarget: async () => {
+      throw new Error("must not connect");
+    },
+    forwardOut: async () => {
+      throw new Error("must not forward");
+    },
+  });
+  for (const mode of ["Dynamic", "Remote"]) {
+    await assert.rejects(
+      manager.start({
+        id: `credential-${mode}`,
+        url: "https://infra.example.com",
+        server,
+        target: null,
+        service: { ...service, mode, remotePort: 9000 },
+        localPort: mode === "Dynamic" ? 18097 : null,
+        credential: { authType: "Password", secret: "s3cret" },
+      }),
+      /solo i tunnel Local/,
+    );
+  }
+});
+
 test("server relay bridges a local TCP connection over WebSocket", async () => {
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((resolve) => wss.once("listening", resolve));
