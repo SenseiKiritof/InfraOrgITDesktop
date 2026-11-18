@@ -209,6 +209,7 @@ async function startStandalone({
     restarted = true;
     logger.warn("Sidecar locale terminato: nuovo tentativo.");
     await new Promise((resolve) => setTimeout(resolve, 500));
+    if (stopped) return;
     child = spawnSidecar();
     child.once("exit", (code, signal) => {
       log.write(`\nsidecar exit code=${code} signal=${signal}\n`);
