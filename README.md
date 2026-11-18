@@ -35,9 +35,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
   sockets and console shells, then publishes the stopped sessions before the
   process exits.
-- **Session reuse.** If the instance tab is already signed in, the desktop uses
-  that BFF session for the tunnel API. The device flow with `offline_access`,
-  or a personal `tunnels:operate` token, is only a fallback.
+- **Session reuse.** Sign-in uses the device flow with `offline_access`; the
+  offline token is stored per Keycloak issuer, so instances backed by the same
+  realm sign in once and the desktop session lasts `Auth:DesktopSessionDays`.
+  An existing BFF session, or a personal `tunnels:operate` token, is reused as
+  a fallback.
 - **One theme.** The shell follows the account theme. The Web toggle is the
   only control and cycles light, dark and system; the shell follows the
   resolved appearance. There is no desktop theme button.

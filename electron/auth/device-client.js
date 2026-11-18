@@ -308,15 +308,17 @@ class DeviceAuthClient {
   }
 
   /** Exchanges a refresh token for a fresh access token. */
-  async refresh(instanceUrl, refreshToken) {
+  async refresh(instanceUrl, refreshToken, issuer = null) {
     if (!refreshToken || !String(refreshToken).trim()) {
       throw new DeviceAuthError(
         "Sessione non valida. Accedi di nuovo con Keycloak.",
         "invalid_grant",
       );
     }
-    const issuer = await this.discoverIssuer(instanceUrl);
-    return this.refreshAtIssuer(issuer, refreshToken);
+    const target = issuer
+      ? normalizeUrl(issuer, "L'authorization server")
+      : await this.discoverIssuer(instanceUrl);
+    return this.refreshAtIssuer(target, refreshToken);
   }
 
   async refreshAtIssuer(issuer, refreshToken) {
