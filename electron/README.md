@@ -86,11 +86,15 @@ The screenshots use fictitious demo instances, servers and tunnels.
   searchable server autocomplete. Check results and failed tunnel events are
   queued in the encrypted outbox and synchronized when the instance returns.
 - **Downloads.** Server attachments use Chromium's native download into the
-  user's Downloads folder with a unique file name; progress and completion are
-  tracked per instance and shown in the management window. Generated API
-  results use the blob bridge with a native save dialog. Dragging a remote file
-  out of the SFTP panel uses Chromium's `DownloadURL`, which saves it through
-  the same native download path.
+  configured folder (default: the user's Downloads) with a unique file name;
+  progress, bytes and percentage are tracked per instance and shown in the
+  management window. Generated API results and SFTP downloads use a native save
+  dialog defaulting to the same folder. The Web file browser shows byte progress
+  for direct SFTP downloads and uploads; larger uploads use the API path with
+  the same percentage. **Impostazioni → Cartella download** changes the folder
+  or restores the default. Dragging a remote file out of the SFTP panel uses
+  Chromium's `DownloadURL`, which saves it through the same native download
+  path.
 - **Existing bridge.** The renderer still sees the narrow
   `window.infraorgitDesktop` bridge used by the download/tunnel panels of the
   Web app: `sendMessage`/`receiveMessage` of JSON strings only. No Node,

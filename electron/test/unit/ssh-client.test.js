@@ -4,12 +4,14 @@ const { EventEmitter } = require("node:events");
 
 const {
   connectTarget,
+  downloadFile,
   fingerprintOf,
   listDirectory,
   normalizeFingerprint,
   openShell,
   remoteJoin,
   runCommand,
+  uploadFile,
   verifyHostKey,
 } = require("../../ssh-client");
 
@@ -114,6 +116,36 @@ test("downloaded credentials authenticate only the target hop", async () => {
   const passwordConnection = await connectTarget(passwordTarget, FakeClient);
   assert.equal(clients[1].options.password, "s3cret");
   passwordConnection.dispose();
+});
+
+test("sftp transfer reports byte progress", async () => {
+  const events = [];
+  const sftp = {
+    fastGet(_remote, _local, options, callback) {
+      options.step(4, null, 10);
+      options.step(10, null, 10);
+      callback(null);
+    },
+    fastPut(local, _remote, options, callback) {
+      events.push({ existsDuringUpload: require("node:fs").existsSync(local) });
+      options.step(3, null, 3);
+      callback(null);
+    },
+  };
+
+  await downloadFile(sftp, "/remote/file", "/tmp/file", {
+    onProgress: (transferred, total) => events.push({ transferred, total }),
+  });
+  await uploadFile(sftp, "/remote/file", Buffer.from("abc"), {
+    onProgress: (transferred, total) => events.push({ transferred, total }),
+  });
+
+  assert.deepEqual(events, [
+    { transferred: 4, total: 10 },
+    { transferred: 10, total: 10 },
+    { existsDuringUpload: true },
+    { transferred: 3, total: 3 },
+  ]);
 });
 
 test("sftp listing normalizes paths, directories and timestamps", async () => {

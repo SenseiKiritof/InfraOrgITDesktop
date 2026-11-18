@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld("desktopManager", {
   onState: (handler) => subscribe("shell:state", handler),
   onCommand: (handler) => subscribe("shell:command", handler),
   setContentBounds: (bounds) => ipcRenderer.send("manager:content-bounds", bounds),
+  chooseDownloadDirectory: () => invoke("manager:choose-download-directory"),
+  setDownloadDirectory: (directory) =>
+    invoke("manager:set-download-directory", directory),
+  resetDownloadDirectory: () => invoke("manager:reset-download-directory"),
 
   addInstance: (value) => invoke("manager:add", value),
   updateInstance: (url, value) => invoke("manager:update", url, value),
