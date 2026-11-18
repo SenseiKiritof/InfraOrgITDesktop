@@ -71,6 +71,7 @@ function apiCommand({ isPackaged, resourcesPath, root }) {
       path.join(
         root,
         "..",
+        "..",
         "InfraOrgITApi",
         "src",
         "InfraOrgIt.Api",
@@ -109,7 +110,7 @@ async function startStandalone({
     ? path.resolve(process.env.DESKTOP_WEB_ROOT)
     : app.isPackaged
       ? path.join(process.resourcesPath, "web")
-      : path.join(root, "..", "InfraOrgITWeb", "dist");
+      : path.join(root, "..", "..", "InfraOrgITWeb", "dist");
   if (!fs.existsSync(path.join(webRoot, "index.html")))
     throw new Error(`Web bundle locale non trovata: ${webRoot}`);
 
