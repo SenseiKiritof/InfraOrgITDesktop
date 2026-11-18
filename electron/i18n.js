@@ -31,6 +31,7 @@
     "Verifica locale": "Local check",
     Offline: "Offline",
     "Dati locali": "Local data",
+    "Da sincronizzare": "To sync",
     "Modalità offline: solo tunnel Client con chiave SSH nell’agente locale.":
       "Offline mode: Client tunnels only, with a key in the local SSH agent.",
     "Nessun dato locale disponibile. Riconnetti l’istanza InfraOrgIT per caricare i server.":

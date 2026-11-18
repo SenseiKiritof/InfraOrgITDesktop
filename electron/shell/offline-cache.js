@@ -25,6 +25,10 @@ function normalize(value) {
     !Number.isNaN(Date.parse(value.cachedAt))
       ? value.cachedAt
       : new Date().toISOString();
+  const username =
+    typeof value.username === "string" && value.username.trim()
+      ? value.username.trim().slice(0, 100)
+      : null;
   const serverCount = Number.isInteger(value.serverCount)
     ? value.serverCount
     : null;
@@ -38,7 +42,14 @@ function normalize(value) {
     sessionTunnelCount === null
   )
     return null;
-  return { targets, policy, cachedAt, serverCount, sessionTunnelCount };
+  return {
+    targets,
+    policy,
+    cachedAt,
+    username,
+    serverCount,
+    sessionTunnelCount,
+  };
 }
 
 /**

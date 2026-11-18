@@ -24,6 +24,7 @@ const { DesktopAuth } = require("./auth/desktop-auth");
 const { planDeviceLogin } = require("./auth/login-policy");
 const { InstanceStore } = require("./shell/instances");
 const { OfflineCache } = require("./shell/offline-cache");
+const { Outbox } = require("./shell/outbox");
 const { SettingsStore, THEMES } = require("./shell/settings");
 const { runLocalCheck } = require("./local-checks");
 const {
@@ -79,6 +80,8 @@ p{margin:.25rem 0;color:#94a3b8}
 </main></body></html>`)}`;
 const SESSION_KEEPALIVE_INTERVAL =
   Number(process.env.DESKTOP_SESSION_KEEPALIVE_MS) || 4 * 60 * 1000;
+const OUTBOX_SYNC_INTERVAL =
+  Number(process.env.DESKTOP_OUTBOX_SYNC_MS) || 5 * 60 * 1000;
 
 const windows = new Map();
 const runtime = new Map();
@@ -105,6 +108,8 @@ let instanceStore = null;
 let settingsStore = null;
 let tokenStore = null;
 let offlineCache = null;
+let outbox = null;
+let outboxSyncing = false;
 let desktopAuth = null;
 let tunnels = null;
 let tunnelProjection = null;
@@ -494,6 +499,7 @@ function publicState() {
       targetsError: data.targetsError,
       offline: data.offline,
       cachedAt: data.cachedAt,
+      pendingEvents: outbox ? outbox.count(instance.url) : 0,
       connectionPolicy: data.policy || "Auto",
       auth: authSnapshot(instance.url),
     };
@@ -557,6 +563,133 @@ function broadcastTunnels() {
   sendState();
 }
 
+function queueClientEvent(instanceUrl, value) {
+  if (!outbox) return null;
+  const username =
+    authSnapshot(instanceUrl).user?.username ||
+    offlineCache?.get(instanceUrl)?.username ||
+    "";
+  return outbox.append({ instanceUrl, username, ...value });
+}
+
+function queueTunnelProjectionEvent(row, payload, detail = "") {
+  if (!payload || !["start", "stop", "error"].includes(payload.kind))
+    return false;
+  queueClientEvent(row.url, {
+    kind: `tunnel.${payload.kind}`,
+    outcome: payload.kind === "error" ? "Error" : "Ok",
+    occurredAt: new Date().toISOString(),
+    serverId: payload.serverId,
+    targetHost: payload.targetHost,
+    targetPort: payload.targetPort,
+    localPort: payload.localPort,
+    errorCode: payload.errorCode,
+    detail: detail || payload.detail || "",
+  });
+  return true;
+}
+
+async function postClientEvents(instanceUrl, events) {
+  const instance = instanceStore.get(instanceUrl);
+  if (!instance) throw new Error("Istanza non trovata.");
+  const record = recordFor(instanceUrl);
+  const ses = record?.session || sessionFor(instance).session;
+  const fetcher = sessionFetch(ses);
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+
+  let token = null;
+  try {
+    token = await desktopAuth.ensureAccessToken(instanceUrl, fetcher);
+  } catch {
+    token = null;
+  }
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  } else {
+    let csrf = desktopAuth.csrfToken(instanceUrl) || "";
+    if (!csrf) {
+      await desktopAuth
+        .readAccount(instanceUrl, fetcher, { emit: false })
+        .catch(() => null);
+      csrf = desktopAuth.csrfToken(instanceUrl) || "";
+    }
+    if (!csrf) throw new Error("Sessione desktop non disponibile.");
+    headers["X-CSRF-Token"] = csrf;
+    headers.Origin = new URL(instanceUrl).origin;
+  }
+
+  const response = await fetcher(
+    `${instanceUrl.replace(/\/$/, "")}/api/client-events`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ events }),
+      credentials: "include",
+    },
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(
+      body?.detail || body?.title || `API eventi: HTTP ${response.status}`,
+    );
+  return {
+    accepted: Array.isArray(body.accepted) ? body.accepted : [],
+    duplicates: Array.isArray(body.duplicates) ? body.duplicates : [],
+  };
+}
+
+async function flushOutbox() {
+  if (outboxSyncing || !outbox) return;
+  outboxSyncing = true;
+  try {
+    const groups = new Map();
+    for (const entry of outbox.list()) {
+      if (!instanceStore.get(entry.instanceUrl)) continue;
+      if (!groups.has(entry.instanceUrl)) groups.set(entry.instanceUrl, []);
+      groups.get(entry.instanceUrl).push(entry);
+    }
+    for (const [instanceUrl, entries] of groups) {
+      const username =
+        authSnapshot(instanceUrl).user?.username ||
+        offlineCache?.get(instanceUrl)?.username ||
+        "";
+      if (!username) continue;
+      const eligible = entries.filter((entry) => entry.username === username);
+      if (eligible.length === 0) continue;
+      try {
+        const result = await postClientEvents(
+          instanceUrl,
+          eligible.map((entry) => ({
+            eventId: entry.eventId,
+            kind: entry.kind,
+            occurredAt: entry.occurredAt,
+            outcome: entry.outcome,
+            serverId: entry.serverId,
+            targetHost: entry.targetHost,
+            targetPort: entry.targetPort,
+            localPort: entry.localPort,
+            durationMs: entry.durationMs,
+            errorCode: entry.errorCode,
+            detail: entry.detail,
+          })),
+        );
+        outbox.remove([...result.accepted, ...result.duplicates]);
+        sendState();
+      } catch (error) {
+        outbox.fail(
+          eligible.map((entry) => entry.eventId),
+          error.message,
+        );
+      }
+    }
+  } finally {
+    outboxSyncing = false;
+  }
+}
+
 async function postTunnelProjection(row, kind, payload) {
   if (IS_TEST || !row?.url) return false;
   const instance = instanceStore.get(row.url);
@@ -571,7 +704,12 @@ async function postTunnelProjection(row, kind, payload) {
       .catch(() => null);
     csrf = desktopAuth.csrfToken(row.url) || "";
   }
-  if (!csrf) return false;
+  if (!csrf)
+    return queueTunnelProjectionEvent(
+      row,
+      payload,
+      "Nessuna sessione desktop per la proiezione.",
+    );
 
   const path =
     kind === "event" ? "/api/tunnels/events" : "/api/tunnels/sessions";
@@ -590,12 +728,18 @@ async function postTunnelProjection(row, kind, payload) {
         credentials: "include",
       },
     );
-    if (!response.ok)
+    if (!response.ok) {
       console.warn("tunnel projection rejected", response.status, path);
-    return response.ok;
+      return queueTunnelProjectionEvent(
+        row,
+        payload,
+        `Proiezione rifiutata: HTTP ${response.status}`,
+      );
+    }
+    return true;
   } catch (error) {
     console.warn("tunnel projection failed", error.message);
-    return false;
+    return queueTunnelProjectionEvent(row, payload, error.message);
   }
 }
 
@@ -1098,6 +1242,8 @@ function cacheSnapshot(instanceUrl, patch) {
   const current = offlineCache.get(instanceUrl) || {};
   offlineCache.set(instanceUrl, {
     cachedAt: new Date().toISOString(),
+    username:
+      authSnapshot(instanceUrl).user?.username || current.username || null,
     ...current,
     ...patch,
   });
@@ -1155,6 +1301,7 @@ async function loadTargets(instance, { force = false } = {}) {
     markOffline(data);
     sendWebTargets(instance.url);
     sendState();
+    if (outbox?.count(instance.url)) void flushOutbox();
     return items;
   } catch (error) {
     if (isOfflineError(error) && applyCachedTargets(instance, data))
@@ -1887,6 +2034,7 @@ function registerIpc() {
   handle("manager:remove", (url) => {
     removeInstance(url);
     offlineCache?.delete(url);
+    outbox?.removeInstance(url);
     return publicState();
   });
   handle("manager:open", (url) => {
@@ -1942,6 +2090,7 @@ function registerIpc() {
   handle("manager:auth-logout", async (url) => {
     await desktopAuth.logout(url);
     offlineCache?.delete(url);
+    outbox?.removeInstance(url);
     const snapshot = authSnapshot(url);
     const data = runtimeFor(url);
     // Explicit logout also drops the offline inventory for this instance.
@@ -2060,13 +2209,32 @@ function registerIpc() {
         username: server.username,
       };
     }
-    return runLocalCheck(
+    const result = await runLocalCheck(
       { ...input, jump },
       {
         sshBin:
           process.env.DESKTOP_SSH_BIN || process.env.SSH_BIN || "ssh",
       },
     );
+    queueClientEvent(url, {
+      kind: `check.${result.kind}`,
+      occurredAt: result.checkedAt,
+      outcome: result.ok ? "Ok" : "Error",
+      serverId: input.serverId ? Number(input.serverId) : null,
+      targetHost: result.host,
+      targetPort: result.port,
+      durationMs: result.latencyMs,
+      errorCode: result.ok ? null : String(result.detail || "").slice(0, 100),
+      detail: JSON.stringify({
+        source: result.source,
+        path: result.path,
+        secure: result.secure,
+        status: result.status,
+        message: result.detail,
+      }),
+    });
+    void flushOutbox();
+    return result;
   });
   handle("manager:server-list", async (url) => {
     const instance = instanceStore.get(url);
@@ -3335,6 +3503,11 @@ if (!hasLock) {
       safeStorage,
     });
     await offlineCache.initialize();
+    outbox = new Outbox({
+      file: path.join(app.getPath("userData"), "client-outbox.bin"),
+      safeStorage,
+    });
+    await outbox.initialize();
 
     const deviceClient = new DeviceAuthClient({
       fetchImpl: (input, init = {}) =>
@@ -3436,6 +3609,8 @@ if (!hasLock) {
       SESSION_KEEPALIVE_INTERVAL,
     );
     setTimeout(() => void keepOpenInstanceSessionsAlive(), 30_000);
+    setInterval(() => void flushOutbox(), OUTBOX_SYNC_INTERVAL);
+    setTimeout(() => void flushOutbox(), 30_000);
     powerMonitor.on("resume", () => void renewOpenInstanceAuth());
     setTimeout(() => primeLandingCounts(), 1200);
 
