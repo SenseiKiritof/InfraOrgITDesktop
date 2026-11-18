@@ -168,6 +168,32 @@ follows Keycloak's SSO idle timeout; the device-flow offline token does not.
 `DESKTOP_USER_DATA=/path` redirects all app files (instances, settings and the
 encrypted token archive).
 
+## Offline mode
+
+When the InfraOrgIT instance is unreachable, the manager keeps working from the
+last known inventory:
+
+- `offline-cache.bin` (safeStorage-encrypted, no secrets) stores tunnel
+  targets, the connection policy and server counts. There is no TTL: the data
+  stays until an explicit logout, the instance is removed, or the user clears
+  the app data.
+- Tunnels are limited to the **Client** transport with key-based SSH
+  (`clientAuth`): the local `ssh`/`ssh -J` uses the agent. Password credentials
+  need the server relay and are rejected offline with an explicit message.
+- "Verifica locale" runs TCP, TLS and HTTP checks from this Mac, or a TCP check
+  from the first SSH jump host (`ssh -W`). Results and failed offline tunnel
+  start/stop/error events go to an encrypted, hash-chained outbox; every five
+  minutes (or immediately after an online check) they are posted to
+  `/api/client-events` with idempotency and appear in `/audit` as
+  `ClientCheck`/tunnel rows with `source=Desktop`. Unsynced events are dropped
+  on logout or instance removal, together with the offline cache.
+- Server relay, the embedded Web workspace and central tunnel projection are
+  unavailable by definition; the drawer marks the instance `Offline` and shows
+  when the cached data was captured.
+
+The cache is removed on logout or instance removal; nothing is cached for an
+instance that was never opened while authenticated.
+
 ## Tests
 
 ```bash

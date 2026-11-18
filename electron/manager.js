@@ -119,6 +119,18 @@ function formatLastUsed(value) {
   });
 }
 
+function formatCachedAt(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(shellLocale(), {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function plural(count, singular, pluralWord) {
   return `${count} ${count === 1 ? singular : pluralWord}`;
 }
@@ -312,6 +324,11 @@ function renderCards() {
     chips.append(env);
     if (instance.openAtStartup)
       chips.append(el("span", "chip startup", "Apri all’avvio"));
+    if (instance.offline) {
+      const offline = el("span", "chip offline", "Offline");
+      offline.title = `Dati locali del ${formatCachedAt(instance.cachedAt)}`;
+      chips.append(offline);
+    }
     top.append(chips);
     card.append(top);
 
@@ -328,6 +345,12 @@ function renderCards() {
     meta.append(metaItem("Tunnel attivi", String(instance.tunnelCount || 0)));
     meta.append(metaItem("Connessioni", policyLabel(instance.connectionPolicy)));
     meta.append(metaItem("Ultimo uso", formatLastUsed(instance.lastUsedAt), true));
+    if (instance.offline)
+      meta.append(metaItem("Dati locali", formatCachedAt(instance.cachedAt), true));
+    if (instance.pendingEvents > 0)
+      meta.append(
+        metaItem("Da sincronizzare", String(instance.pendingEvents), true),
+      );
     card.append(meta);
 
     const actions = el("div", "card-actions");
@@ -340,13 +363,22 @@ function renderCards() {
     const manage = button("Gestisci", "secondary", () =>
       openManage(instance.url),
     );
+    const verify = button("Verifica", "ghost", () => openLocalCheck(instance));
+    const sync =
+      instance.pendingEvents > 0
+        ? button("Sincronizza", "ghost", () => void syncOutbox(instance))
+        : null;
+    verify.title = "Verifica locale";
+    verify.setAttribute("aria-label", `Verifica locale ${instance.name}`);
     const spacer = el("span", "spacer");
     const remove = button("Rimuovi", "ghost danger-link", () =>
       confirmRemove(instance),
     );
     remove.title = "Rimuovi istanza";
     remove.setAttribute("aria-label", `Rimuovi ${instance.name}`);
-    actions.append(open, manage, spacer, remove);
+    actions.append(open, manage, verify);
+    if (sync) actions.append(sync);
+    actions.append(spacer, remove);
     card.append(actions);
 
     card.addEventListener("click", (event) => {
@@ -525,6 +557,11 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
   policy.title =
     "Modalità connessioni dell'installazione: Server, Client o Auto.";
   title.append(policy);
+  if (instance.offline) {
+    const offline = el("span", "chip offline", "Offline");
+    offline.title = `Dati locali del ${formatCachedAt(instance.cachedAt)}`;
+    title.append(offline);
+  }
   const info = el("div");
   info.append(title);
   const url = el("p", "instance-group-url", instance.url);
@@ -532,6 +569,9 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
   header.append(info);
 
   const actions = el("div", "group-actions");
+  actions.append(
+    button("✓", "mini-button", () => openLocalCheck(instance), "Verifica locale"),
+  );
   actions.append(
     button("⚙", "mini-button", () => openManage(instance.url), "Gestisci istanza"),
   );
@@ -837,11 +877,23 @@ function renderNewTunnel(instance) {
       el(
         "p",
         "auth-copy",
-        "Caricamento dei server dell’allowlist non disponibile. Apri la pagina /tunnels dell’istanza per il dettaglio.",
+        instance.offline
+          ? "Nessun dato locale disponibile. Riconnetti l’istanza InfraOrgIT per caricare i server."
+          : "Caricamento dei server dell’allowlist non disponibile. Apri la pagina /tunnels dell’istanza per il dettaglio.",
       ),
     );
     details.append(form);
     return details;
+  }
+
+  if (instance.offline) {
+    details.append(
+      el(
+        "p",
+        "field-hint",
+        "Modalità offline: solo tunnel Client con chiave SSH nell’agente locale.",
+      ),
+    );
   }
 
   const rows = tunnelOptionRows(targets);
@@ -1000,6 +1052,23 @@ function renderNewTunnel(instance) {
 
   details.append(form);
   return details;
+}
+
+async function syncOutbox(instance) {
+  try {
+    const next = await api.syncOutbox(instance.url);
+    const pending =
+      next?.instances?.find((item) => item.url === instance.url)
+        ?.pendingEvents || 0;
+    toast(
+      pending
+        ? `${pending} eventi ancora in coda.`
+        : "Eventi sincronizzati.",
+      pending ? "info" : "success",
+    );
+  } catch (error) {
+    toast(error.message || "Sincronizzazione non riuscita.", "error");
+  }
 }
 
 async function startTunnel(instance, value, portValue) {
@@ -1659,6 +1728,162 @@ function openConnectionPicker() {
         button("Nuova connessione", "primary", () => openNewInstance()),
       );
     },
+  });
+}
+
+function openLocalCheck(instance) {
+  const servers = Array.isArray(state.targets?.[instance.url])
+    ? state.targets[instance.url]
+    : [];
+  const body = el("div", "local-check");
+  const grid = el("div", "check-grid");
+  const field = (labelText, control) => {
+    const wrap = el("label", "field");
+    wrap.append(el("span", "field-label", labelText), control);
+    return wrap;
+  };
+
+  const serverSelect = el("select");
+  for (const server of servers) {
+    const option = el(
+      "option",
+      "",
+      `${server.serverName}${server.environmentLabel ? ` · ${server.environmentLabel}` : ""}`,
+    );
+    option.value = String(server.serverId);
+    serverSelect.append(option);
+  }
+  if (servers.length === 0) {
+    const option = el("option", "", "Nessun server in cache");
+    option.value = "";
+    serverSelect.append(option);
+    serverSelect.disabled = true;
+  }
+
+  const kindSelect = el("select");
+  for (const [value, label] of [
+    ["tcp", "TCP"],
+    ["tls", "TLS"],
+    ["http", "HTTP"],
+  ]) {
+    const option = el("option", "", label);
+    option.value = value;
+    kindSelect.append(option);
+  }
+
+  const sourceSelect = el("select");
+  for (const [value, label] of [
+    ["local", "Dal Mac"],
+    ["jump", "Via jump host"],
+  ]) {
+    const option = el("option", "", label);
+    option.value = value;
+    sourceSelect.append(option);
+  }
+
+  const hostInput = el("input");
+  hostInput.type = "text";
+  hostInput.placeholder = "Host o IP";
+  const portInput = el("input");
+  portInput.type = "number";
+  portInput.min = "1";
+  portInput.max = "65535";
+  const pathInput = el("input");
+  pathInput.type = "text";
+  pathInput.value = "/";
+  const secureInput = el("input");
+  secureInput.type = "checkbox";
+  const timeoutInput = el("input");
+  timeoutInput.type = "number";
+  timeoutInput.min = "1";
+  timeoutInput.max = "30";
+  timeoutInput.value = "5";
+
+  const pathField = field("Percorso", pathInput);
+  const secureField = field("HTTPS", secureInput);
+  grid.append(
+    field("Server", serverSelect),
+    field("Tipo verifica", kindSelect),
+    field("Origine", sourceSelect),
+    field("Host", hostInput),
+    field("Porta", portInput),
+    field("Timeout (s)", timeoutInput),
+    pathField,
+    secureField,
+  );
+
+  const note = el(
+    "p",
+    "field-hint",
+    "Il check via jump host usa il primo bastione della catena SSH e verifica solo TCP.",
+  );
+  const result = el("pre", "check-result");
+  result.hidden = true;
+
+  const selectedServer = () =>
+    servers.find((server) => String(server.serverId) === serverSelect.value) ||
+    servers[0] ||
+    null;
+
+  const applyServer = () => {
+    const server = selectedServer();
+    if (!server) return;
+    hostInput.value = server.sshHost || "";
+    portInput.value = String(server.sshPort || 22);
+  };
+
+  const syncForm = () => {
+    const isHttp = kindSelect.value === "http";
+    pathField.hidden = !isHttp;
+    secureField.hidden = !isHttp;
+    if (kindSelect.value !== "tcp") sourceSelect.value = "local";
+    sourceSelect.disabled = servers.length === 0 || kindSelect.value !== "tcp";
+    note.hidden = sourceSelect.value !== "jump";
+  };
+
+  const run = button("Esegui verifica", "primary", async () => {
+    run.disabled = true;
+    result.hidden = false;
+    result.dataset.tone = "";
+    result.textContent = "Verifica in corso…";
+    try {
+      const outcome = await api.runCheck(instance.url, {
+        serverId: serverSelect.value ? Number(serverSelect.value) : null,
+        kind: kindSelect.value,
+        source: sourceSelect.value,
+        host: hostInput.value,
+        port: Number(portInput.value),
+        path: pathInput.value,
+        secure: secureInput.checked,
+        timeoutMs: Number(timeoutInput.value || 5) * 1000,
+      });
+      result.dataset.tone = outcome.ok ? "ok" : "error";
+      const target = `${outcome.kind.toUpperCase()} ${outcome.host}:${outcome.port}${outcome.path || ""}`;
+      result.textContent =
+        `${target} — ${outcome.ok ? "OK" : "KO"} · ${outcome.latencyMs} ms` +
+        (outcome.status ? ` · ${outcome.status}` : "") +
+        (outcome.detail ? `\n${outcome.detail}` : "");
+    } catch (error) {
+      result.dataset.tone = "error";
+      result.textContent = error.message || "Verifica non riuscita.";
+    } finally {
+      run.disabled = false;
+    }
+  });
+
+  serverSelect.addEventListener("change", applyServer);
+  kindSelect.addEventListener("change", syncForm);
+  sourceSelect.addEventListener("change", syncForm);
+  applyServer();
+  syncForm();
+
+  body.append(grid, note, run, result);
+  openModal({
+    eyebrow: "Verifica locale",
+    title: instance.name,
+    body,
+    footer: (footer) =>
+      footer.append(button("Chiudi", "secondary", () => closeModal())),
   });
 }
 

@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld("desktopManager", {
   openServerPage: (url, serverId) =>
     invoke("manager:open-server-page", url, serverId),
   serverList: (url) => invoke("manager:server-list", url),
+  runCheck: (url, input) => invoke("manager:run-check", url, input),
+  syncOutbox: (url) => invoke("manager:sync-outbox", url),
 
   updatesState: () => invoke("updates:state"),
   checkUpdates: () => invoke("updates:check"),
