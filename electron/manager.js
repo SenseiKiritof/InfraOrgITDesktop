@@ -2058,6 +2058,30 @@ function openSettings() {
     );
   }
   body.append(actions);
+  const downloadBlock = el("div", "settings-download");
+  downloadBlock.append(el("span", "meta-label", "Cartella download"));
+  const downloadPath = el(
+    "code",
+    "settings-path",
+    state?.downloadDirectory || "Predefinita (Download)",
+  );
+  const downloadActions = el("div", "settings-download-actions");
+  downloadActions.append(
+    button("Scegli…", "secondary", async () => {
+      const selected = await api.chooseDownloadDirectory();
+      if (selected) {
+        downloadPath.textContent = selected;
+        toast("Cartella download aggiornata.", "success");
+      }
+    }),
+    button("Predefinita", "ghost", async () => {
+      const selected = await api.resetDownloadDirectory();
+      downloadPath.textContent = selected;
+      toast("Cartella download aggiornata.", "success");
+    }),
+  );
+  downloadBlock.append(downloadPath, downloadActions);
+  body.append(downloadBlock);
   const languageBlock = el("div", "settings-language");
   const languageRow = el("div", "language-options");
   for (const option of window.desktopI18n?.languages || []) {

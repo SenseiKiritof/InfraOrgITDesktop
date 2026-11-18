@@ -49,6 +49,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Updates.** The shell checks the latest GitHub release on startup and every
   six hours; the top bar shows **Aggiorna <version>** and **Impostazioni →
   Aggiornamenti** checks, downloads, verifies and installs the package.
+- **Download folder and progress.** Native downloads, generated files and SFTP
+  saves use the folder chosen in **Impostazioni → Cartella download** (user's
+  Downloads by default). The manager and the Web file browser show bytes and
+  percentage for downloads and uploads.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
   sockets and console shells, then publishes the stopped sessions before the
   process exits.
