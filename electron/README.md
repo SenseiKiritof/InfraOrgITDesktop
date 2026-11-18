@@ -181,8 +181,12 @@ last known inventory:
   (`clientAuth`): the local `ssh`/`ssh -J` uses the agent. Password credentials
   need the server relay and are rejected offline with an explicit message.
 - "Verifica locale" runs TCP, TLS and HTTP checks from this Mac, or a TCP check
-  from the first SSH jump host (`ssh -W`). Results stay local; they are not
-  written to the central audit until an outbox/sync phase exists.
+  from the first SSH jump host (`ssh -W`). Results and failed offline tunnel
+  start/stop/error events go to an encrypted, hash-chained outbox; every five
+  minutes (or immediately after an online check) they are posted to
+  `/api/client-events` with idempotency and appear in `/audit` as
+  `ClientCheck`/tunnel rows with `source=Desktop`. Unsynced events are dropped
+  on logout or instance removal, together with the offline cache.
 - Server relay, the embedded Web workspace and central tunnel projection are
   unavailable by definition; the drawer marks the instance `Offline` and shows
   when the cached data was captured.
