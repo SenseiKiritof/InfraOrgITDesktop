@@ -2,8 +2,10 @@
 
 InfraOrgIT Desktop is the Electron app in [`electron/`](electron/README.md). It
 opens one or more InfraOrgIT instances from a single control-room window, reuses
-the instance BFF session and drives the local SSH agent. No private key is
-copied into the app.
+the instance BFF session and drives the local SSH agent. For server credentials
+downloaded from the web app it keeps only device-encrypted payloads and decrypts
+them in memory; no SSH private key is copied into a command line, renderer or
+log.
 
 ![InfraOrgIT Desktop landing with instance cards and tabs](docs/screenshots/electron-landing.png)
 
@@ -29,17 +31,21 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Connection policy.** Each installation chooses whether tunnels are opened
   by the server (`Server`), directly by the desktop (`Client`) or automatically
   (`Auto`, the default). See [Connection mode](#connection-mode).
-- **Credential distribution.** Each desktop enrolls an RSA key and downloads
-  credentials encrypted for that device; a credential is shared or owned by a
-  user, with optional offline storage controlled per credential. Revoking a
-  device drops its cached secrets. Admin fields and the device list are on
-  `/credentials`.
+- **Credential distribution.** Each desktop enrolls an RSA-3072 key and
+  downloads credentials encrypted for that device; a credential is shared or
+  owned by a user, with optional offline storage controlled per credential.
+  Downloaded credentials are used in memory for console, SFTP/files, actions and
+  `Local` Client tunnels, including password credentials; `Dynamic` and `Remote`
+  tunnels still require an agent key. A credential version change invalidates
+  the cached copy, and revoking a device clears its secrets. Admin fields and the
+  device list are on `/credentials`.
 - **Offline mode.** If the instance is unreachable, the manager keeps the last
-  encrypted inventory and still opens key-based Client tunnels; local TCP, TLS
-  and HTTP checks run from this Mac or through the first jump host. Results and
-  offline tunnel events sync to the central audit when the instance returns.
-  Cached data and unsynced events are removed on logout or instance removal.
-  Password credentials still require the server.
+  encrypted inventory and still opens Client tunnels; downloaded credentials
+  allow password tunnels too. Local TCP, TLS and HTTP checks run from this Mac or
+  through the first jump host, with a searchable server autocomplete. Results
+  and offline tunnel events sync to the central audit when the instance returns.
+  Cached data and unsynced events are removed on logout or instance removal;
+  offline credential copies exist only when `AllowOffline` is enabled.
 - **Updates.** The shell checks the latest GitHub release on startup and every
   six hours; the top bar shows **Aggiorna <version>** and **Impostazioni →
   Aggiornamenti** checks, downloads, verifies and installs the package.
@@ -60,6 +66,12 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
 
+Local checks use the same searchable server field: type to filter the cached
+servers, pick one and the host/port prefill; the check runs from this machine or
+through the first jump host.
+
+![Local check form with a searchable server, check type, source, host and port](docs/screenshots/electron-local-check.png)
+
 ## Keyboard
 
 | Shortcut | Action |
@@ -76,9 +88,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
 
 | Mode | What the desktop does | Limits |
 |---|---|---|
-| **Auto** (default) | Tests the first SSH hop. If the client reaches it **and the credential is key-based**, runs tunnels, console, files and actions with the local `ssh`/SFTP; otherwise uses the server. Password credentials always relay. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
+| **Auto** (default) | Tests the first SSH hop. If the client reaches it **and** a key-based agent or a downloaded credential is available, runs tunnels, console, files and actions locally; otherwise uses the server. A password credential without a downloaded copy relays. | Fast path when the network allows it; falls back automatically behind NAT/firewalls. |
 | **Server** | Binds the local port and relays each tunnel connection to the API over WebSocket. The API opens SSH with the stored server credential; console, files and actions also run on the API. | Only `Local` services and deployments with a fixed target port. `Dynamic` and `Remote` tunnels are unavailable. |
-| **Client** | Runs `ssh` and SFTP with the local agent for tunnels, console, files and actions. | Requires OpenSSH and an SSH agent on the client; no server relay. Direct uploads are capped at 8 MB. |
+| **Client** | Runs ssh2/OpenSSH with the local agent or the downloaded credential for tunnels, console, files and actions. | `Local` works with either source; `Dynamic` and `Remote` require an agent key. No server relay. Direct uploads are capped at 8 MB. |
 
 The mode is stored in the shared MySQL database (`ConnectionPolicies`), so all
 API nodes in a cluster apply the same value. Relay connections are node-local;
@@ -90,9 +102,10 @@ and direct file operations in the audit log.
 
 ## Run locally
 
-Requirements: Node 24+, npm, the OpenSSH client and a running SSH agent, plus an
-InfraOrgIT instance. For the local full stack, `make full` from
-`AllInfraOrgIT` serves `https://localhost:8443`.
+Requirements: Node 24+, npm, the OpenSSH client and either an SSH agent or
+downloaded credentials (the agent is still required for key-based jumps and
+`Dynamic`/`Remote` tunnels), plus an InfraOrgIT instance. For the local full
+stack, `make full` from `AllInfraOrgIT` serves `https://localhost:8443`.
 
 ```bash
 cd electron
@@ -133,9 +146,12 @@ For tests, packaging and the security boundaries, see
 3. Sign in from the instance tab. The tunnel drawer reuses that session; no
    second Keycloak prompt is needed. Use the device flow or a personal token
    only when the instance has no web session.
-4. Open **Tunnel**, expand **Nuovo tunnel**, search for a server, deployment or
+4. Open **Credentials**, download the server credential; the desktop enrolls its
+   device key automatically. Enable `AllowOffline` in the credential if the copy
+   must survive a restart or work without the instance.
+5. Open **Tunnel**, expand **Nuovo tunnel**, search for a server, deployment or
    service, set the local port and press **Avvia**.
-5. Change the theme from the Web app. The desktop shell follows it.
+6. Change the theme from the Web app. The desktop shell follows it.
 
 ## Security
 
@@ -150,7 +166,14 @@ For tests, packaging and the security boundaries, see
   development; packaged builds require a trusted certificate unless the
   explicit local override is set.
 - The app reads the SSH configuration and lets the system `ssh` use the agent;
-  it does not store private keys.
+  it does not copy an SSH private key into the app. Credentials downloaded from
+  the web app are encrypted for this device and kept in the `safeStorage` vault
+  only when `AllowOffline` is set; the plaintext exists only in memory for the
+  live connection. The device identity private key never leaves `safeStorage`,
+  and secrets are not written to command lines, renderers or logs.
+- The desktop can use a downloaded credential for `Local` Client tunnels and
+  for console, files and actions. `Dynamic` and `Remote` tunnels reject a
+  downloaded credential with an explicit error and need an agent key.
 - Tunnels are projected to the instance using the signed-in BFF session and
   CSRF token. A user without the operator role cannot see or change them.
 
