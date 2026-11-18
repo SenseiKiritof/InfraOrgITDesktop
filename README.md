@@ -29,6 +29,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Connection policy.** Each installation chooses whether tunnels are opened
   by the server (`Server`), directly by the desktop (`Client`) or automatically
   (`Auto`, the default). See [Connection mode](#connection-mode).
+- **Credential distribution.** Each desktop enrolls an RSA key and downloads
+  credentials encrypted for that device; a credential is shared or owned by a
+  user, with optional offline storage controlled per credential. Revoking a
+  device drops its cached secrets. Admin fields and the device list are on
+  `/credentials`.
 - **Offline mode.** If the instance is unreachable, the manager keeps the last
   encrypted inventory and still opens key-based Client tunnels; local TCP, TLS
   and HTTP checks run from this Mac or through the first jump host. Results and

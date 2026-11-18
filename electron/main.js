@@ -16,13 +16,16 @@ const { spawn } = require("node:child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const nodeNet = require("node:net");
+const os = require("node:os");
 const path = require("path");
 
 const { DeviceAuthClient } = require("./auth/device-client");
 const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
+const { DeviceIdentity } = require("./auth/device-identity");
 const { planDeviceLogin } = require("./auth/login-policy");
 const { InstanceStore } = require("./shell/instances");
+const { CredentialVault } = require("./shell/credential-vault");
 const { OfflineCache } = require("./shell/offline-cache");
 const { Outbox } = require("./shell/outbox");
 const { SettingsStore, THEMES } = require("./shell/settings");
@@ -92,6 +95,7 @@ const remoteTargets = new Map();
 const remoteTransports = new Map();
 const authRenewals = new Map();
 const deviceLoginAttempted = new Set();
+const deviceRegistrations = new Map();
 const accountThemes = new Map();
 const downloadTracker = new DownloadTracker();
 const downloadSessions = new Set();
@@ -111,6 +115,8 @@ let tokenStore = null;
 let offlineCache = null;
 let outbox = null;
 let outboxSyncing = false;
+let deviceIdentity = null;
+let credentialVault = null;
 let desktopAuth = null;
 let tunnels = null;
 let tunnelProjection = null;
@@ -602,16 +608,18 @@ function queueTunnelProjectionEvent(row, payload, detail = "") {
   return true;
 }
 
-async function postClientEvents(instanceUrl, events) {
+async function authorizedRequest(
+  instanceUrl,
+  path,
+  { method = "GET", body = null } = {},
+) {
   const instance = instanceStore.get(instanceUrl);
   if (!instance) throw new Error("Istanza non trovata.");
   const record = recordFor(instanceUrl);
   const ses = record?.session || sessionFor(instance).session;
   const fetcher = sessionFetch(ses);
-  const headers = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  };
+  const headers = { Accept: "application/json" };
+  if (body !== null) headers["Content-Type"] = "application/json";
 
   let token = null;
   try {
@@ -630,29 +638,174 @@ async function postClientEvents(instanceUrl, events) {
       csrf = desktopAuth.csrfToken(instanceUrl) || "";
     }
     if (!csrf) throw new Error("Sessione desktop non disponibile.");
-    headers["X-CSRF-Token"] = csrf;
-    headers.Origin = new URL(instanceUrl).origin;
+    if (method !== "GET") {
+      headers["X-CSRF-Token"] = csrf;
+      headers.Origin = new URL(instanceUrl).origin;
+    }
   }
 
   const response = await fetcher(
-    `${instanceUrl.replace(/\/$/, "")}/api/client-events`,
+    `${instanceUrl.replace(/\/$/, "")}${path}`,
     {
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify({ events }),
+      body: body === null ? undefined : JSON.stringify(body),
       credentials: "include",
       signal: AbortSignal.timeout(15_000),
     },
   );
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw new Error(
-      body?.detail || body?.title || `API eventi: HTTP ${response.status}`,
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(
+      data?.detail || data?.title || `API desktop: HTTP ${response.status}`,
     );
+    error.status = response.status;
+    error.code = data?.code || "";
+    throw error;
+  }
+  return data;
+}
+
+async function postClientEvents(instanceUrl, events) {
+  const body = await authorizedRequest(
+    instanceUrl,
+    "/api/client-events",
+    { method: "POST", body: { events } },
+  );
   return {
     accepted: Array.isArray(body.accepted) ? body.accepted : [],
     duplicates: Array.isArray(body.duplicates) ? body.duplicates : [],
   };
+}
+
+async function ensureDevice(instanceUrl, retry = true) {
+  if (!deviceIdentity) throw new Error("Identità dispositivo non disponibile.");
+  const known = deviceRegistrations.get(instanceUrl);
+  if (known) return known;
+  try {
+    const device = await authorizedRequest(instanceUrl, "/api/devices", {
+      method: "POST",
+      body: {
+        name: deviceIdentity.name,
+        publicKeyPem: deviceIdentity.publicKeyPem,
+        fingerprint: deviceIdentity.fingerprint,
+      },
+    });
+    deviceRegistrations.set(instanceUrl, device.id);
+    return device.id;
+  } catch (error) {
+    if (error.status === 403 && /revocat/i.test(String(error.message || ""))) {
+      credentialVault?.clearInstance(instanceUrl);
+      deviceRegistrations.delete(instanceUrl);
+      if (retry) {
+        deviceIdentity.reset();
+        return ensureDevice(instanceUrl, false);
+      }
+    }
+    throw error;
+  }
+}
+
+async function listCredentials(instanceUrl) {
+  try {
+    await ensureDevice(instanceUrl);
+    const items = await authorizedRequest(
+      instanceUrl,
+      "/api/server-credentials/downloadable",
+    );
+    return {
+      offline: false,
+      items: (Array.isArray(items) ? items : []).map((item) => {
+        let cached = credentialVault?.get(instanceUrl, item.id);
+        if (
+          cached &&
+          cached.version > 0 &&
+          item.version > 0 &&
+          cached.version !== item.version
+        ) {
+          credentialVault.remove(instanceUrl, item.id);
+          cached = null;
+        }
+        return { ...item, cached: Boolean(cached) };
+      }),
+    };
+  } catch (error) {
+    const currentUser =
+      authSnapshot(instanceUrl).user?.username ||
+      offlineCache?.get(instanceUrl)?.username ||
+      "";
+    return {
+      offline: true,
+      items: (currentUser
+        ? credentialVault?.list(instanceUrl, currentUser) || []
+        : []
+      ).map((item) => ({
+        id: item.credentialId,
+        name: item.name,
+        username: item.username,
+        authType: item.authType,
+        owner: item.owner,
+        allowOffline: item.allowOffline,
+        cached: true,
+        message: error.message,
+      })),
+    };
+  }
+}
+
+async function downloadCredential(instanceUrl, credentialId) {
+  const id = Number(credentialId);
+  if (!Number.isInteger(id) || id <= 0)
+    throw new Error("Credenziale non valida.");
+  try {
+    const deviceId = await ensureDevice(instanceUrl);
+    const response = await authorizedRequest(
+      instanceUrl,
+      `/api/server-credentials/${id}/download`,
+      { method: "POST", body: { deviceId } },
+    );
+    if (!response?.payload)
+      throw new Error("Risposta credenziale non valida.");
+    const secret = deviceIdentity.decrypt(response.payload);
+    const entry = credentialVault.put({
+      instanceUrl,
+      credentialId: id,
+      name: secret.name,
+      username: secret.username,
+      authType: secret.authType,
+      owner: secret.owner,
+      downloadedBy:
+        authSnapshot(instanceUrl).user?.username ||
+        offlineCache?.get(instanceUrl)?.username ||
+        "",
+      allowOffline: Boolean(secret.allowOffline),
+      version: Number(secret.credentialVersion) || 0,
+      payload: response.payload,
+      downloadedAt: new Date().toISOString(),
+    });
+    return {
+      id,
+      name: entry.name,
+      username: entry.username,
+      authType: entry.authType,
+      owner: entry.owner,
+      allowOffline: entry.allowOffline,
+      cached: true,
+    };
+  } catch (error) {
+    if (
+      error.status === 403 &&
+      /revocat/i.test(String(error.message || ""))
+    ) {
+      credentialVault?.clearInstance(instanceUrl);
+      deviceRegistrations.delete(instanceUrl);
+    }
+    throw error;
+  }
+}
+
+function forgetCredential(instanceUrl, credentialId) {
+  return credentialVault?.remove(instanceUrl, credentialId) || false;
 }
 
 async function flushOutbox() {
@@ -1594,6 +1747,9 @@ async function refreshInstanceData(instance) {
   sendState();
 
   if (authSnapshot(instance.url).tunnelAccess) {
+    void ensureDevice(instance.url).catch((error) =>
+      console.warn("device enrollment failed", instance.url, error.message),
+    );
     void loadTargets(instance);
     void loadConnectionPolicy(instance);
   }
@@ -1835,6 +1991,10 @@ function prepareInstance(instance) {
     // the drawer and local tunnels keep working.
     void loadTargets(instance);
     void loadConnectionPolicy(instance);
+    if (authSnapshot(instance.url).tunnelAccess)
+      void ensureDevice(instance.url).catch((error) =>
+        console.warn("device enrollment failed", instance.url, error.message),
+      );
     if (record.view.webContents.isDestroyed()) return;
     // A revoked refresh token must not leave the old BFF cookie usable:
     // clear the partition cookies so the SPA goes through Keycloak again.
@@ -2076,6 +2236,7 @@ function registerIpc() {
     removeInstance(url);
     offlineCache?.delete(url);
     outbox?.removeInstance(url);
+    credentialVault?.clearInstance(url);
     return publicState();
   });
   handle("manager:open", (url) => {
@@ -2132,6 +2293,7 @@ function registerIpc() {
     await desktopAuth.logout(url);
     offlineCache?.delete(url);
     outbox?.removeInstance(url);
+    credentialVault?.clearInstance(url);
     const snapshot = authSnapshot(url);
     const data = runtimeFor(url);
     // Explicit logout also drops the offline inventory for this instance.
@@ -2236,6 +2398,18 @@ function registerIpc() {
     if (!instanceStore.get(url)) throw new Error("Istanza non trovata.");
     await flushOutbox();
     return publicState();
+  });
+  handle("manager:list-credentials", async (url) => {
+    if (!instanceStore.get(url)) throw new Error("Istanza non trovata.");
+    return listCredentials(url);
+  });
+  handle("manager:download-credential", async (url, credentialId) => {
+    if (!instanceStore.get(url)) throw new Error("Istanza non trovata.");
+    return downloadCredential(url, credentialId);
+  });
+  handle("manager:forget-credential", (url, credentialId) => {
+    if (!instanceStore.get(url)) throw new Error("Istanza non trovata.");
+    return forgetCredential(url, credentialId);
   });
   handle("manager:run-check", async (url, input = {}) => {
     const instance = instanceStore.get(url);
@@ -3372,6 +3546,26 @@ async function runTest() {
     check(localCheck.open && localCheck.grid, "local check modal opens", JSON.stringify(localCheck));
     check(localCheck.kind === "tcp" && localCheck.ok === false, "local check IPC runs", JSON.stringify(localCheck));
 
+    const credentialsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const key = [...document.querySelectorAll(".mini-button")].find((node) =>
+        /Credenziali|Credentials/.test(node.title),
+      );
+      key.click();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const open = !document.querySelector("#modal").hidden;
+      const body = document.querySelector("#modal-body").textContent;
+      document.querySelector("#modal-close").click();
+      return {open, body};
+    })()`);
+    check(credentialsModal.open, "credentials modal opens");
+    check(
+      /Credenziali|Credentials|Nessuna credenziale|No credentials|Istanza non raggiungibile|Instance unreachable/.test(
+        credentialsModal.body,
+      ),
+      "credentials modal renders",
+      credentialsModal.body.slice(0, 80),
+    );
+
     const picker = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.querySelector("#tab-add").click();
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -3554,6 +3748,17 @@ if (!hasLock) {
       safeStorage,
     });
     await outbox.initialize();
+    deviceIdentity = new DeviceIdentity({
+      file: path.join(app.getPath("userData"), "device-identity.bin"),
+      safeStorage,
+      name: `${os.hostname()} (${process.platform})`,
+    });
+    await deviceIdentity.initialize();
+    credentialVault = new CredentialVault({
+      file: path.join(app.getPath("userData"), "credential-vault.bin"),
+      safeStorage,
+    });
+    await credentialVault.initialize();
 
     const deviceClient = new DeviceAuthClient({
       fetchImpl: (input, init = {}) =>

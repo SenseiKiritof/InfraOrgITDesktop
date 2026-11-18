@@ -570,6 +570,9 @@ function renderInstanceGroup(instance, tunnels, { searching = false } = {}) {
 
   const actions = el("div", "group-actions");
   actions.append(
+    button("🔑", "mini-button", () => void openCredentials(instance), "Credenziali"),
+  );
+  actions.append(
     button("✓", "mini-button", () => openLocalCheck(instance), "Verifica locale"),
   );
   actions.append(
@@ -1729,6 +1732,94 @@ function openConnectionPicker() {
       );
     },
   });
+}
+
+async function openCredentials(instance) {
+  const body = el("div", "connection-picker");
+  const status = el("p", "field-hint", "Caricamento…");
+  const list = el("div", "connection-list");
+  body.append(status, list);
+  openModal({
+    eyebrow: "Credenziali",
+    title: instance.name,
+    body,
+    footer: (footer) =>
+      footer.append(button("Chiudi", "secondary", () => closeModal())),
+  });
+
+  const render = async () => {
+    list.replaceChildren();
+    status.textContent = "Caricamento…";
+    try {
+      const data = await api.listCredentials(instance.url);
+      status.textContent = data.offline
+        ? "Istanza non raggiungibile: solo credenziali locali."
+        : "";
+      if (!data.items.length) {
+        list.append(el("p", "auth-copy", "Nessuna credenziale disponibile."));
+        return;
+      }
+      for (const item of data.items) {
+        const row = el("div", "connection-row");
+        const info = el("div");
+        info.append(el("div", "connection-name", item.name));
+        info.append(
+          el(
+            "div",
+            "connection-url",
+            `${item.username} · ${item.authType} · ${
+              item.owner === "personal" ? "Personale" : "Condivisa"
+            }`,
+          ),
+        );
+        info.append(
+          el(
+            "div",
+            "field-hint",
+            item.cached
+              ? item.allowOffline
+                ? "Salvata offline."
+                : "Solo in memoria."
+              : item.allowOffline
+                ? "Consenti offline."
+                : "Solo online.",
+          ),
+        );
+        row.append(info);
+        if (item.cached) {
+          row.append(
+            button("Dimentica", "ghost", async () => {
+              try {
+                await api.forgetCredential(instance.url, item.id);
+                await render();
+              } catch (error) {
+                toast(error.message || "Rimozione non riuscita.", "error");
+              }
+            }),
+          );
+        } else {
+          const download = button("Scarica", "secondary", async () => {
+            download.disabled = true;
+            try {
+              await api.downloadCredential(instance.url, item.id);
+              toast("Credenziale scaricata.", "success");
+              await render();
+            } catch (error) {
+              toast(error.message || "Download non riuscito.", "error");
+              download.disabled = false;
+            }
+          });
+          download.disabled = data.offline;
+          row.append(download);
+        }
+        list.append(row);
+      }
+    } catch (error) {
+      status.textContent = error.message || "Credenziali non disponibili.";
+    }
+  };
+
+  await render();
 }
 
 function openLocalCheck(instance) {

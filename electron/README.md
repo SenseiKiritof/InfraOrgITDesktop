@@ -168,6 +168,20 @@ follows Keycloak's SSO idle timeout; the device-flow offline token does not.
 `DESKTOP_USER_DATA=/path` redirects all app files (instances, settings and the
 encrypted token archive).
 
+## Credentials
+
+Each desktop installation generates an RSA key pair on first use. The private
+key is encrypted with `safeStorage`; the public key is enrolled per instance as
+a `DesktopDevice`. Credentials are marked `shared` (installation-wide) or owned
+by a user; shared ones are downloadable by operators of the environment where
+the credential is assigned, personal ones only by their owner. A download is
+encrypted for the enrolled device (AES-256-GCM payload, RSA-OAEP wrapped key),
+shown in the manager's credential dialog and never sent to a renderer. With
+`AllowOffline` the device-encrypted payload is kept in the safeStorage vault;
+otherwise it stays in memory. Credential version changes invalidate the cached
+copy, and a revoked device clears the vault on the next enrollment attempt.
+These credentials are not yet wired into local tunnels or sessions.
+
 ## Offline mode
 
 When the InfraOrgIT instance is unreachable, the manager keeps working from the
