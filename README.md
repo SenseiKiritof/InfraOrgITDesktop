@@ -92,6 +92,12 @@ development the shell can accept loopback certificates;
 `DESKTOP_ALLOW_INSECURE_LOCALHOST=1` is the explicit override for a packaged
 local test.
 
+While the app runs, it keeps the instance web sessions warm from the main
+process, so a minimized window or a throttled tab does not force a new login;
+after quitting, Keycloak's SSO idle timeout applies. A device-flow login from
+the drawer stores an offline token and keeps the desktop session for
+`Auth:DesktopSessionDays` (7 by default).
+
 The relay WebSocket runs on Node TLS, which does not read the macOS keychain:
 for a private CA also copy the root PEM to
 `~/Library/Application Support/InfraOrgIT/relay-ca.pem` or set

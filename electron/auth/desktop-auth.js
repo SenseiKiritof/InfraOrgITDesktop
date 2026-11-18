@@ -334,6 +334,20 @@ class DesktopAuth {
   }
 
   /**
+   * Keeps a web session warm while the manager is open. Renderer timers are
+   * throttled when the window is hidden; the main process pings /api/session
+   * so the BFF refresh token slides before its idle timeout.
+   */
+  async keepAlive(instance, sessionFetch) {
+    const before = this.snapshot(instance.url).tunnelAccess;
+    const account = await this.readAccount(instance.url, sessionFetch, {
+      emit: false,
+    });
+    if (!account && before) this.emit(instance.url, {});
+    return account;
+  }
+
+  /**
    * Starts the device flow, opens the verification page in the default
    * browser and polls Keycloak. Authentication happens in that browser; the
    * app only receives tokens.
