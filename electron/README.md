@@ -150,6 +150,13 @@ trusted by the OS and also put the root PEM at `<userData>/relay-ca.pem` or
 point `DESKTOP_RELAY_CA` at it. Verification stays enabled and the bundle adds
 the private root to Node's default roots.
 
+While the manager is open, the main process pings `/api/session` every four
+minutes (`DESKTOP_SESSION_KEEPALIVE_MS`) so a minimized window or a throttled
+tab does not let the BFF session expire. The SPA keeps refreshing itself while
+visible. After the app quits, a web login follows Keycloak's SSO idle timeout;
+a device-flow login stores an offline token and renews the desktop session for
+the configured `Auth:DesktopSessionDays`.
+
 `DESKTOP_USER_DATA=/path` redirects all app files (instances, settings and the
 encrypted token archive).
 

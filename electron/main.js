@@ -57,6 +57,8 @@ const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
 const MANAGER_PRELOAD = path.join(__dirname, "manager-preload.js");
 const AUTH_RENEW_INTERVAL =
   Number(process.env.DESKTOP_AUTH_RENEW_MS) || 6 * 60 * 60 * 1000;
+const SESSION_KEEPALIVE_INTERVAL =
+  Number(process.env.DESKTOP_SESSION_KEEPALIVE_MS) || 4 * 60 * 1000;
 
 const windows = new Map();
 const runtime = new Map();
@@ -1295,6 +1297,23 @@ async function renewOpenInstanceAuth() {
     .list()
     .filter((instance) => recordFor(instance.url));
   await Promise.allSettled(instances.map(renewInstanceAuth));
+}
+
+/**
+ * Renderer timers are throttled in hidden or minimized windows, so the web
+ * session refresh runs from the main process too. The SPA keeps doing its
+ * own refresh when visible; both calls are idempotent.
+ */
+async function keepOpenInstanceSessionsAlive() {
+  const records = instanceStore
+    .list()
+    .map((instance) => ({ instance, record: recordFor(instance.url) }))
+    .filter(({ record }) => record?.prepared && !record.loading);
+  await Promise.allSettled(
+    records.map(({ instance, record }) =>
+      desktopAuth.keepAlive(instance, sessionFetch(record.session)),
+    ),
+  );
 }
 
 function applyThemeToManager() {
@@ -3165,6 +3184,11 @@ if (!hasLock) {
       () => void renewOpenInstanceAuth(),
       AUTH_RENEW_INTERVAL,
     );
+    setInterval(
+      () => void keepOpenInstanceSessionsAlive(),
+      SESSION_KEEPALIVE_INTERVAL,
+    );
+    setTimeout(() => void keepOpenInstanceSessionsAlive(), 30_000);
     powerMonitor.on("resume", () => void renewOpenInstanceAuth());
     setTimeout(() => primeLandingCounts(), 1200);
 
