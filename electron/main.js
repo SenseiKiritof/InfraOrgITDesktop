@@ -23,7 +23,9 @@ const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
 const { planDeviceLogin } = require("./auth/login-policy");
 const { InstanceStore } = require("./shell/instances");
+const { OfflineCache } = require("./shell/offline-cache");
 const { SettingsStore, THEMES } = require("./shell/settings");
+const { runLocalCheck } = require("./local-checks");
 const {
   TunnelManager,
   canRelay,
@@ -102,6 +104,7 @@ let contentBounds = null;
 let instanceStore = null;
 let settingsStore = null;
 let tokenStore = null;
+let offlineCache = null;
 let desktopAuth = null;
 let tunnels = null;
 let tunnelProjection = null;
@@ -302,9 +305,13 @@ function runtimeFor(url) {
       targets: null,
       targetsAt: 0,
       targetsError: null,
+      targetsCached: false,
       policy: null,
       policyAt: 0,
       policyError: null,
+      policyCached: false,
+      offline: false,
+      cachedAt: null,
       loading: false,
       prepared: false,
       accountLoaded: false,
@@ -485,6 +492,8 @@ function publicState() {
       sessionTunnelCount: data.sessionTunnelCount,
       tunnelCount: localCount + (data.sessionTunnelCount || 0),
       targetsError: data.targetsError,
+      offline: data.offline,
+      cachedAt: data.cachedAt,
       connectionPolicy: data.policy || "Auto",
       auth: authSnapshot(instance.url),
     };
@@ -1073,9 +1082,62 @@ function sendWebTargets(url) {
   return true;
 }
 
+function isOfflineError(error) {
+  const message = String(error?.message || "");
+  return (
+    message === "Istanza non raggiungibile." ||
+    /HTTP 5\d\d/.test(message) ||
+    error?.code === "ECONNREFUSED" ||
+    error?.code === "ENOTFOUND" ||
+    error?.code === "ETIMEDOUT"
+  );
+}
+
+function cacheSnapshot(instanceUrl, patch) {
+  if (!offlineCache) return;
+  const current = offlineCache.get(instanceUrl) || {};
+  offlineCache.set(instanceUrl, {
+    cachedAt: new Date().toISOString(),
+    ...current,
+    ...patch,
+  });
+}
+
+function markOffline(data) {
+  data.offline = Boolean(data.targetsCached || data.policyCached);
+}
+
+function applyCachedTargets(instance, data) {
+  const cached = offlineCache?.get(instance.url);
+  if (!cached || !Array.isArray(cached.targets) || cached.targets.length === 0)
+    return null;
+  data.targets = cached.targets;
+  data.targetsAt = Date.now();
+  data.targetsError = null;
+  data.targetsCached = true;
+  data.cachedAt = cached.cachedAt;
+  if (cached.policy) {
+    data.policy = cached.policy;
+    data.policyAt = Date.now();
+    data.policyCached = true;
+  }
+  if (cached.serverCount !== null && cached.serverCount !== undefined)
+    data.serverCount = cached.serverCount;
+  if (
+    cached.sessionTunnelCount !== null &&
+    cached.sessionTunnelCount !== undefined
+  )
+    data.sessionTunnelCount = cached.sessionTunnelCount;
+  markOffline(data);
+  sendWebTargets(instance.url);
+  sendState();
+  return data.targets;
+}
+
 async function loadTargets(instance, { force = false } = {}) {
   const data = runtimeFor(instance.url);
-  if (!authSnapshot(instance.url).tunnelAccess) return null;
+  if (!authSnapshot(instance.url).tunnelAccess)
+    return applyCachedTargets(instance, data);
   if (!force && data.targets && Date.now() - data.targetsAt < 60_000)
     return data.targets;
   const record = recordFor(instance.url);
@@ -1088,10 +1150,15 @@ async function loadTargets(instance, { force = false } = {}) {
     data.targets = items;
     data.targetsAt = Date.now();
     data.targetsError = null;
+    data.targetsCached = false;
+    cacheSnapshot(instance.url, { targets: items });
+    markOffline(data);
     sendWebTargets(instance.url);
     sendState();
     return items;
   } catch (error) {
+    if (isOfflineError(error) && applyCachedTargets(instance, data))
+      return data.targets;
     data.targetsError = error.message;
     sendToView(instance.url, {
       type: "tunnels.error",
@@ -1105,7 +1172,19 @@ async function loadTargets(instance, { force = false } = {}) {
 
 async function loadConnectionPolicy(instance, { force = false } = {}) {
   const data = runtimeFor(instance.url);
-  if (!authSnapshot(instance.url).tunnelAccess) return null;
+  if (!authSnapshot(instance.url).tunnelAccess) {
+    const cached = offlineCache?.get(instance.url);
+    if (cached?.policy) {
+      data.policy = cached.policy;
+      data.policyAt = Date.now();
+      data.policyCached = true;
+      data.cachedAt = cached.cachedAt;
+      markOffline(data);
+      sendState();
+      return data.policy;
+    }
+    return null;
+  }
   if (!force && data.policy && Date.now() - data.policyAt < 30_000)
     return data.policy;
   const record = recordFor(instance.url);
@@ -1119,12 +1198,25 @@ async function loadConnectionPolicy(instance, { force = false } = {}) {
     data.policy = mode || "Auto";
     data.policyAt = Date.now();
     data.policyError = null;
+    data.policyCached = false;
+    cacheSnapshot(instance.url, { policy: data.policy });
+    markOffline(data);
   } catch (error) {
-    // A policy outage must not block the desktop: Auto keeps the previous
-    // behaviour, while the relay still enforces RBAC and the allowlist.
-    data.policy = data.policy || "Auto";
+    // A policy outage must not block the desktop: the cached policy or Auto
+    // keeps the previous behaviour, while the relay still enforces RBAC.
+    const cached = isOfflineError(error)
+      ? offlineCache?.get(instance.url)
+      : null;
+    if (cached?.policy) {
+      data.policy = cached.policy;
+      data.policyCached = true;
+      data.cachedAt = cached.cachedAt;
+    } else {
+      data.policy = data.policy || "Auto";
+    }
     data.policyAt = Date.now();
     data.policyError = error.message;
+    markOffline(data);
   }
   sendState();
   return data.policy;
@@ -1187,6 +1279,18 @@ async function relayHeadersFor(instanceUrl) {
 }
 
 async function resolveTunnelTransport(instance, selection) {
+  const data = runtimeFor(instance.url);
+  if (data.offline) {
+    if (!selection.server.clientAuth)
+      throw new Error(
+        "Credenziali password: il tunnel offline richiede una chiave SSH nell'agente locale.",
+      );
+    if (!(await isReachable(selection.server)))
+      throw new Error(
+        "Server non raggiungibile dalla rete locale; il relay InfraOrgIT non è disponibile.",
+      );
+    return "client";
+  }
   const policy =
     (await loadConnectionPolicy(instance, { force: true })) || "Auto";
   const relayable = canRelay(selection.service, selection.target);
@@ -1208,12 +1312,30 @@ async function primeInstanceCounts(instance) {
   if (Date.now() - data.lastCountAt < 5000) return;
   data.lastCountAt = Date.now();
   const ses = recordFor(instance.url)?.session || sessionFor(instance).session;
-  const counts = await desktopAuth.fetchCounts(
-    instance.url,
-    sessionFetch(ses),
-  );
-  data.serverCount = counts.serverCount;
-  data.sessionTunnelCount = counts.sessionTunnelCount;
+  try {
+    const counts = await desktopAuth.fetchCounts(
+      instance.url,
+      sessionFetch(ses),
+    );
+    data.serverCount = counts.serverCount;
+    data.sessionTunnelCount = counts.sessionTunnelCount;
+    cacheSnapshot(instance.url, {
+      serverCount: counts.serverCount,
+      sessionTunnelCount: counts.sessionTunnelCount,
+    });
+  } catch (error) {
+    const cached = isOfflineError(error)
+      ? offlineCache?.get(instance.url)
+      : null;
+    if (cached) {
+      if (cached.serverCount != null) data.serverCount = cached.serverCount;
+      if (cached.sessionTunnelCount != null)
+        data.sessionTunnelCount = cached.sessionTunnelCount;
+      data.cachedAt = cached.cachedAt;
+      data.offline = true;
+      if (!data.targets) applyCachedTargets(instance, data);
+    }
+  }
   sendState();
 }
 
@@ -1261,9 +1383,26 @@ async function refreshInstanceData(instance) {
     }
   }
 
-  const counts = await desktopAuth.fetchCounts(instance.url, fetcher);
-  data.serverCount = counts.serverCount;
-  data.sessionTunnelCount = counts.sessionTunnelCount;
+  try {
+    const counts = await desktopAuth.fetchCounts(instance.url, fetcher);
+    data.serverCount = counts.serverCount;
+    data.sessionTunnelCount = counts.sessionTunnelCount;
+    cacheSnapshot(instance.url, {
+      serverCount: counts.serverCount,
+      sessionTunnelCount: counts.sessionTunnelCount,
+    });
+  } catch (error) {
+    const cached = isOfflineError(error)
+      ? offlineCache?.get(instance.url)
+      : null;
+    if (cached) {
+      if (cached.serverCount != null) data.serverCount = cached.serverCount;
+      if (cached.sessionTunnelCount != null)
+        data.sessionTunnelCount = cached.sessionTunnelCount;
+      data.cachedAt = cached.cachedAt;
+      data.offline = true;
+    }
+  }
   sendState();
 
   if (authSnapshot(instance.url).tunnelAccess) {
@@ -1504,6 +1643,10 @@ function prepareInstance(instance) {
     data.loading = false;
     record.loading = false;
     sendState();
+    // Online this refreshes the cache; offline it loads the last inventory so
+    // the drawer and local tunnels keep working.
+    void loadTargets(instance);
+    void loadConnectionPolicy(instance);
     if (record.view.webContents.isDestroyed()) return;
     // A revoked refresh token must not leave the old BFF cookie usable:
     // clear the partition cookies so the SPA goes through Keycloak again.
@@ -1657,7 +1800,9 @@ function tunnelSelection(targetList, serverId, targetId, serviceId) {
 async function startTunnelForInstance(instance, input) {
   const targetList = await loadTargets(instance, { force: true });
   if (!targetList)
-    throw new Error("Accedi all'istanza per caricare i server dei tunnel.");
+    throw new Error(
+      "Server non raggiungibile e nessun dato locale disponibile. Riconnetti l'istanza InfraOrgIT.",
+    );
   const selection = tunnelSelection(
     targetList,
     Number(input.serverId),
@@ -1741,6 +1886,7 @@ function registerIpc() {
   });
   handle("manager:remove", (url) => {
     removeInstance(url);
+    offlineCache?.delete(url);
     return publicState();
   });
   handle("manager:open", (url) => {
@@ -1795,12 +1941,18 @@ function registerIpc() {
   handle("manager:auth-cancel", (url) => desktopAuth.cancel(url));
   handle("manager:auth-logout", async (url) => {
     await desktopAuth.logout(url);
+    offlineCache?.delete(url);
     const snapshot = authSnapshot(url);
     const data = runtimeFor(url);
-    if (!snapshot.tunnelAccess) {
-      data.targets = null;
-      data.targetsAt = 0;
-    }
+    // Explicit logout also drops the offline inventory for this instance.
+    data.targets = null;
+    data.targetsAt = 0;
+    data.policy = null;
+    data.policyAt = 0;
+    data.targetsCached = false;
+    data.policyCached = false;
+    data.offline = false;
+    data.cachedAt = null;
     sendWebAuth(url);
     sendToView(url, { type: "tunnels.state", items: activeTunnels() });
     sendState();
@@ -1889,6 +2041,32 @@ function registerIpc() {
     await record.view.webContents.loadURL(target);
     void focusTunnelServices(record, id);
     return publicState();
+  });
+  handle("manager:run-check", async (url, input = {}) => {
+    const instance = instanceStore.get(url);
+    if (!instance) throw new Error("Istanza non trovata.");
+    const targets = runtimeFor(url).targets || [];
+    let jump = null;
+    if (input.source === "jump") {
+      const server = targets.find(
+        (item) => item.serverId === Number(input.serverId),
+      );
+      if (!server)
+        throw new Error("Scegli un server per il check via jump host.");
+      const hops = Array.isArray(server.jumps) ? server.jumps : [];
+      jump = hops[0] || {
+        host: server.sshHost,
+        port: server.sshPort,
+        username: server.username,
+      };
+    }
+    return runLocalCheck(
+      { ...input, jump },
+      {
+        sshBin:
+          process.env.DESKTOP_SSH_BIN || process.env.SSH_BIN || "ssh",
+      },
+    );
   });
   handle("manager:server-list", async (url) => {
     const instance = instanceStore.get(url);
@@ -2964,6 +3142,22 @@ async function runTest() {
     check(manageModal.title === "Produzione", "manage modal title", manageModal.title);
     check(manageModal.servers > 0, "manage modal lists server anagrafica", String(manageModal.servers));
 
+    const localCheck = await mainWindow.webContents.executeJavaScript(`(async () => {
+      const card = document.querySelector(".instance-card");
+      [...card.querySelectorAll("button")].find((button) => button.textContent === "Check").click();
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const open = !document.querySelector("#modal").hidden;
+      const grid = Boolean(document.querySelector("#modal-body .check-grid"));
+      document.querySelector("#modal-close").click();
+      const probe = await window.desktopManager.runCheck(
+        "https://staging.example.com",
+        {kind: "tcp", host: "127.0.0.1", port: 9, timeoutMs: 500},
+      );
+      return {open, grid, ok: probe.ok, kind: probe.kind};
+    })()`);
+    check(localCheck.open && localCheck.grid, "local check modal opens", JSON.stringify(localCheck));
+    check(localCheck.kind === "tcp" && localCheck.ok === false, "local check IPC runs", JSON.stringify(localCheck));
+
     const picker = await mainWindow.webContents.executeJavaScript(`(async () => {
       document.querySelector("#tab-add").click();
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -3136,6 +3330,11 @@ if (!hasLock) {
     });
     await tokenStore.initialize();
     tokenStore.load();
+    offlineCache = new OfflineCache({
+      file: path.join(app.getPath("userData"), "offline-cache.bin"),
+      safeStorage,
+    });
+    await offlineCache.initialize();
 
     const deviceClient = new DeviceAuthClient({
       fetchImpl: (input, init = {}) =>

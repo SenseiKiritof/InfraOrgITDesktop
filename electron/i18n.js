@@ -27,6 +27,26 @@
 
   const en = {
     Istanze: "Instances",
+    Verifica: "Check",
+    "Verifica locale": "Local check",
+    Offline: "Offline",
+    "Dati locali": "Local data",
+    "Modalità offline: solo tunnel Client con chiave SSH nell’agente locale.":
+      "Offline mode: Client tunnels only, with a key in the local SSH agent.",
+    "Nessun dato locale disponibile. Riconnetti l’istanza InfraOrgIT per caricare i server.":
+      "No local data available. Reconnect the InfraOrgIT instance to load the servers.",
+    "Nessun server in cache": "No cached server",
+    "Tipo verifica": "Check type",
+    Origine: "Source",
+    "Dal Mac": "From this Mac",
+    "Via jump host": "Via jump host",
+    Percorso: "Path",
+    "Timeout (s)": "Timeout (s)",
+    "Esegui verifica": "Run check",
+    "Verifica in corso…": "Checking…",
+    "Verifica non riuscita.": "Check failed.",
+    "Il check via jump host usa il primo bastione della catena SSH e verifica solo TCP.":
+      "The jump-host check uses the first bastion of the SSH chain and tests TCP only.",
     Istanza: "Instance",
     "Istanze aperte": "Open instances",
     "Nuova istanza": "New instance",
