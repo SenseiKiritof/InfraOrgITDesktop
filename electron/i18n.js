@@ -54,6 +54,7 @@
     "Nessun dato locale disponibile. Riconnetti l’istanza InfraOrgIT per caricare i server.":
       "No local data available. Reconnect the InfraOrgIT instance to load the servers.",
     "Nessun server in cache": "No cached server",
+    "Cerca server…": "Search server…",
     "Tipo verifica": "Check type",
     Origine: "Source",
     "Dal Mac": "From this Mac",

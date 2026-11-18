@@ -1834,22 +1834,54 @@ function openLocalCheck(instance) {
     return wrap;
   };
 
-  const serverSelect = el("select");
+  const serverLabel = (server) =>
+    `${server.serverName}${server.environmentLabel ? ` · ${server.environmentLabel}` : ""}`;
+  const serverListId = `check-servers-${Date.now()}`;
+  const serverInput = el("input");
+  serverInput.type = "text";
+  serverInput.placeholder = servers.length
+    ? "Cerca server…"
+    : "Nessun server in cache";
+  serverInput.disabled = servers.length === 0;
+  serverInput.setAttribute("list", serverListId);
+  const serverList = el("datalist");
+  serverList.id = serverListId;
   for (const server of servers) {
-    const option = el(
-      "option",
-      "",
-      `${server.serverName}${server.environmentLabel ? ` · ${server.environmentLabel}` : ""}`,
+    const option = el("option");
+    option.value = serverLabel(server);
+    serverList.append(option);
+  }
+  let selectedServerId = servers[0]?.serverId ?? null;
+  if (servers[0]) serverInput.value = serverLabel(servers[0]);
+  const selectServer = (value) => {
+    const query = String(value || "").trim().toLowerCase();
+    const match =
+      servers.find((server) => serverLabel(server).toLowerCase() === query) ||
+      servers.find((server) =>
+        serverLabel(server).toLowerCase().startsWith(query),
+      ) ||
+      servers.find((server) => serverLabel(server).toLowerCase().includes(query));
+    if (!match) {
+      const current = servers.find(
+        (server) => server.serverId === selectedServerId,
+      );
+      if (current) serverInput.value = serverLabel(current);
+      return;
+    }
+    selectedServerId = match.serverId;
+    serverInput.value = serverLabel(match);
+    applyServer();
+  };
+  serverInput.addEventListener("change", () =>
+    selectServer(serverInput.value),
+  );
+  serverInput.addEventListener("input", () => {
+    const current = servers.find(
+      (server) => serverLabel(server).toLowerCase() ===
+        serverInput.value.trim().toLowerCase(),
     );
-    option.value = String(server.serverId);
-    serverSelect.append(option);
-  }
-  if (servers.length === 0) {
-    const option = el("option", "", "Nessun server in cache");
-    option.value = "";
-    serverSelect.append(option);
-    serverSelect.disabled = true;
-  }
+    if (current) selectServer(serverInput.value);
+  });
 
   const kindSelect = el("select");
   for (const [value, label] of [
@@ -1892,8 +1924,10 @@ function openLocalCheck(instance) {
 
   const pathField = field("Percorso", pathInput);
   const secureField = field("HTTPS", secureInput);
+  const serverField = field("Server", serverInput);
+  serverField.append(serverList);
   grid.append(
-    field("Server", serverSelect),
+    serverField,
     field("Tipo verifica", kindSelect),
     field("Origine", sourceSelect),
     field("Host", hostInput),
@@ -1912,7 +1946,7 @@ function openLocalCheck(instance) {
   result.hidden = true;
 
   const selectedServer = () =>
-    servers.find((server) => String(server.serverId) === serverSelect.value) ||
+    servers.find((server) => server.serverId === selectedServerId) ||
     servers[0] ||
     null;
 
@@ -1939,7 +1973,7 @@ function openLocalCheck(instance) {
     result.textContent = "Verifica in corso…";
     try {
       const outcome = await api.runCheck(instance.url, {
-        serverId: serverSelect.value ? Number(serverSelect.value) : null,
+        serverId: selectedServerId ? Number(selectedServerId) : null,
         kind: kindSelect.value,
         source: sourceSelect.value,
         host: hostInput.value,
@@ -1962,7 +1996,6 @@ function openLocalCheck(instance) {
     }
   });
 
-  serverSelect.addEventListener("change", applyServer);
   kindSelect.addEventListener("change", syncForm);
   sourceSelect.addEventListener("change", syncForm);
   applyServer();
