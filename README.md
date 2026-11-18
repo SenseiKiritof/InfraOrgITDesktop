@@ -31,9 +31,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
   (`Auto`, the default). See [Connection mode](#connection-mode).
 - **Offline mode.** If the instance is unreachable, the manager keeps the last
   encrypted inventory and still opens key-based Client tunnels; local TCP, TLS
-  and HTTP checks run from this Mac or through the first jump host. Cached data
-  is removed on logout or instance removal. Password credentials still require
-  the server.
+  and HTTP checks run from this Mac or through the first jump host. Results and
+  offline tunnel events sync to the central audit when the instance returns.
+  Cached data and unsynced events are removed on logout or instance removal.
+  Password credentials still require the server.
 - **Updates.** The shell checks the latest GitHub release on startup and every
   six hours; the top bar shows **Aggiorna <version>** and **Impostazioni →
   Aggiornamenti** checks, downloads, verifies and installs the package.
