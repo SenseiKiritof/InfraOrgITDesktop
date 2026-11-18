@@ -211,8 +211,11 @@ class Outbox {
       : [...this.events];
   }
 
-  count(instanceUrl = null) {
-    return this.list(instanceUrl).length;
+  count(instanceUrl = null, username = null) {
+    const events = this.list(instanceUrl);
+    return username
+      ? events.filter((entry) => entry.username === username).length
+      : events.length;
   }
 
   remove(eventIds) {
@@ -222,7 +225,10 @@ class Outbox {
     const before = this.events.length;
     this.events = this.events.filter((entry) => !drop.has(entry.eventId));
     const removed = before - this.events.length;
-    if (removed > 0) this.persist();
+    if (removed > 0) {
+      this.rechain();
+      this.persist();
+    }
     return removed;
   }
 
@@ -230,7 +236,20 @@ class Outbox {
     this.load();
     const before = this.events.length;
     this.events = this.events.filter((entry) => entry.instanceUrl !== instanceUrl);
-    if (this.events.length !== before) this.persist();
+    if (this.events.length !== before) {
+      this.rechain();
+      this.persist();
+    }
+  }
+
+  /** Rebuilds the chain after entries were removed from the middle. */
+  rechain() {
+    let previous = "";
+    for (const entry of this.events) {
+      entry.prevHash = previous;
+      entry.hash = hashEntry(entry);
+      previous = entry.hash;
+    }
   }
 
   fail(eventIds, message) {

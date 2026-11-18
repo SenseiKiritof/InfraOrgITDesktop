@@ -364,6 +364,10 @@ function renderCards() {
       openManage(instance.url),
     );
     const verify = button("Verifica", "ghost", () => openLocalCheck(instance));
+    const sync =
+      instance.pendingEvents > 0
+        ? button("Sincronizza", "ghost", () => void syncOutbox(instance))
+        : null;
     verify.title = "Verifica locale";
     verify.setAttribute("aria-label", `Verifica locale ${instance.name}`);
     const spacer = el("span", "spacer");
@@ -372,7 +376,9 @@ function renderCards() {
     );
     remove.title = "Rimuovi istanza";
     remove.setAttribute("aria-label", `Rimuovi ${instance.name}`);
-    actions.append(open, manage, verify, spacer, remove);
+    actions.append(open, manage, verify);
+    if (sync) actions.append(sync);
+    actions.append(spacer, remove);
     card.append(actions);
 
     card.addEventListener("click", (event) => {
@@ -1048,6 +1054,23 @@ function renderNewTunnel(instance) {
   return details;
 }
 
+async function syncOutbox(instance) {
+  try {
+    const next = await api.syncOutbox(instance.url);
+    const pending =
+      next?.instances?.find((item) => item.url === instance.url)
+        ?.pendingEvents || 0;
+    toast(
+      pending
+        ? `${pending} eventi ancora in coda.`
+        : "Eventi sincronizzati.",
+      pending ? "info" : "success",
+    );
+  } catch (error) {
+    toast(error.message || "Sincronizzazione non riuscita.", "error");
+  }
+}
+
 async function startTunnel(instance, value, portValue) {
   const [kind, serverId, id] = String(value || "").split(":");
   if (!serverId || !id) {
@@ -1715,8 +1738,8 @@ function openLocalCheck(instance) {
   const body = el("div", "local-check");
   const grid = el("div", "check-grid");
   const field = (labelText, control) => {
-    const wrap = el("div", "field");
-    wrap.append(el("label", "", labelText), control);
+    const wrap = el("label", "field");
+    wrap.append(el("span", "field-label", labelText), control);
     return wrap;
   };
 

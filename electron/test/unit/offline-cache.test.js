@@ -36,6 +36,7 @@ test("offline cache persists targets and policy encrypted", async () => {
     cache.set(instance, {
       targets: [{ serverId: 1, serverName: "srv", targets: [], services: [] }],
       policy: "Client",
+      username: "admin",
       serverCount: 1,
     }),
     true,
@@ -50,6 +51,7 @@ test("offline cache persists targets and policy encrypted", async () => {
   }).initialize();
   const entry = reloaded.get(instance);
   assert.equal(entry.policy, "Client");
+  assert.equal(entry.username, "admin");
   assert.equal(entry.targets[0].serverName, "srv");
   assert.equal(entry.serverCount, 1);
 

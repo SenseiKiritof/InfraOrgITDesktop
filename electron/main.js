@@ -82,6 +82,7 @@ const SESSION_KEEPALIVE_INTERVAL =
   Number(process.env.DESKTOP_SESSION_KEEPALIVE_MS) || 4 * 60 * 1000;
 const OUTBOX_SYNC_INTERVAL =
   Number(process.env.DESKTOP_OUTBOX_SYNC_MS) || 5 * 60 * 1000;
+const OUTBOX_BATCH = 200;
 
 const windows = new Map();
 const runtime = new Map();
@@ -499,7 +500,14 @@ function publicState() {
       targetsError: data.targetsError,
       offline: data.offline,
       cachedAt: data.cachedAt,
-      pendingEvents: outbox ? outbox.count(instance.url) : 0,
+      pendingEvents: outbox
+        ? outbox.count(
+            instance.url,
+            authSnapshot(instance.url).user?.username ||
+              offlineCache?.get(instance.url)?.username ||
+              "",
+          )
+        : 0,
       connectionPolicy: data.policy || "Auto",
       auth: authSnapshot(instance.url),
     };
@@ -569,7 +577,12 @@ function queueClientEvent(instanceUrl, value) {
     authSnapshot(instanceUrl).user?.username ||
     offlineCache?.get(instanceUrl)?.username ||
     "";
-  return outbox.append({ instanceUrl, username, ...value });
+  try {
+    return outbox.append({ instanceUrl, username, ...value });
+  } catch (error) {
+    console.warn("client event not queued", error.message);
+    return null;
+  }
 }
 
 function queueTunnelProjectionEvent(row, payload, detail = "") {
@@ -628,6 +641,7 @@ async function postClientEvents(instanceUrl, events) {
       headers,
       body: JSON.stringify({ events }),
       credentials: "include",
+      signal: AbortSignal.timeout(15_000),
     },
   );
   const body = await response.json().catch(() => ({}));
@@ -659,30 +673,34 @@ async function flushOutbox() {
       if (!username) continue;
       const eligible = entries.filter((entry) => entry.username === username);
       if (eligible.length === 0) continue;
-      try {
-        const result = await postClientEvents(
-          instanceUrl,
-          eligible.map((entry) => ({
-            eventId: entry.eventId,
-            kind: entry.kind,
-            occurredAt: entry.occurredAt,
-            outcome: entry.outcome,
-            serverId: entry.serverId,
-            targetHost: entry.targetHost,
-            targetPort: entry.targetPort,
-            localPort: entry.localPort,
-            durationMs: entry.durationMs,
-            errorCode: entry.errorCode,
-            detail: entry.detail,
-          })),
-        );
-        outbox.remove([...result.accepted, ...result.duplicates]);
-        sendState();
-      } catch (error) {
-        outbox.fail(
-          eligible.map((entry) => entry.eventId),
-          error.message,
-        );
+      for (let offset = 0; offset < eligible.length; offset += OUTBOX_BATCH) {
+        const chunk = eligible.slice(offset, offset + OUTBOX_BATCH);
+        try {
+          const result = await postClientEvents(
+            instanceUrl,
+            chunk.map((entry) => ({
+              eventId: entry.eventId,
+              kind: entry.kind,
+              occurredAt: entry.occurredAt,
+              outcome: entry.outcome,
+              serverId: entry.serverId,
+              targetHost: entry.targetHost,
+              targetPort: entry.targetPort,
+              localPort: entry.localPort,
+              durationMs: entry.durationMs,
+              errorCode: entry.errorCode,
+              detail: entry.detail,
+            })),
+          );
+          outbox.remove([...result.accepted, ...result.duplicates]);
+          sendState();
+        } catch (error) {
+          outbox.fail(
+            chunk.map((entry) => entry.eventId),
+            error.message,
+          );
+          break;
+        }
       }
     }
   } finally {
@@ -726,6 +744,7 @@ async function postTunnelProjection(row, kind, payload) {
         },
         body: JSON.stringify(payload),
         credentials: "include",
+        signal: AbortSignal.timeout(15_000),
       },
     );
     if (!response.ok) {
@@ -1242,10 +1261,10 @@ function cacheSnapshot(instanceUrl, patch) {
   const current = offlineCache.get(instanceUrl) || {};
   offlineCache.set(instanceUrl, {
     cachedAt: new Date().toISOString(),
-    username:
-      authSnapshot(instanceUrl).user?.username || current.username || null,
     ...current,
     ...patch,
+    username:
+      authSnapshot(instanceUrl).user?.username || current.username || null,
   });
 }
 
@@ -1253,9 +1272,19 @@ function markOffline(data) {
   data.offline = Boolean(data.targetsCached || data.policyCached);
 }
 
+function cacheBelongsToUser(instanceUrl, cached) {
+  const current = authSnapshot(instanceUrl).user?.username || "";
+  return !current || !cached?.username || cached.username === current;
+}
+
 function applyCachedTargets(instance, data) {
   const cached = offlineCache?.get(instance.url);
-  if (!cached || !Array.isArray(cached.targets) || cached.targets.length === 0)
+  if (
+    !cached ||
+    !cacheBelongsToUser(instance.url, cached) ||
+    !Array.isArray(cached.targets) ||
+    cached.targets.length === 0
+  )
     return null;
   data.targets = cached.targets;
   data.targetsAt = Date.now();
@@ -1321,7 +1350,7 @@ async function loadConnectionPolicy(instance, { force = false } = {}) {
   const data = runtimeFor(instance.url);
   if (!authSnapshot(instance.url).tunnelAccess) {
     const cached = offlineCache?.get(instance.url);
-    if (cached?.policy) {
+    if (cached?.policy && cacheBelongsToUser(instance.url, cached)) {
       data.policy = cached.policy;
       data.policyAt = Date.now();
       data.policyCached = true;
@@ -1351,9 +1380,13 @@ async function loadConnectionPolicy(instance, { force = false } = {}) {
   } catch (error) {
     // A policy outage must not block the desktop: the cached policy or Auto
     // keeps the previous behaviour, while the relay still enforces RBAC.
-    const cached = isOfflineError(error)
+    const candidate = isOfflineError(error)
       ? offlineCache?.get(instance.url)
       : null;
+    const cached =
+      candidate && cacheBelongsToUser(instance.url, candidate)
+        ? candidate
+        : null;
     if (cached?.policy) {
       data.policy = cached.policy;
       data.policyCached = true;
@@ -1471,9 +1504,13 @@ async function primeInstanceCounts(instance) {
       sessionTunnelCount: counts.sessionTunnelCount,
     });
   } catch (error) {
-    const cached = isOfflineError(error)
+    const candidate = isOfflineError(error)
       ? offlineCache?.get(instance.url)
       : null;
+    const cached =
+      candidate && cacheBelongsToUser(instance.url, candidate)
+        ? candidate
+        : null;
     if (cached) {
       if (cached.serverCount != null) data.serverCount = cached.serverCount;
       if (cached.sessionTunnelCount != null)
@@ -1539,9 +1576,13 @@ async function refreshInstanceData(instance) {
       sessionTunnelCount: counts.sessionTunnelCount,
     });
   } catch (error) {
-    const cached = isOfflineError(error)
+    const candidate = isOfflineError(error)
       ? offlineCache?.get(instance.url)
       : null;
+    const cached =
+      candidate && cacheBelongsToUser(instance.url, candidate)
+        ? candidate
+        : null;
     if (cached) {
       if (cached.serverCount != null) data.serverCount = cached.serverCount;
       if (cached.sessionTunnelCount != null)
@@ -2189,6 +2230,11 @@ function registerIpc() {
     }
     await record.view.webContents.loadURL(target);
     void focusTunnelServices(record, id);
+    return publicState();
+  });
+  handle("manager:sync-outbox", async (url) => {
+    if (!instanceStore.get(url)) throw new Error("Istanza non trovata.");
+    await flushOutbox();
     return publicState();
   });
   handle("manager:run-check", async (url, input = {}) => {
