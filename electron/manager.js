@@ -347,6 +347,10 @@ function renderCards() {
     meta.append(metaItem("Ultimo uso", formatLastUsed(instance.lastUsedAt), true));
     if (instance.offline)
       meta.append(metaItem("Dati locali", formatCachedAt(instance.cachedAt), true));
+    if (instance.pendingEvents > 0)
+      meta.append(
+        metaItem("Da sincronizzare", String(instance.pendingEvents), true),
+      );
     card.append(meta);
 
     const actions = el("div", "card-actions");
