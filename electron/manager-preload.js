@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld("desktopManager", {
   serverList: (url) => invoke("manager:server-list", url),
   runCheck: (url, input) => invoke("manager:run-check", url, input),
   syncOutbox: (url) => invoke("manager:sync-outbox", url),
+  listCredentials: (url) => invoke("manager:list-credentials", url),
+  downloadCredential: (url, id) =>
+    invoke("manager:download-credential", url, id),
+  forgetCredential: (url, id) =>
+    invoke("manager:forget-credential", url, id),
 
   updatesState: () => invoke("updates:state"),
   checkUpdates: () => invoke("updates:check"),
