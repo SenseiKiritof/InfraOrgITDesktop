@@ -156,7 +156,9 @@ lasts `Auth:DesktopSessionDays` (7 by default) with a renewal every six hours.
 An existing web session is upgraded in the background the first time the tab
 is prepared. If the device client is missing or the flow fails, the tab falls
 back to the embedded Keycloak login. `DESKTOP_LOGIN_MODE=web` disables the
-device flow entirely.
+device flow entirely. The offline token is stored per Keycloak issuer, so every
+instance that shares the same realm signs in once; instances backed by
+different realms still need their own login.
 
 While the manager is open, the main process pings `/api/session` every four
 minutes (`DESKTOP_SESSION_KEEPALIVE_MS`) so a minimized window or a throttled

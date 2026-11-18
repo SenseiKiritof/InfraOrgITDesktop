@@ -66,7 +66,10 @@ class DesktopAuth {
 
   snapshot(instanceUrl) {
     const context = this.context(instanceUrl);
-    const hasStoredToken = Boolean(this.tokenStore.get(instanceUrl));
+    const hasStoredToken = Boolean(
+      this.tokenStore.get(context.issuer || instanceUrl) ||
+        this.tokenStore.get(instanceUrl),
+    );
     const tunnelAccess =
       this.hasAccessToken(instanceUrl) ||
       hasStoredToken ||
@@ -102,12 +105,15 @@ class DesktopAuth {
     );
   }
 
-  setTokens(instanceUrl, tokens, method) {
+  setTokens(instanceUrl, tokens, method, issuer = "") {
     const context = this.context(instanceUrl);
+    const key = issuer || context.issuer || instanceUrl;
+    context.issuer = key;
     context.accessToken = tokens.accessToken;
     context.accessExpiresAt = tokens.expiresAt;
     if (tokens.refreshToken) {
-      context.saved = this.tokenStore.set(instanceUrl, tokens.refreshToken);
+      if (key !== instanceUrl) this.tokenStore.delete(instanceUrl);
+      context.saved = this.tokenStore.set(key, tokens.refreshToken);
     }
     context.method = method;
     return context;
@@ -119,6 +125,31 @@ class DesktopAuth {
     context.accessExpiresAt = 0;
     context.csrfToken = "";
     context.account = null;
+  }
+
+  /** Resolves and caches the Keycloak issuer of an instance. */
+  async issuerFor(instanceUrl) {
+    const context = this.context(instanceUrl);
+    if (context.issuer) return context.issuer;
+    const issuer = await this.deviceClient.discoverIssuer(instanceUrl);
+    context.issuer = issuer;
+    return issuer;
+  }
+
+  /** Shared offline token for the issuer, or a legacy instance token. */
+  storedToken(instanceUrl, issuer = "") {
+    const key = issuer || this.context(instanceUrl).issuer;
+    return (
+      (key ? this.tokenStore.get(key) : null) ||
+      this.tokenStore.get(instanceUrl)
+    );
+  }
+
+  /** Removes the shared token and any legacy instance copy. */
+  deleteToken(instanceUrl, issuer = "") {
+    this.tokenStore.delete(instanceUrl);
+    const key = issuer || this.context(instanceUrl).issuer;
+    if (key && key !== instanceUrl) this.tokenStore.delete(key);
   }
 
   async readAccount(instanceUrl, sessionFetch, { emit = true } = {}) {
@@ -170,7 +201,18 @@ class DesktopAuth {
    * normal login page.
    */
   async restore(instance, sessionFetch, cookies) {
-    const refreshToken = this.tokenStore.get(instance.url);
+    let issuer = "";
+    let refreshToken = this.tokenStore.get(instance.url);
+    if (!refreshToken) {
+      // Another instance with the same Keycloak may already hold the shared
+      // offline token. Discovery failure still allows the web session path.
+      try {
+        issuer = await this.issuerFor(instance.url);
+        refreshToken = this.tokenStore.get(issuer);
+      } catch {
+        issuer = "";
+      }
+    }
     if (!refreshToken) {
       const session = await this.restoreFromWebSession(instance, sessionFetch);
       if (session) return session;
@@ -192,14 +234,19 @@ class DesktopAuth {
 
     let tokens;
     try {
-      tokens = await this.deviceClient.refresh(instance.url, refreshToken);
+      if (!issuer) issuer = await this.issuerFor(instance.url);
+      tokens = await this.deviceClient.refresh(
+        instance.url,
+        refreshToken,
+        issuer,
+      );
     } catch (error) {
       if (
         error instanceof DeviceAuthError &&
         ["invalid_grant", "expired_token", "access_denied"].includes(error.code)
       ) {
         this.forgetTokens(instance.url);
-        this.tokenStore.delete(instance.url);
+        this.deleteToken(instance.url, issuer);
         const session = await this.restoreFromWebSession(instance, sessionFetch);
         if (session) return session;
         this.emit(instance.url, {
@@ -219,7 +266,7 @@ class DesktopAuth {
       return { mode: "error", message: friendly(error) };
     }
 
-    this.setTokens(instance.url, tokens, "session");
+    this.setTokens(instance.url, tokens, "session", issuer);
 
     try {
       await exchangeDesktopSession({
@@ -231,7 +278,7 @@ class DesktopAuth {
     } catch (error) {
       if (error?.status === 401) {
         this.forgetTokens(instance.url);
-        this.tokenStore.delete(instance.url);
+        this.deleteToken(instance.url, issuer);
         const session = await this.restoreFromWebSession(instance, sessionFetch);
         if (session) return session;
         this.emit(instance.url, {
@@ -268,19 +315,31 @@ class DesktopAuth {
    * the next load falls back to the login page.
    */
   async renew(instance, sessionFetch, cookies) {
-    const refreshToken = this.tokenStore.get(instance.url);
+    let issuer = "";
+    let refreshToken = "";
+    try {
+      issuer = await this.issuerFor(instance.url);
+      refreshToken = this.storedToken(instance.url, issuer);
+    } catch (error) {
+      this.logger.warn("Rinnovo sessione desktop non riuscito:", friendly(error));
+      return { mode: "error", message: friendly(error) };
+    }
     if (!refreshToken) return { mode: "none" };
 
     let tokens;
     try {
-      tokens = await this.deviceClient.refresh(instance.url, refreshToken);
+      tokens = await this.deviceClient.refresh(
+        instance.url,
+        refreshToken,
+        issuer,
+      );
     } catch (error) {
       if (
         error instanceof DeviceAuthError &&
         ["invalid_grant", "expired_token", "access_denied"].includes(error.code)
       ) {
         this.forgetTokens(instance.url);
-        this.tokenStore.delete(instance.url);
+        this.deleteToken(instance.url, issuer);
         const session = await this.restoreFromWebSession(instance, sessionFetch);
         if (session) return session;
         this.emit(instance.url, {
@@ -299,6 +358,7 @@ class DesktopAuth {
       instance.url,
       tokens,
       this.context(instance.url).method || "session",
+      issuer,
     );
 
     try {
@@ -311,7 +371,7 @@ class DesktopAuth {
     } catch (error) {
       if (error?.status === 401) {
         this.forgetTokens(instance.url);
-        this.tokenStore.delete(instance.url);
+        this.deleteToken(instance.url, issuer);
         const session = await this.restoreFromWebSession(instance, sessionFetch);
         if (session) return session;
         this.emit(instance.url, {
@@ -402,7 +462,7 @@ class DesktopAuth {
       const tokens = await this.deviceClient.poll(authorization, {
         signal: controller.signal,
       });
-      this.setTokens(instance.url, tokens, "device");
+      this.setTokens(instance.url, tokens, "device", authorization.issuer);
       context.flow = null;
 
       let exchangeMessage = "";
@@ -428,7 +488,7 @@ class DesktopAuth {
           : "",
         userCode: null,
         expiresIn: null,
-        saved: this.tokenStore.get(instance.url) === tokens.refreshToken,
+        saved: this.context(instance.url).saved,
         account,
       });
       return this.snapshot(instance.url);
@@ -465,7 +525,15 @@ class DesktopAuth {
 
   async logout(instanceUrl) {
     this.cancel(instanceUrl);
-    this.tokenStore.delete(instanceUrl);
+    let issuer = this.context(instanceUrl).issuer;
+    if (!issuer) {
+      try {
+        issuer = await this.issuerFor(instanceUrl);
+      } catch {
+        issuer = "";
+      }
+    }
+    this.deleteToken(instanceUrl, issuer);
     const context = this.context(instanceUrl);
     const keepWebSession = context.webSession;
     context.accessToken = null;
@@ -490,13 +558,23 @@ class DesktopAuth {
     const context = this.context(instanceUrl);
     if (this.hasAccessToken(instanceUrl)) return context.accessToken;
 
-    const refreshToken = this.tokenStore.get(instanceUrl);
+    let issuer = "";
+    try {
+      issuer = await this.issuerFor(instanceUrl);
+    } catch (error) {
+      throw new Error(friendly(error));
+    }
+    const refreshToken = this.storedToken(instanceUrl, issuer);
     if (!refreshToken)
       throw new Error("Accedi per usare i tunnel dal desktop.");
 
     try {
-      const tokens = await this.deviceClient.refresh(instanceUrl, refreshToken);
-      this.setTokens(instanceUrl, tokens, context.method || "device");
+      const tokens = await this.deviceClient.refresh(
+        instanceUrl,
+        refreshToken,
+        issuer,
+      );
+      this.setTokens(instanceUrl, tokens, context.method || "device", issuer);
       if (context.status !== "ready") {
         context.status = "ready";
         context.message = "";
@@ -509,7 +587,7 @@ class DesktopAuth {
         ["invalid_grant", "expired_token"].includes(error.code)
       ) {
         this.forgetTokens(instanceUrl);
-        this.tokenStore.delete(instanceUrl);
+        this.deleteToken(instanceUrl, issuer);
         this.emit(instanceUrl, {
           status: "none",
           method: null,
