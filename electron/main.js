@@ -53,6 +53,7 @@ const {
   uploadFile,
 } = require("./ssh-client");
 const { TunnelProjection } = require("./tunnel-projection");
+const { startStandalone } = require("./standalone");
 const updates = require("./updates");
 const {
   DownloadTracker,
@@ -121,6 +122,7 @@ let deviceIdentity = null;
 let credentialVault = null;
 let desktopAuth = null;
 let tunnels = null;
+let standaloneServer = null;
 let tunnelProjection = null;
 let quitting = false;
 let shuttingDown = false;
@@ -3976,6 +3978,51 @@ if (!hasLock) {
       },
     );
 
+    if (!IS_TEST) {
+      try {
+        standaloneServer = await startStandalone({
+          app,
+          safeStorage,
+          root: __dirname,
+        });
+        if (standaloneServer) {
+          for (const instance of instanceStore.list()) {
+            if (
+              instance.environment === "Locale" &&
+              instance.url.startsWith("http://127.0.0.1:")
+            )
+              instanceStore.remove(instance.url);
+          }
+          instanceStore.add({
+            name: "InfraOrgIT locale",
+            url: standaloneServer.url,
+            environment: "Locale",
+            openAtStartup: true,
+          });
+          const localSession = session.fromPartition(
+            partitionFor(standaloneServer.url),
+          );
+          const response = await localSession.fetch(
+            `${standaloneServer.url}/auth/local/session`,
+            {
+              method: "POST",
+              headers: {
+                "X-InfraOrgIT-Local": standaloneServer.secret,
+              },
+            },
+          );
+          if (response.status !== 204)
+            throw new Error(
+              `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
+            );
+        }
+      } catch (error) {
+        dialog.showErrorBox(
+          "Istanza locale non avviata",
+          error?.message || String(error),
+        );
+      }
+    }
     seedTestInstances();
     await startTestTunnels();
     createMainWindow();
@@ -4013,6 +4060,7 @@ if (!hasLock) {
   });
 
   app.on("before-quit", (event) => {
+    standaloneServer?.stop();
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;
