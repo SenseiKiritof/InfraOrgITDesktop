@@ -1444,6 +1444,7 @@ body[data-drawer="open"] .drawer {
 .palette-item[aria-selected="true"] {
   background: var(--panel-3);
   color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .palette-item-icon {
