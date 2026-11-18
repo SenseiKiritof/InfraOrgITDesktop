@@ -194,6 +194,12 @@ The `publish` workflow packages four targets:
 
 A `<archive>.sha256` checksum is published next to every archive.
 
+Quit InfraOrgIT before replacing an existing app bundle. Replacing the bundle
+while a process or helper is still starting can leave dyld unable to load
+`Electron Framework` and crash the old instance. The in-app updater waits for
+the main process, gives the helpers a moment to exit, extracts to
+`InfraOrgIT.app.new` and only then swaps it into place.
+
 > The packages are unsigned. macOS Gatekeeper blocks a downloaded app until it
 > is allowed in **System Settings → Privacy & Security** (or the quarantine
 > attribute is removed with `xattr -dr com.apple.quarantine InfraOrgIT.app`),
@@ -210,9 +216,11 @@ newer, the top bar shows **Aggiorna <version>** and the card offers
 
 Install runs only in a packaged app. It downloads the archive for the current
 platform, verifies the published `<archive>.sha256`, then starts a detached
-helper that waits for the app to exit, replaces the bundle and relaunches it
-(`ditto` on macOS, PowerShell on Windows, `tar` on Linux). The helper is
-platform-specific and tested on macOS against a temporary bundle.
+helper that waits for the app to exit, extracts to `InfraOrgIT.app.new`, swaps
+it into place and relaunches it (`ditto` on macOS, PowerShell on Windows, `tar`
+on Linux). The helper also sleeps one second after the main PID disappears so
+renderer and GPU helpers can release the old bundle. The platform-specific
+helper is tested on macOS against a temporary bundle.
 
 The packages are still unsigned, so TLS and the GitHub-published checksum are
 the integrity controls; code signing remains a follow-up. Unauthenticated

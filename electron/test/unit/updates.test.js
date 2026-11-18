@@ -142,8 +142,16 @@ test("installPlan waits for the app and replaces the bundle", () => {
   });
   assert.equal(mac.command, "/bin/sh");
   assert.match(mac.script, /kill -0 123/);
+  assert.match(mac.script, /sleep 1/);
   assert.match(mac.script, /ditto -x -k/);
+  assert.match(mac.script, /InfraOrgIT\.app\.new/);
+  assert.match(mac.script, /InfraOrgIT\.app\.old/);
   assert.match(mac.script, /open/);
+  assert.ok(
+    mac.script.indexOf("ditto -x -k") <
+      mac.script.indexOf('mv \'/Users/test/Applications/InfraOrgIT.app\''),
+    "extraction must finish before the live bundle is moved",
+  );
 
   const linux = installPlan({
     platform: "linux",
@@ -153,6 +161,7 @@ test("installPlan waits for the app and replaces the bundle", () => {
     relaunch: false,
   });
   assert.match(linux.script, /tar -xzf/);
+  assert.match(linux.script, /InfraOrgIT\.new/);
   assert.doesNotMatch(linux.script, /nohup/);
 
   const win = installPlan({
@@ -163,6 +172,7 @@ test("installPlan waits for the app and replaces the bundle", () => {
   });
   assert.equal(win.command, "powershell.exe");
   assert.match(win.script, /Expand-Archive/);
+  assert.match(win.script, /Move-Item/);
 });
 
 test(
