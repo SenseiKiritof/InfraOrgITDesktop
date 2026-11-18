@@ -915,10 +915,37 @@ async function postTunnelProjection(row, kind, payload) {
   }
 }
 
+function localCredentialFor(instance, server) {
+  const credentialId = Number(server?.credentialId);
+  if (!Number.isInteger(credentialId) || credentialId <= 0 || !credentialVault)
+    return null;
+  const entry = credentialVault.get(instance.url, credentialId);
+  if (!entry) return null;
+  const currentUser =
+    authSnapshot(instance.url).user?.username ||
+    offlineCache?.get(instance.url)?.username ||
+    "";
+  if (entry.downloadedBy && currentUser && entry.downloadedBy !== currentUser)
+    return null;
+  try {
+    const secret = deviceIdentity.decrypt(entry.payload);
+    return {
+      credentialId,
+      authType: secret.authType,
+      secret: secret.secret,
+      passphrase: secret.passphrase,
+    };
+  } catch (error) {
+    console.warn("credential decrypt failed", instance.url, error.message);
+    return null;
+  }
+}
+
 async function loadRemoteTarget(instance, serverId, scope = null) {
   const key = `${instance.url}\u001f${serverId}\u001f${scope || "admin"}`;
   const cached = remoteTargets.get(key);
-  if (cached && Date.now() - cached.at < 30_000) return cached.target;
+  if (cached && Date.now() - cached.at < 30_000)
+    return withLocalCredential(instance, cached.target);
   const record = recordFor(instance.url);
   const ses = record?.session || sessionFor(instance).session;
   const target = await desktopAuth.fetchRemoteTarget(
@@ -931,7 +958,12 @@ async function loadRemoteTarget(instance, serverId, scope = null) {
   if (!target?.host)
     throw new Error("Server non disponibile per la console desktop.");
   remoteTargets.set(key, { target, at: Date.now() });
-  return target;
+  return withLocalCredential(instance, target);
+}
+
+function withLocalCredential(instance, target) {
+  const credential = localCredentialFor(instance, target);
+  return credential ? { ...target, credential } : target;
 }
 
 async function resolveRemoteTransport(instance, serverId, scope = null) {
@@ -1611,12 +1643,12 @@ async function relayHeadersFor(instanceUrl) {
   return headers;
 }
 
-async function resolveTunnelTransport(instance, selection) {
+async function resolveTunnelTransport(instance, selection, credential = null) {
   const data = runtimeFor(instance.url);
   if (data.offline) {
-    if (!selection.server.clientAuth)
+    if (!selection.server.clientAuth && !credential)
       throw new Error(
-        "Credenziali password: il tunnel offline richiede una chiave SSH nell'agente locale.",
+        "Credenziali password: il tunnel offline richiede una chiave SSH nell'agente locale o una credenziale scaricata.",
       );
     if (!(await isReachable(selection.server)))
       throw new Error(
@@ -1635,7 +1667,7 @@ async function resolveTunnelTransport(instance, selection) {
     policy,
     relayable,
     reachable,
-    selection.server.clientAuth,
+    selection.server.clientAuth || Boolean(credential),
   );
 }
 
@@ -2158,7 +2190,8 @@ async function startTunnelForInstance(instance, input) {
     input.serviceId ? Number(input.serviceId) : null,
   );
   const id = input.id || `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
-  const transport = await resolveTunnelTransport(instance, selection);
+  const credential = localCredentialFor(instance, selection.server);
+  const transport = await resolveTunnelTransport(instance, selection, credential);
   return tunnels.start({
     id,
     url: instance.url,
@@ -2168,6 +2201,7 @@ async function startTunnelForInstance(instance, input) {
     service: selection.service,
     localPort: input.localPort,
     transport,
+    credential,
   });
 }
 

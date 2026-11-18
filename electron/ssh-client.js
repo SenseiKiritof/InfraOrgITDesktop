@@ -27,7 +27,7 @@ function verifyHostKey(expected, key) {
   return fingerprintOf(key) === normalizeFingerprint(expected);
 }
 
-function connectHop(hop, sock, ClientClass) {
+function connectHop(hop, sock, ClientClass, credential = null) {
   return new Promise((resolve, reject) => {
     const client = new ClientClass();
     let settled = false;
@@ -56,7 +56,14 @@ function connectHop(hop, sock, ClientClass) {
         host: hop.host,
         port: hop.port || 22,
         username: hop.username,
-        agent: agentPath(),
+        ...(credential
+          ? credential.authType === "PrivateKey"
+            ? {
+                privateKey: credential.secret,
+                passphrase: credential.passphrase || undefined,
+              }
+            : { password: credential.secret }
+          : { agent: agentPath() }),
         sock: sock || undefined,
         readyTimeout: 15_000,
         keepaliveInterval: 15_000,
@@ -92,7 +99,12 @@ async function connectTarget(target, ClientClass = Client) {
     const hops = [...(target.jumps || []), target];
     for (let index = 0; index < hops.length; index += 1) {
       const hop = hops[index];
-      const connected = await connectHop(hop, sock, ClientClass);
+      const connected = await connectHop(
+        hop,
+        sock,
+        ClientClass,
+        index === hops.length - 1 ? target.credential || null : null,
+      );
       clients.push(connected.client);
       if (index === hops.length - 1) fingerprint = connected.fingerprint;
       if (index < hops.length - 1) {
@@ -349,6 +361,7 @@ function deleteFile(sftp, path, isDirectory) {
 module.exports = {
   agentPath,
   connectTarget,
+  forwardOut,
   createDirectory,
   deleteFile,
   downloadFile,
