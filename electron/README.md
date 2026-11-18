@@ -54,11 +54,13 @@ The screenshots use fictitious demo instances, servers and tunnels.
     and deployment targets are relayed. Console, console audit, files and
     actions run on the API.
   - `Client`: the system `ssh`/SFTP and `ssh2` open tunnels, console, files and
-    actions with the local agent; `Local`, `Dynamic` and `Remote` tunnels are
-    available. No SSH connection starts from the server.
+    actions with the local agent or a downloaded credential; `Local` tunnels
+    work with both sources, while `Dynamic` and `Remote` require an agent key.
+    No SSH connection starts from the server.
   - `Auto`: the desktop tests the first SSH hop (direct target or jump host).
-    If it is reachable it uses the client for every operation; otherwise it
-    falls back to the server.
+    If it is reachable **and** a key-based agent or a downloaded credential is
+    available it uses the client for every operation; otherwise it falls back
+    to the server. A password credential without a downloaded copy relays.
 
   The policy is one row in the shared database, so a cluster with several API
   nodes uses the same mode everywhere. Relay connections are bound to the node
@@ -75,6 +77,14 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **Command palette.** `Cmd+K` on macOS and `Ctrl+K` on Windows/Linux, also in
   an instance tab. It opens instances, creates an instance, toggles the tunnel
   drawer, reloads the active tab and opens tunnel URLs.
+- **Credentials.** The manager enrolls an RSA device key, lists downloadable
+  server credentials, stores device-encrypted payloads in the `safeStorage`
+  vault only with `AllowOffline`, and uses them in memory for console,
+  SFTP/files, actions and `Local` Client tunnels.
+- **Offline work.** The encrypted inventory cache keeps tunnel targets, policy
+  and counts; the local check form runs TCP/TLS/HTTP checks and uses a
+  searchable server autocomplete. Check results and failed tunnel events are
+  queued in the encrypted outbox and synchronized when the instance returns.
 - **Downloads.** Server attachments use Chromium's native download into the
   user's Downloads folder with a unique file name; progress and completion are
   tracked per instance and shown in the management window. Generated API
@@ -170,17 +180,25 @@ encrypted token archive).
 
 ## Credentials
 
-Each desktop installation generates an RSA key pair on first use. The private
-key is encrypted with `safeStorage`; the public key is enrolled per instance as
-a `DesktopDevice`. Credentials are marked `shared` (installation-wide) or owned
-by a user; shared ones are downloadable by operators of the environment where
-the credential is assigned, personal ones only by their owner. A download is
-encrypted for the enrolled device (AES-256-GCM payload, RSA-OAEP wrapped key),
-shown in the manager's credential dialog and never sent to a renderer. With
-`AllowOffline` the device-encrypted payload is kept in the safeStorage vault;
-otherwise it stays in memory. Credential version changes invalidate the cached
-copy, and a revoked device clears the vault on the next enrollment attempt.
-These credentials are not yet wired into local tunnels or sessions.
+Each desktop installation generates an RSA-3072 key pair on first use. The
+private key is encrypted with `safeStorage`; the public key is enrolled per
+instance as a `DesktopDevice`. Credentials are marked `shared`
+(installation-wide) or owned by a user; shared ones are downloadable by
+operators of the environment where the credential is assigned, personal ones
+only by their owner. A download is encrypted for the enrolled device (AES-256-GCM
+payload, RSA-OAEP wrapped key), displayed in the manager's credential dialog and
+never sent to a renderer. With `AllowOffline` the device-encrypted payload is
+kept in the `safeStorage` vault; otherwise it stays in memory. Credential
+version changes invalidate the cached copy, and a revoked device clears the
+vault on the next enrollment attempt.
+
+`localCredentialFor` decrypts the payload in the main process and attaches it
+only to the in-memory target. Console (shell), SFTP/files and actions use it
+through `ssh2`; `Local` Client tunnels create a loopback listener and forward
+each connection with `forwardOut`. `Dynamic` and `Remote` tunnels reject a
+downloaded credential with an explicit error because they need an agent key.
+The credential is not stored in tunnel rows, command lines or logs, and a
+restart resolves it from the vault again.
 
 ## Offline mode
 
@@ -191,16 +209,20 @@ last known inventory:
   targets, the connection policy and server counts. There is no TTL: the data
   stays until an explicit logout, the instance is removed, or the user clears
   the app data.
-- Tunnels are limited to the **Client** transport with key-based SSH
-  (`clientAuth`): the local `ssh`/`ssh -J` uses the agent. Password credentials
-  need the server relay and are rejected offline with an explicit message.
+- Tunnels are limited to the **Client** transport. The local `ssh`/`ssh2` path
+  uses the agent for key-based credentials or a downloaded credential (including
+  password credentials) for `Local` targets. `Dynamic`/`Remote` and tunnels
+  without either source still require the server relay.
 - "Verifica locale" runs TCP, TLS and HTTP checks from this Mac, or a TCP check
-  from the first SSH jump host (`ssh -W`). Results and failed offline tunnel
+  from the first SSH jump host (`ssh -W`). The server field is a searchable
+  autocomplete over the cached servers. Results and failed offline tunnel
   start/stop/error events go to an encrypted, hash-chained outbox; every five
   minutes (or immediately after an online check) they are posted to
   `/api/client-events` with idempotency and appear in `/audit` as
   `ClientCheck`/tunnel rows with `source=Desktop`. Unsynced events are dropped
   on logout or instance removal, together with the offline cache.
+- Offline credential copies exist only when `AllowOffline` is enabled; they are
+  dropped on logout, device revocation or a credential version change.
 - Server relay, the embedded Web workspace and central tunnel projection are
   unavailable by definition; the drawer marks the instance `Offline` and shows
   when the cached data was captured.
@@ -224,8 +246,10 @@ instances and a fake SSH process; it never opens a real tunnel. Set
 
 The unit suite covers the device client (discovery, PKCE, polling,
 `slow_down`, refresh, error mapping), the BFF session exchange (request body,
-cookie landing, 401/404/502 fallback, no token in errors), the safeStorage
-store, instance/settings persistence and duplicate local-port protection.
+cookie landing, 401/404/502 fallback, no token in errors), device identity and
+credential vault encryption, offline cache and outbox integrity, local checks,
+ssh2 credential authentication, the safeStorage store, instance/settings
+persistence and duplicate local-port protection.
 
 `test/unit` runs with `node --test` and needs no display; the shell test starts
 Electron and is what `ci.yml` leaves out. CI runs the unit suite and an unsigned
@@ -272,12 +296,18 @@ verifies the published `.sha256` before installing.
 ```
 main.js                   app lifecycle, main window, WebContentsView tabs, IPC
 auth/device-client.js     OAuth device flow + PKCE, injected fetch/delay
+auth/device-identity.js   RSA device key, safeStorage private key, payload decrypt
 auth/session-client.js    /auth/desktop-session and /api/session contract
 auth/refresh-store.js     safeStorage encrypted refresh-token file
 auth/desktop-auth.js      BFF/device restore, tunnel access tokens
 shell/instances.js        validation, atomic instances.json, old-list migration
 shell/settings.js         atomic settings.json (theme fallback)
-tunnels.js                SSH argument builder, client SSH or server relay, port guard
+shell/credential-vault.js device-encrypted credential payloads, AllowOffline
+shell/offline-cache.js    encrypted inventory/policy/counts snapshot
+shell/outbox.js           encrypted hash-chained client-event queue
+local-checks.js           local TCP/TLS/HTTP checks, optional first jump host
+ssh-client.js             ssh2 agent/credential connections, shell, SFTP, exec
+tunnels.js                SSH argument builder, ssh2 local forward, relay, port guard
 tunnel-projection.js      /api/tunnels start/stop/heartbeat projection
 manager.html/js/css       control-room landing, tabs, drawer, palette, modal
 preload.js                narrow SPA bridge, origin-gated
@@ -301,7 +331,9 @@ test/                     Electron shell test, fake SSH, unit tests
   this mode is a deliberate privilege boundary: only `Local` targets with a
   fixed host and port are reachable.
 - Direct console/files/actions use `ssh2` with `SSH_AUTH_SOCK` (or the Windows
-  OpenSSH named pipe), never a private key. The API returns the stored host-key
+  OpenSSH named pipe) and fall back to a downloaded credential for the target
+  hop. The credential stays in the main process, is used in memory and is never
+  written to a command line or log. The API returns the stored host-key
   fingerprint; the first direct connection stores it through
   `/api/remote/host-key`, and later connections reject a mismatch. The API
   still authorizes the target (`ServerAdmin` for console/files,
