@@ -3581,15 +3581,25 @@ async function runTest() {
       await new Promise((resolve) => setTimeout(resolve, 120));
       const open = !document.querySelector("#modal").hidden;
       const grid = Boolean(document.querySelector("#modal-body .check-grid"));
-      document.querySelector("#modal-close").click();
-      const probe = await window.desktopManager.runCheck(
-        "https://staging.example.com",
-        {kind: "tcp", host: "127.0.0.1", port: 9, timeoutMs: 500},
-      );
-      return {open, grid, ok: probe.ok, kind: probe.kind};
+      return {open, grid};
     })()`);
     check(localCheck.open && localCheck.grid, "local check modal opens", JSON.stringify(localCheck));
-    check(localCheck.kind === "tcp" && localCheck.ok === false, "local check IPC runs", JSON.stringify(localCheck));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await captureScreenshot(mainWindow.webContents, "local-check.png");
+    await mainWindow.webContents.executeJavaScript(
+      "document.querySelector('#modal-close').click()",
+    );
+    const localProbe = await mainWindow.webContents.executeJavaScript(
+      `window.desktopManager.runCheck(
+        "https://staging.example.com",
+        {kind: "tcp", host: "127.0.0.1", port: 9, timeoutMs: 500},
+      )`,
+    );
+    check(
+      localProbe.kind === "tcp" && localProbe.ok === false,
+      "local check IPC runs",
+      JSON.stringify(localProbe),
+    );
 
     const credentialsModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       const key = [...document.querySelectorAll(".mini-button")].find((node) =>
