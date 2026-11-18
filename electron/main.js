@@ -39,9 +39,11 @@ const {
   transportFor,
 } = require("./tunnels");
 const {
+  connectTarget,
   createDirectory,
   deleteFile,
   downloadFile,
+  forwardOut,
   listDirectory,
   openShell,
   openSftp,
@@ -986,7 +988,7 @@ async function resolveRemoteTransport(instance, serverId, scope = null) {
       transport =
         policy === "Client"
           ? "client"
-          : target.clientAuth === false
+          : target.clientAuth === false && !target.credential
             ? "server"
             : (await isReachable(target))
               ? "client"
@@ -2372,6 +2374,7 @@ function registerIpc() {
     const instance = instanceStore.get(url);
     const row = tunnels.get(String(id));
     let transport = row?.transport?.toLowerCase() || "client";
+    let credential = null;
     if (instance && row) {
       const targetList = await loadTargets(instance);
       if (targetList) {
@@ -2381,13 +2384,15 @@ function registerIpc() {
           row.targetId,
           row.serviceId,
         );
-        transport = await resolveTunnelTransport(instance, selection);
+        credential = localCredentialFor(instance, selection.server);
+        transport = await resolveTunnelTransport(instance, selection, credential);
       }
     }
     await tunnels.restart(
       String(id),
       url ? String(url) : null,
       transport,
+      credential,
     );
     return publicState();
   });
@@ -2808,7 +2813,12 @@ async function handleDesktopMessage(sender, raw) {
           message.targetId ? Number(message.targetId) : null,
           message.serviceId ? Number(message.serviceId) : null,
         );
-        const transport = await resolveTunnelTransport(instance, selection);
+        const credential = localCredentialFor(instance, selection.server);
+        const transport = await resolveTunnelTransport(
+          instance,
+          selection,
+          credential,
+        );
         await tunnels.start({
           id: `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
           url: instance.url,
@@ -2818,6 +2828,7 @@ async function handleDesktopMessage(sender, raw) {
           service: selection.service,
           localPort: message.localPort,
           transport,
+          credential,
         });
       } catch (error) {
         sendToView(instance.url, {
@@ -3846,6 +3857,8 @@ if (!hasLock) {
         if (!IS_TEST) tunnelProjection?.sync(tunnels.list());
       },
       {
+        connectTarget,
+        forwardOut,
         relayTarget: async (row) => {
           const target = new URL(row.url);
           return {

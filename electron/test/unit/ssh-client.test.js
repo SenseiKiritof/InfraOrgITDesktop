@@ -65,6 +65,57 @@ test("jump chain is connected nearest-first through forwardOut", async () => {
   connection.dispose();
 });
 
+test("downloaded credentials authenticate only the target hop", async () => {
+  const clients = [];
+  class FakeClient {
+    constructor() {
+      this.handlers = {};
+      clients.push(this);
+    }
+    once(name, handler) {
+      this.handlers[name] = handler;
+      return this;
+    }
+    connect(options) {
+      this.options = options;
+      queueMicrotask(() => this.handlers.ready?.());
+    }
+    forwardOut(_source, _sourcePort, _host, _port, callback) {
+      callback(null, {});
+    }
+    end() {}
+  }
+
+  const target = {
+    host: "10.0.0.10",
+    port: 22,
+    username: "deploy",
+    hostKeyFingerprint: null,
+    jumps: [{ host: "10.0.0.5", port: 22, username: "bastion" }],
+    credential: {
+      authType: "PrivateKey",
+      secret: "PRIVATE-KEY",
+      passphrase: "passphrase",
+    },
+  };
+  const connection = await connectTarget(target, FakeClient);
+  assert.equal(clients[0].options.password, undefined);
+  assert.equal(clients[0].options.privateKey, undefined);
+  assert.equal(clients[1].options.privateKey, "PRIVATE-KEY");
+  assert.equal(clients[1].options.passphrase, "passphrase");
+  assert.equal(clients[1].options.agent, undefined);
+  connection.dispose();
+
+  clients.length = 0;
+  const passwordTarget = {
+    ...target,
+    credential: { authType: "Password", secret: "s3cret" },
+  };
+  const passwordConnection = await connectTarget(passwordTarget, FakeClient);
+  assert.equal(clients[1].options.password, "s3cret");
+  passwordConnection.dispose();
+});
+
 test("sftp listing normalizes paths, directories and timestamps", async () => {
   assert.equal(remoteJoin("/", "etc"), "/etc");
   assert.equal(remoteJoin("/var/", "log"), "/var/log");

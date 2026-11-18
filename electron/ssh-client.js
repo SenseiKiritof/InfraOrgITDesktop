@@ -88,8 +88,9 @@ function forwardOut(client, host, port) {
 }
 
 /**
- * Connects to the target through the nearest-first jump chain. Every hop uses
- * the user's SSH agent; no private key is read or stored.
+ * Connects to the target through the nearest-first jump chain. Jumps use the
+ * user's SSH agent; the target hop uses the downloaded credential when one is
+ * attached, otherwise the agent too.
  */
 async function connectTarget(target, ClientClass = Client) {
   const clients = [];

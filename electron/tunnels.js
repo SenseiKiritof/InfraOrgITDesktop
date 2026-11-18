@@ -41,6 +41,14 @@ function relayFailure(error) {
     : message;
 }
 
+function serverJumps(server) {
+  return Array.isArray(server.jumps) && server.jumps.length
+    ? server.jumps
+    : server.jump
+      ? [server.jump]
+      : [];
+}
+
 function sshTarget(server) {
   const host = server.sshHost || server.ipAddress || server.hostname;
   if (!host) throw new Error("Server senza host SSH.");
@@ -49,16 +57,19 @@ function sshTarget(server) {
 }
 
 function jumpArgument(server) {
-  const jumps = Array.isArray(server.jumps) && server.jumps.length
-    ? server.jumps
-    : server.jump
-      ? [server.jump]
-      : [];
+  const jumps = serverJumps(server);
   if (jumps.length === 0) return [];
   return [
     "-J",
     jumps.map((jump) => `${jump.username}@${jump.host}:${jump.port}`).join(","),
   ];
+}
+
+function forwardTarget(service, target) {
+  const host = service?.targetHost || target?.targetHost || "127.0.0.1";
+  const port = service?.targetPort || target?.targetPort;
+  if (!port) throw new Error("Target senza porta.");
+  return { host, port };
 }
 
 function buildSshArgs(server, target, service, localPort) {
@@ -83,11 +94,9 @@ function buildSshArgs(server, target, service, localPort) {
     if (!remotePort) throw new Error("Servizio remoto senza porta remota.");
     args.push("-R", `${remotePort}:${service.targetHost}:${service.targetPort}`);
   } else {
-    const targetHost = service?.targetHost || target?.targetHost || "127.0.0.1";
-    const targetPort = service?.targetPort || target?.targetPort;
-    if (!targetPort) throw new Error("Target senza porta.");
+    const { host, port } = forwardTarget(service, target);
     if (!localPort) throw new Error("Porta locale richiesta.");
-    args.push("-L", `127.0.0.1:${localPort}:${targetHost}:${targetPort}`);
+    args.push("-L", `127.0.0.1:${localPort}:${host}:${port}`);
   }
 
   args.push(sshTarget(server));
@@ -122,8 +131,9 @@ function chooseTransport(policy, relayable, reachable) {
 }
 
 /**
- * Auto can only use the desktop SSH agent. When the credential is not a key
- * (password or missing), the relay is the only viable path for Local targets.
+ * Auto can only use the desktop SSH agent or a downloaded credential. When the
+ * credential is not a key (password or missing), the relay is the only viable
+ * path for Local targets.
  */
 function transportFor(policy, relayable, reachable, clientAuth) {
   if (policy === "Auto" && clientAuth === false)
@@ -189,6 +199,8 @@ class TunnelManager {
       spawnProcess = spawn,
       relayTarget = null,
       WebSocketClient = WebSocket,
+      connectTarget = null,
+      forwardOut = null,
       logger = console,
     } = {},
   ) {
@@ -198,6 +210,8 @@ class TunnelManager {
     this.spawnProcess = spawnProcess;
     this.relayTarget = relayTarget;
     this.WebSocketClient = WebSocketClient;
+    this.connectTarget = connectTarget;
+    this.forwardOut = forwardOut;
     this.logger = logger;
   }
 
@@ -243,6 +257,7 @@ class TunnelManager {
     localPort,
     mode,
     transport = "client",
+    credential = null,
   }) {
     if (!id) throw new Error("Identificativo tunnel mancante.");
     if (!url) throw new Error("Istanza del tunnel mancante.");
@@ -275,6 +290,11 @@ class TunnelManager {
       throw new Error(
         "Il relay server richiede un servizio Local o un deployment con porta target.",
       );
+    if (credential && tunnelMode !== "Local")
+      throw new Error(
+        "Le credenziali scaricate supportano solo i tunnel Local. " +
+          "Dynamic e Remote richiedono una chiave SSH nell'agente locale.",
+      );
 
     const row = {
       id,
@@ -296,6 +316,9 @@ class TunnelManager {
       relayServer: null,
       relaySockets: new Set(),
       relayWs: new Set(),
+      forwardServer: null,
+      forwardSockets: new Set(),
+      sshConnection: null,
       status: "Active",
       startedAt: new Date().toISOString(),
       stoppedAt: null,
@@ -304,6 +327,8 @@ class TunnelManager {
 
     if (resolvedTransport === "Server") {
       await this.startRelay(row, requested);
+    } else if (credential) {
+      await this.startForward(row, credential, target, service, requested);
     } else {
       this.startSsh(row, target, service, requested);
     }
@@ -344,6 +369,107 @@ class TunnelManager {
       }
       this.onState(this.list());
     });
+  }
+
+  /**
+   * Local forwarding over ssh2 for a downloaded credential. The plaintext
+   * secret lives only in this call and in the live SSH client; the row keeps
+   * metadata only, so a restart must resolve the credential again.
+   */
+  async startForward(row, credential, target, service, localPort) {
+    if (
+      typeof this.connectTarget !== "function" ||
+      typeof this.forwardOut !== "function"
+    )
+      throw new Error("Forward SSH locale non configurato in questa build.");
+    const forwarded = forwardTarget(service, target);
+    if (!localPort) throw new Error("Porta locale richiesta.");
+
+    const connection = await this.connectTarget({
+      host: serverHost(row.server),
+      port: row.server.sshPort || 22,
+      username: row.server.username,
+      hostKeyFingerprint: row.server.hostKeyFingerprint || null,
+      jumps: serverJumps(row.server),
+      credential,
+    });
+    row.sshConnection = connection;
+    row.forwardTarget = forwarded;
+
+    const forwardServer = net.createServer((socket) => {
+      void this.openForwardConnection(row, socket);
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        const onError = (error) => {
+          forwardServer.close();
+          reject(
+            new Error(
+              `Porta locale ${localPort} non disponibile: ${error.message}`,
+            ),
+          );
+        };
+        forwardServer.once("error", onError);
+        forwardServer.listen(
+          { host: "127.0.0.1", port: localPort, exclusive: true },
+          () => {
+            forwardServer.off("error", onError);
+            resolve();
+          },
+        );
+      });
+    } catch (error) {
+      connection.dispose();
+      row.sshConnection = null;
+      throw error;
+    }
+    forwardServer.on("error", (error) => {
+      row.error = `forward: ${error.message}`;
+      this.onState(this.list());
+    });
+    row.forwardServer = forwardServer;
+  }
+
+  async openForwardConnection(row, socket) {
+    const connection = row.sshConnection;
+    if (!connection || !row.forwardServer) {
+      socket.destroy();
+      return;
+    }
+    if (row.forwardSockets.size >= MAX_RELAY_CONNECTIONS) {
+      socket.destroy();
+      return;
+    }
+
+    row.forwardSockets.add(socket);
+    socket.pause();
+    let stream;
+    try {
+      stream = await this.forwardOut(
+        connection.client,
+        row.forwardTarget.host,
+        row.forwardTarget.port,
+      );
+    } catch (error) {
+      row.error = `forward: ${error.message}`;
+      row.forwardSockets.delete(socket);
+      socket.destroy();
+      this.onState(this.list());
+      return;
+    }
+
+    socket.on("error", () => stream.destroy());
+    socket.on("close", () => {
+      row.forwardSockets.delete(socket);
+      stream.destroy();
+    });
+    stream.on("error", (error) => {
+      row.error = `forward: ${error.message}`;
+      socket.destroy();
+    });
+    stream.on("close", () => socket.destroy());
+    socket.pipe(stream).pipe(socket);
+    socket.resume();
   }
 
   async startRelay(row, localPort) {
@@ -452,13 +578,20 @@ class TunnelManager {
     row.relayWs?.clear();
     row.relayServer?.close();
     row.relayServer = null;
+    for (const socket of row.forwardSockets || []) socket.destroy();
+    row.forwardSockets?.clear();
+    row.forwardServer?.close();
+    row.forwardServer = null;
+    row.sshConnection?.dispose();
+    row.sshConnection = null;
+    row.forwardTarget = null;
     row.status = "Stopped";
     row.stoppedAt = new Date().toISOString();
     this.onState(this.list());
     return true;
   }
 
-  async restart(id, instanceUrl = null, transport = null) {
+  async restart(id, instanceUrl = null, transport = null, credential = null) {
     const row = this.rows.get(id);
     if (!row || (instanceUrl && row.url !== instanceUrl))
       throw new Error("Tunnel non trovato per questa istanza.");
@@ -473,6 +606,7 @@ class TunnelManager {
       localPort: row.localPort,
       mode: row.mode,
       transport: transport || row.transport,
+      credential,
     });
   }
 
