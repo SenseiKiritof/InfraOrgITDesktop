@@ -122,5 +122,10 @@ test("settings store validates the theme and falls back to system", () => {
   assert.equal(new SettingsStore(file).theme, "light");
   assert.equal(store.setTheme("neon"), "system");
   assert.equal(new SettingsStore(file).theme, "system");
+  assert.equal(store.downloadDirectory, "");
+  assert.equal(store.setDownloadDirectory("/tmp/infraorgit-downloads"), "/tmp/infraorgit-downloads");
+  assert.equal(new SettingsStore(file).downloadDirectory, "/tmp/infraorgit-downloads");
+  assert.equal(store.setDownloadDirectory(""), "");
+  assert.equal(new SettingsStore(file).downloadDirectory, "");
   fs.rmSync(directory, { recursive: true, force: true });
 });

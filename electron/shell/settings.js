@@ -16,11 +16,13 @@ class SettingsStore {
 
   load() {
     if (this.data) return { ...this.data };
-    this.data = { theme: "system" };
+    this.data = { theme: "system", downloadDirectory: "" };
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
       if (raw && typeof raw === "object") {
         this.data.theme = normalizeTheme(raw.theme);
+        if (typeof raw.downloadDirectory === "string")
+          this.data.downloadDirectory = raw.downloadDirectory.trim();
       }
     } catch (error) {
       if (error.code !== "ENOENT")
@@ -38,6 +40,17 @@ class SettingsStore {
     this.data.theme = normalizeTheme(theme);
     this.persist();
     return this.data.theme;
+  }
+
+  get downloadDirectory() {
+    return this.load().downloadDirectory;
+  }
+
+  setDownloadDirectory(directory) {
+    this.load();
+    this.data.downloadDirectory = String(directory || "").trim();
+    this.persist();
+    return this.data.downloadDirectory;
   }
 
   persist() {

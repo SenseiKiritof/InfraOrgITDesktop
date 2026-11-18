@@ -1,4 +1,7 @@
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { Client } = require("ssh2");
 
 function agentPath() {
@@ -321,19 +324,34 @@ async function listDirectory(sftp, path) {
   };
 }
 
-function downloadFile(sftp, remotePath, localPath) {
+function downloadFile(sftp, remotePath, localPath, { onProgress } = {}) {
   return new Promise((resolve, reject) => {
-    sftp.fastGet(remotePath, localPath, {}, (error) =>
+    const step = (transferred, _chunk, total) =>
+      onProgress?.(transferred, total);
+    sftp.fastGet(remotePath, localPath, { step }, (error) =>
       error ? reject(error) : resolve(localPath),
     );
   });
 }
 
-function uploadFile(sftp, remotePath, buffer) {
+function uploadFile(sftp, remotePath, buffer, { onProgress } = {}) {
+  const temporary = path.join(
+    os.tmpdir(),
+    `infraorgit-upload-${crypto.randomUUID()}`,
+  );
+  fs.writeFileSync(temporary, buffer, { mode: 0o600 });
   return new Promise((resolve, reject) => {
-    sftp.writeFile(remotePath, buffer, (error) =>
-      error ? reject(error) : resolve(remotePath),
-    );
+    const step = (transferred, _chunk, total) =>
+      onProgress?.(transferred, total);
+    sftp.fastPut(temporary, remotePath, { step }, (error) => {
+      try {
+        fs.rmSync(temporary, { force: true });
+      } catch {
+        // temp file already gone
+      }
+      if (error) reject(error);
+      else resolve(remotePath);
+    });
   });
 }
 

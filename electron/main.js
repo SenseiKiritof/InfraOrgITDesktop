@@ -216,7 +216,7 @@ function trackDownloads(instance, targetSession) {
     const fileName = sanitizeFileName(
       fileNameFromUrl(item.getURL()) || item.getFilename(),
     );
-    const savePath = uniqueFilePath(app.getPath("downloads"), fileName);
+    const savePath = uniqueFilePath(downloadDirectory(), fileName);
     item.setSavePath(savePath);
     const entry = downloadTracker.add({
       fileName,
@@ -269,7 +269,7 @@ async function saveBlobDownload(record, message) {
   const bytes = Buffer.from(base64.replace(/\s/g, ""), "base64");
   if (bytes.length === 0 || bytes.length > MAX_BLOB_BYTES) return;
   const result = await dialog.showSaveDialog(mainWindow, {
-    defaultPath: path.join(app.getPath("downloads"), fileName),
+    defaultPath: path.join(downloadDirectory(), fileName),
   });
   if (result.canceled || !result.filePath) return;
   await fs.promises.writeFile(result.filePath, bytes);
@@ -351,6 +351,34 @@ function themeState() {
         : "light"
       : preference;
   return { preference, resolved };
+}
+
+function downloadDirectory() {
+  const fallback = app.getPath("downloads");
+  const configured = settingsStore?.downloadDirectory || "";
+  if (!configured) return fallback;
+  try {
+    fs.mkdirSync(configured, { recursive: true });
+    return configured;
+  } catch {
+    console.warn("Cartella download non disponibile, uso Downloads.");
+    return fallback;
+  }
+}
+
+function setDownloadDirectory(value) {
+  const directory = String(value || "").trim();
+  if (!directory) {
+    settingsStore.setDownloadDirectory("");
+    sendState();
+    return downloadDirectory();
+  }
+  if (!path.isAbsolute(directory))
+    throw new Error("La cartella download deve essere un percorso assoluto.");
+  fs.mkdirSync(directory, { recursive: true });
+  settingsStore.setDownloadDirectory(directory);
+  sendState();
+  return directory;
 }
 
 function authSnapshot(url) {
@@ -542,6 +570,8 @@ function publicState() {
       }),
     activeUrl,
     theme: themeState(),
+    downloadDirectory: downloadDirectory(),
+    downloadDirectoryCustom: Boolean(settingsStore?.downloadDirectory),
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
@@ -1134,6 +1164,25 @@ function sendFileResult(instance, requestId, payload) {
   sendToView(instance.url, { type: "files.result", requestId, ...payload });
 }
 
+function sendFileProgress(
+  instance,
+  requestId,
+  operation,
+  transferredBytes,
+  totalBytes,
+) {
+  const transferred = Math.max(0, Number(transferredBytes) || 0);
+  const total = Math.max(0, Number(totalBytes) || 0);
+  sendToView(instance.url, {
+    type: "files.progress",
+    requestId,
+    operation,
+    transferredBytes: transferred,
+    totalBytes: total,
+    percent: total > 0 ? Math.min(100, Math.round((transferred / total) * 100)) : 0,
+  });
+}
+
 async function recordFileEvent(
   instance,
   serverId,
@@ -1232,7 +1281,16 @@ async function handleFileRequest(instance, message) {
             "File troppo grande per il trasferimento diretto dal desktop.",
           );
         remotePath = remoteJoin(message.directory, message.name);
-        await uploadFile(session.sftp, remotePath, buffer);
+        await uploadFile(session.sftp, remotePath, buffer, {
+          onProgress: (transferred, total) =>
+            sendFileProgress(
+              instance,
+              requestId,
+              "Upload",
+              transferred,
+              total || buffer.length,
+            ),
+        });
         data = { path: remotePath };
         break;
       }
@@ -1244,9 +1302,21 @@ async function handleFileRequest(instance, message) {
         );
         try {
           const local = path.join(temporary, "download");
-          await downloadFile(session.sftp, remotePath, local);
+          await downloadFile(session.sftp, remotePath, local, {
+            onProgress: (transferred, total) =>
+              sendFileProgress(
+                instance,
+                requestId,
+                "Download",
+                transferred,
+                total,
+              ),
+          });
           const options = {
-            defaultPath: path.posix.basename(remotePath),
+            defaultPath: path.join(
+              downloadDirectory(),
+              path.posix.basename(remotePath),
+            ),
           };
           const chosen = mainWindow
             ? await dialog.showSaveDialog(mainWindow, options)
@@ -2254,6 +2324,19 @@ function registerIpc() {
   });
 
   handle("manager:state", () => publicState());
+  handle("manager:choose-download-directory", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Cartella download",
+      properties: ["openDirectory", "createDirectory"],
+      defaultPath: downloadDirectory(),
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return setDownloadDirectory(result.filePaths[0]);
+  });
+  handle("manager:set-download-directory", (directory) =>
+    setDownloadDirectory(directory),
+  );
+  handle("manager:reset-download-directory", () => setDownloadDirectory(""));
   handle("updates:state", () => updateState);
   handle("updates:check", () => runUpdateCheck());
   handle("updates:install", () => installUpdateNow());
@@ -3734,6 +3817,7 @@ async function runTest() {
     check(settingsModal.visible === true, "settings modal opens");
     check(settingsModal.title === "Updates", "settings modal title", settingsModal.title);
     check(settingsModal.body.includes("Installed version"), "settings modal shows the version");
+    check(settingsModal.body.includes("Download folder"), "settings modal shows the download folder");
     check(settingsModal.body.includes("Italiano"), "settings modal shows the language picker");
     await mainWindow.webContents.executeJavaScript(
       'document.querySelector("#modal-close").click()',

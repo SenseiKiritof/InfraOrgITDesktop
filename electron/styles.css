@@ -1911,6 +1911,33 @@ body[data-drawer="open"] .drawer {
   text-align: center;
 }
 
+.settings-download {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-path {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font: 11.5px/1.4 ui-monospace, monospace;
+}
+
+.settings-download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .settings-language {
   display: flex;
   flex-direction: column;
