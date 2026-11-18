@@ -150,12 +150,20 @@ trusted by the OS and also put the root PEM at `<userData>/relay-ca.pem` or
 point `DESKTOP_RELAY_CA` at it. Verification stays enabled and the bundle adds
 the private root to Node's default roots.
 
+Sign-in defaults to the Keycloak device flow: the system browser opens the
+verification page, the app stores the offline token and the desktop session
+lasts `Auth:DesktopSessionDays` (7 by default) with a renewal every six hours.
+An existing web session is upgraded in the background the first time the tab
+is prepared. If the device client is missing or the flow fails, the tab falls
+back to the embedded Keycloak login. `DESKTOP_LOGIN_MODE=web` disables the
+device flow entirely. The offline token is stored per Keycloak issuer, so every
+instance that shares the same realm signs in once; instances backed by
+different realms still need their own login.
+
 While the manager is open, the main process pings `/api/session` every four
 minutes (`DESKTOP_SESSION_KEEPALIVE_MS`) so a minimized window or a throttled
-tab does not let the BFF session expire. The SPA keeps refreshing itself while
-visible. After the app quits, a web login follows Keycloak's SSO idle timeout;
-a device-flow login stores an offline token and renews the desktop session for
-the configured `Auth:DesktopSessionDays`.
+tab does not let the BFF session expire. After the app quits, a web session
+follows Keycloak's SSO idle timeout; the device-flow offline token does not.
 
 `DESKTOP_USER_DATA=/path` redirects all app files (instances, settings and the
 encrypted token archive).

@@ -5,6 +5,7 @@ const { DesktopAuth } = require("../../auth/desktop-auth");
 const { DeviceAuthError } = require("../../auth/device-client");
 
 const instance = { url: "https://infra.example.com", name: "Produzione" };
+const ISSUER = "https://infra.example.com/realms/infraorgit";
 
 function response(status, body = {}, headers = {}) {
   return {
@@ -39,8 +40,11 @@ function fakeDevice(overrides = {}) {
   return {
     refreshCalls: [],
     startCalls: [],
-    async refresh(instanceUrl, refreshToken) {
-      this.refreshCalls.push({ instanceUrl, refreshToken });
+    async discoverIssuer() {
+      return ISSUER;
+    },
+    async refresh(instanceUrl, refreshToken, issuer) {
+      this.refreshCalls.push({ instanceUrl, issuer, refreshToken });
       return {
         accessToken: "access-new",
         refreshToken: "refresh-new",
@@ -130,7 +134,7 @@ test("restore refreshes Keycloak, exchanges the BFF session and hides secrets", 
   const result = await auth.restore(instance, fetch, cookieJar);
   assert.equal(result.mode, "silent");
   assert.deepEqual(device.refreshCalls, [
-    { instanceUrl: instance.url, refreshToken: "refresh-old" },
+    { instanceUrl: instance.url, issuer: ISSUER, refreshToken: "refresh-old" },
   ]);
   const exchange = fetch.calls.find((call) =>
     call.url.endsWith("/auth/desktop-session"),
@@ -138,7 +142,7 @@ test("restore refreshes Keycloak, exchanges the BFF session and hides secrets", 
   assert.deepEqual(JSON.parse(exchange.init.body), {
     refreshToken: "refresh-new",
   });
-  assert.equal(store.values.get(instance.url), "refresh-new");
+  assert.equal(store.values.get(ISSUER), "refresh-new");
 
   const snapshot = auth.snapshot(instance.url);
   assert.equal(snapshot.status, "ready");
@@ -153,6 +157,31 @@ test("restore refreshes Keycloak, exchanges the BFF session and hides secrets", 
   assert.ok(!serialized.includes("refresh-old"));
   assert.ok(changes.some((change) => change.status === "restoring"));
   assert.equal(cookieJar.sets.length, 1);
+  auth.dispose();
+});
+
+test("one offline token is shared by instances with the same issuer", async () => {
+  const other = { url: "https://alt.example.com", name: "Altro" };
+  const store = tokenStore(new Map([[ISSUER, "refresh-shared"]]));
+  const device = fakeDevice();
+  const auth = new DesktopAuth({
+    deviceClient: device,
+    tokenStore: store,
+    openExternal: async () => {},
+    logger: { warn: () => {} },
+  });
+
+  const result = await auth.restore(other, sessionFetch(), cookies());
+  assert.equal(result.mode, "silent");
+  assert.deepEqual(device.refreshCalls, [
+    {
+      instanceUrl: other.url,
+      issuer: ISSUER,
+      refreshToken: "refresh-shared",
+    },
+  ]);
+  assert.equal(store.values.get(ISSUER), "refresh-new");
+  assert.equal(store.values.has(other.url), false);
   auth.dispose();
 });
 
@@ -287,7 +316,7 @@ test("restore falls back without forgetting the token when the exchange is unava
     cookies(),
   );
   assert.equal(result.mode, "fallback");
-  assert.equal(store.values.get(instance.url), "refresh-new");
+  assert.equal(store.values.get(ISSUER), "refresh-new");
   const snapshot = auth.snapshot(instance.url);
   assert.equal(snapshot.status, "error");
   assert.equal(snapshot.tunnelAccess, true);
@@ -336,7 +365,7 @@ test("renew refreshes the token and extends the session without a restoring stat
   const result = await auth.renew(instance, fetch, cookies());
   assert.equal(result.mode, "renewed");
   assert.deepEqual(device.refreshCalls, [
-    { instanceUrl: instance.url, refreshToken: "refresh-old" },
+    { instanceUrl: instance.url, issuer: ISSUER, refreshToken: "refresh-old" },
   ]);
   const exchange = fetch.calls.find((call) =>
     call.url.endsWith("/auth/desktop-session"),
@@ -344,7 +373,7 @@ test("renew refreshes the token and extends the session without a restoring stat
   assert.deepEqual(JSON.parse(exchange.init.body), {
     refreshToken: "refresh-new",
   });
-  assert.equal(store.values.get(instance.url), "refresh-new");
+  assert.equal(store.values.get(ISSUER), "refresh-new");
   assert.equal(auth.snapshot(instance.url).status, "ready");
   assert.ok(!changes.some((change) => change.status === "restoring"));
   auth.dispose();
@@ -419,7 +448,7 @@ test("device login opens the browser, stores only the refresh token and reloads 
   assert.equal(snapshot.status, "ready");
   assert.equal(snapshot.method, "device");
   assert.equal(snapshot.tunnelAccess, true);
-  assert.equal(store.values.get(instance.url), "refresh-device");
+  assert.equal(store.values.get(ISSUER), "refresh-device");
   const serialized = JSON.stringify(snapshot);
   assert.ok(!serialized.includes("access-device"));
   assert.ok(!serialized.includes("refresh-device"));

@@ -12,8 +12,9 @@ function normalizeToken(value) {
 
 /**
  * Stores refresh tokens encrypted with Electron safeStorage. Access tokens
- * never reach this class. A new file contains only instance URL -> refresh
- * token; no host, user or token metadata is written in clear text.
+ * never reach this class. A new file contains only Keycloak issuer (or a
+ * legacy instance URL) -> refresh token; no user or token metadata is written
+ * in clear text.
  *
  * Native keychain/Credential Manager/Secret Service access is the documented
  * next hardening step; safeStorage already uses the OS key store on macOS and
