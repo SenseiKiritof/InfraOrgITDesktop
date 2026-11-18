@@ -202,6 +202,9 @@ function buildJumpArgs(jump, host, port) {
   ];
 }
 
+// shortcut: a filtered target can keep `ssh -W` open past the probe window
+// and look reachable. This checks the TCP channel from the first bastion, not
+// a full port scan; replace with a bastion-side probe when one is guaranteed.
 function jumpCheck(
   check,
   { spawnProcess = spawn, sshBin = "ssh", jumpConnectMs = JUMP_CONNECT_MS } = {},

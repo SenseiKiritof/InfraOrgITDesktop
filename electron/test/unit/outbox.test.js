@@ -46,6 +46,11 @@ test("outbox persists a hash-chained queue and removes synced events", async () 
     kind: "tunnel.start",
     serverId: 3,
   });
+  const third = outbox.append({
+    instanceUrl: "https://other.example.com",
+    username: "admin",
+    kind: "check.http",
+  });
   assert.ok(first.hash);
   assert.equal(second.prevHash, first.hash);
   assert.equal(outbox.verify(), true);
@@ -57,12 +62,17 @@ test("outbox persists a hash-chained queue and removes synced events", async () 
   }).initialize();
   assert.equal(reloaded.count(instance), 2);
   assert.equal(reloaded.verify(), true);
-  assert.equal(reloaded.remove([first.eventId]), 1);
+  assert.equal(reloaded.remove([second.eventId]), 1);
   assert.equal(reloaded.count(instance), 1);
+  assert.equal(reloaded.verify(), true);
+  assert.equal(reloaded.remove([first.eventId]), 1);
+  assert.equal(reloaded.count(instance), 0);
+  assert.equal(reloaded.verify(), true);
+  assert.equal(reloaded.count("https://other.example.com"), 1);
 
-  reloaded.fail([second.eventId], "offline");
-  assert.equal(reloaded.list(instance)[0].attempts, 1);
-  reloaded.removeInstance(instance);
+  reloaded.fail([third.eventId], "offline");
+  assert.equal(reloaded.list("https://other.example.com")[0].attempts, 1);
+  reloaded.removeInstance("https://other.example.com");
   assert.equal(reloaded.count(), 0);
   fs.rmSync(dir, { recursive: true, force: true });
 });
