@@ -2112,7 +2112,17 @@ function openSettings() {
   );
   const standaloneActions = el("div", "settings-download-actions");
   standaloneActions.append(standaloneButton);
-  standaloneBlock.append(standaloneNote, standaloneActions);
+  standaloneBlock.append(standaloneNote);
+  if (state?.standaloneKeyStorage === "file") {
+    standaloneBlock.append(
+      el(
+        "p",
+        "field-hint",
+        "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.",
+      ),
+    );
+  }
+  standaloneBlock.append(standaloneActions);
   body.append(standaloneBlock);
   const languageBlock = el("div", "settings-language");
   const languageRow = el("div", "language-options");

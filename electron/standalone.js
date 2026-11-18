@@ -36,7 +36,10 @@ function localSecret(file, safeStorage, logger = console) {
   const fallback = `${file}.fallback`;
   if (fs.existsSync(file)) {
     try {
-      return safeStorage.decryptString(fs.readFileSync(file));
+      return {
+        value: safeStorage.decryptString(fs.readFileSync(file)),
+        storage: "safeStorage",
+      };
     } catch {
       throw new Error(
         "Chiave delle credenziali locali illeggibile. Ripristina il backup o rimuovi il file solo se accetti di perdere le credenziali cifrate.",
@@ -45,7 +48,7 @@ function localSecret(file, safeStorage, logger = console) {
   }
   if (fs.existsSync(fallback)) {
     const stored = fs.readFileSync(fallback, "utf8").trim();
-    if (stored) return stored;
+    if (stored) return { value: stored, storage: "file" };
   }
   const secret = crypto.randomBytes(32).toString("base64");
   let available = false;
@@ -58,7 +61,7 @@ function localSecret(file, safeStorage, logger = console) {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
       fs.writeFileSync(file, safeStorage.encryptString(secret), { mode: 0o600 });
-      return secret;
+      return { value: secret, storage: "safeStorage" };
     } catch {
       // Fall through to the explicit 0600 fallback.
     }
@@ -68,7 +71,7 @@ function localSecret(file, safeStorage, logger = console) {
   logger.warn(
     "Archivio protetto non disponibile: chiave credenziali locale salvata in un file 0600.",
   );
-  return secret;
+  return { value: secret, storage: "file" };
 }
 
 function apiCommand({ isPackaged, resourcesPath, root }) {
@@ -148,11 +151,12 @@ async function startStandalone({
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const secret = crypto.randomBytes(32).toString("hex");
-  const key = localSecret(
+  const keyInfo = localSecret(
     path.join(dataRoot, "credential-key.bin"),
     safeStorage,
     logger,
   );
+  const key = keyInfo.value;
   const logFile = path.join(logDirectory, "standalone-api.log");
   const log = fs.createWriteStream(logFile, { flags: "a", mode: 0o600 });
 
@@ -238,15 +242,41 @@ async function startStandalone({
     port,
     dataRoot,
     database,
+    keyStorage: keyInfo.storage,
     stop() {
-      if (stopped) return;
+      if (stopped) return Promise.resolve();
       stopped = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-      log.end();
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          log.end();
+          resolve();
+        };
+        if (child.exitCode !== null || child.signalCode !== null) {
+          finish();
+          return;
+        }
+        const timer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+          finish();
+        }, 3000);
+        child.once("exit", () => {
+          clearTimeout(timer);
+          finish();
+        });
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          clearTimeout(timer);
+          finish();
+        }
+      });
     },
   };
 }

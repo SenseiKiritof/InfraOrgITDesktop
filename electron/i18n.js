@@ -187,6 +187,8 @@
     "Istanza locale disattivata: riavvia l'app.": "Local instance disabled: restart the app.",
     Attiva: "Enable",
     Disattiva: "Disable",
+    "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.":
+      "Protected storage is unavailable: the credential key is in a local 0600 file.",
     "Cartella download": "Download folder",
     "Scegli…": "Choose…",
     Predefinita: "Default",
@@ -310,6 +312,8 @@
     "Istanza locale disattivata: riavvia l'app.": "Instance locale désactivée : redémarrez l'application.",
     Attiva: "Activer",
     Disattiva: "Désactiver",
+    "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.":
+      "Stockage protégé indisponible : la clé des identifiants est dans un fichier local 0600.",
     "Cartella download": "Dossier de téléchargement",
     "Scegli…": "Choisir…",
     Predefinita: "Par défaut",
@@ -389,6 +393,8 @@
     "Istanza locale disattivata: riavvia l'app.": "Lokale Instanz deaktiviert: App neu starten.",
     Attiva: "Aktivieren",
     Disattiva: "Deaktivieren",
+    "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.":
+      "Geschützter Speicher nicht verfügbar: Der Anmeldedaten-Schlüssel liegt in einer lokalen 0600-Datei.",
     "Cartella download": "Download-Ordner",
     "Scegli…": "Auswählen…",
     Predefinita: "Standard",
@@ -469,6 +475,8 @@
     "Istanza locale disattivata: riavvia l'app.": "Instancia local desactivada: reinicia la aplicación.",
     Attiva: "Activar",
     Disattiva: "Desactivar",
+    "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.":
+      "Almacenamiento protegido no disponible: la clave de credenciales está en un archivo local 0600.",
     "Cartella download": "Carpeta de descargas",
     "Scegli…": "Elegir…",
     Predefinita: "Predeterminada",

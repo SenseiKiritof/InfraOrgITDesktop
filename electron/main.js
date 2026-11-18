@@ -576,6 +576,7 @@ function publicState() {
     downloadDirectoryCustom: Boolean(settingsStore?.downloadDirectory),
     standaloneEnabled: Boolean(settingsStore?.standaloneEnabled),
     standaloneRunning: Boolean(standaloneServer),
+    standaloneKeyStorage: standaloneServer?.keyStorage || null,
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
@@ -4082,7 +4083,6 @@ if (!hasLock) {
   });
 
   app.on("before-quit", (event) => {
-    standaloneServer?.stop();
     if (shuttingDown) return;
     event.preventDefault();
     shuttingDown = true;
@@ -4091,6 +4091,7 @@ if (!hasLock) {
     for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
     void (async () => {
+      await standaloneServer?.stop();
       // Publish the stopped sessions so the central /tunnels page does not
       // keep ghost rows until the stale cleanup runs.
       await tunnelProjection?.flush(2000);
