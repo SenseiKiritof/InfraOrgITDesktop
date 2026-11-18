@@ -21,6 +21,7 @@ const path = require("path");
 const { DeviceAuthClient } = require("./auth/device-client");
 const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
+const { planDeviceLogin } = require("./auth/login-policy");
 const { InstanceStore } = require("./shell/instances");
 const { SettingsStore, THEMES } = require("./shell/settings");
 const {
@@ -57,6 +58,23 @@ const INSTANCE_PRELOAD = path.join(__dirname, "preload.js");
 const MANAGER_PRELOAD = path.join(__dirname, "manager-preload.js");
 const AUTH_RENEW_INTERVAL =
   Number(process.env.DESKTOP_AUTH_RENEW_MS) || 6 * 60 * 60 * 1000;
+// Device flow is the default sign-in: system browser, offline token, 7-day
+// desktop session. DESKTOP_LOGIN_MODE=web keeps the embedded Keycloak login.
+const LOGIN_MODE = process.env.DESKTOP_LOGIN_MODE === "web" ? "web" : "device";
+const LOGIN_PLACEHOLDER = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+<html><head><meta charset="utf-8"><title>InfraOrgIT</title>
+<style>
+html,body{height:100%;margin:0;background:#0b1220;color:#e2e8f0;
+font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+display:grid;place-items:center}
+main{max-width:34rem;text-align:center;padding:2rem}
+h1{font-size:1.15rem;margin:0 0 .6rem}
+p{margin:.25rem 0;color:#94a3b8}
+</style></head>
+<body><main><h1>InfraOrgIT</h1>
+<p>Completa l'accesso nel browser…</p>
+<p>Complete the sign-in in the browser…</p>
+</main></body></html>`)}`;
 const SESSION_KEEPALIVE_INTERVAL =
   Number(process.env.DESKTOP_SESSION_KEEPALIVE_MS) || 4 * 60 * 1000;
 
@@ -67,6 +85,7 @@ const remoteConsoles = new Map();
 const remoteTargets = new Map();
 const remoteTransports = new Map();
 const authRenewals = new Map();
+const deviceLoginAttempted = new Set();
 const accountThemes = new Map();
 const downloadTracker = new DownloadTracker();
 const downloadSessions = new Set();
@@ -1490,8 +1509,37 @@ function prepareInstance(instance) {
     // clear the partition cookies so the SPA goes through Keycloak again.
     if (mode.mode === "expired" || mode.mode === "revoked")
       await clearInstanceCookies(instance);
+
+    const plan = planDeviceLogin({
+      mode: mode.mode,
+      loginMode: LOGIN_MODE,
+      saved: authSnapshot(instance.url).saved,
+      attempted: deviceLoginAttempted.has(instance.url),
+    });
+    if (plan) deviceLoginAttempted.add(instance.url);
+    if (plan === "inline") {
+      // No web session: the browser confirmation replaces the Keycloak page.
+      await record.view.webContents
+        .loadURL(LOGIN_PLACEHOLDER)
+        .catch(() => {});
+      await desktopAuth.login(
+        instance,
+        sessionFetch(record.session),
+        record.session.cookies,
+      );
+    } else if (plan === "background") {
+      // A valid web session has no offline token yet: upgrade it without
+      // blocking the tab. A failure keeps the web session usable.
+      void desktopAuth.login(
+        instance,
+        sessionFetch(record.session),
+        record.session.cookies,
+      );
+    }
+
     const target = record.pendingUrl || instance.url;
     record.pendingUrl = null;
+    if (record.view.webContents.isDestroyed()) return;
     record.view.webContents.loadURL(target).catch((error) => {
       record.lastError = error.message;
       sendState();
