@@ -466,7 +466,8 @@ async function installUpdateNow() {
     path.join(app.getPath("temp"), "infraorgit-update-"),
   );
   const archivePath = path.join(dir, updateState.archive.name);
-  const checksumPath = path.join(dir, updateState.checksum.name);
+  const manifestPath = path.join(dir, updateState.manifest.name);
+  const signaturePath = path.join(dir, updateState.signature.name);
   updateState = {
     ...updateState,
     status: "installing",
@@ -475,12 +476,22 @@ async function installUpdateNow() {
   broadcastUpdate();
   sendState();
   try {
-    await updates.downloadFile(updateState.archive.url, archivePath);
-    await updates.downloadFile(updateState.checksum.url, checksumPath);
-    await updates.verifyChecksum(
-      archivePath,
-      await fs.promises.readFile(checksumPath, "utf8"),
+    await updates.downloadFile(updateState.manifest.url, manifestPath);
+    await updates.downloadFile(updateState.signature.url, signaturePath);
+    const manifestText = await fs.promises.readFile(manifestPath, "utf8");
+    const signature = await fs.promises.readFile(signaturePath);
+    if (!updates.verifyManifestSignature(manifestText, signature))
+      throw new Error("Firma del manifest non valida: aggiornamento bloccato.");
+    const expected = updates.manifestChecksum(
+      manifestText,
+      updateState.archive.name,
     );
+    if (!expected)
+      throw new Error(
+        `Il manifest firmato non contiene ${updateState.archive.name}.`,
+      );
+    await updates.downloadFile(updateState.archive.url, archivePath);
+    await updates.verifyChecksum(archivePath, expected);
     const appRoot = updates.appRootFor(process.platform, app.getPath("exe"));
     if (!appRoot) throw new Error("Percorso dell'app non riconosciuto.");
     const plan = updates.installPlan({
@@ -518,6 +529,14 @@ async function installUpdateNow() {
     broadcastUpdate();
     sendState();
     throw error;
+  }
+}
+
+function protectedCredentialStorage() {
+  try {
+    return Boolean(safeStorage?.isEncryptionAvailable?.());
+  } catch {
+    return false;
   }
 }
 
@@ -577,6 +596,10 @@ function publicState() {
     standaloneEnabled: Boolean(settingsStore?.standaloneEnabled),
     standaloneRunning: Boolean(standaloneServer),
     standaloneKeyStorage: standaloneServer?.keyStorage || null,
+    allowUnprotectedCredentialKey: Boolean(
+      settingsStore?.allowUnprotectedCredentialKey,
+    ),
+    credentialKeyProtected: protectedCredentialStorage(),
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
@@ -2347,6 +2370,11 @@ function registerIpc() {
     sendState();
     return Boolean(settingsStore.standaloneEnabled);
   });
+  handle("manager:set-allow-unprotected-credential-key", (enabled) => {
+    settingsStore.setAllowUnprotectedCredentialKey(Boolean(enabled));
+    sendState();
+    return Boolean(settingsStore.allowUnprotectedCredentialKey);
+  });
   handle("updates:state", () => updateState);
   handle("updates:check", () => runUpdateCheck());
   handle("updates:install", () => installUpdateNow());
@@ -4007,6 +4035,8 @@ if (!hasLock) {
           safeStorage,
           root: __dirname,
           enabled: true,
+          allowUnprotectedCredentialKey:
+            settingsStore.allowUnprotectedCredentialKey,
         });
         if (standaloneServer) {
           for (const instance of instanceStore.list()) {

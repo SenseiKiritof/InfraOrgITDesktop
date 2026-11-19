@@ -11,8 +11,11 @@ const {
   checkForUpdates,
   compareVersions,
   installPlan,
+  manifestChecksum,
   parseChecksum,
+  parseManifest,
   verifyChecksum,
+  verifyManifestSignature,
 } = require("../../updates");
 
 function release(version, overrides = {}) {
@@ -32,6 +35,14 @@ function release(version, overrides = {}) {
       {
         name: `${name}.sha256`,
         browser_download_url: `https://example.test/${name}.sha256`,
+      },
+      {
+        name: "checksums.txt",
+        browser_download_url: "https://example.test/checksums.txt",
+      },
+      {
+        name: "checksums.txt.sig",
+        browser_download_url: "https://example.test/checksums.txt.sig",
       },
     ],
     ...overrides,
@@ -65,7 +76,7 @@ test("assetTarget picks the published package", () => {
   );
 });
 
-test("checkForUpdates reports a newer release with archive and checksum", async () => {
+test("checkForUpdates reports a newer release with archive and signed manifest", async () => {
   const result = await checkForUpdates({
     currentVersion: "0.3.1",
     platform: "darwin",
@@ -75,7 +86,24 @@ test("checkForUpdates reports a newer release with archive and checksum", async 
   assert.equal(result.status, "update");
   assert.equal(result.latestVersion, "0.4.0");
   assert.equal(result.archive.name, "InfraOrgIT-Desktop-0.4.0-osx-arm64.zip");
-  assert.equal(result.checksum.name.endsWith(".sha256"), true);
+  assert.equal(result.manifest.name, "checksums.txt");
+  assert.equal(result.signature.name, "checksums.txt.sig");
+});
+
+test("checkForUpdates refuses a release without a signed manifest", async () => {
+  const unsigned = release("0.4.0");
+  unsigned.assets = unsigned.assets.filter(
+    (asset) => !asset.name.startsWith("checksums.txt"),
+  );
+  const result = await checkForUpdates({
+    currentVersion: "0.3.1",
+    platform: "darwin",
+    arch: "arm64",
+    fetchImpl: fakeFetch(unsigned),
+  });
+  assert.equal(result.status, "error");
+  assert.match(result.message, /manifest firmato/);
+  assert.equal(result.archive, undefined);
 });
 
 test("checkForUpdates keeps the current install", async () => {
@@ -131,6 +159,33 @@ test("checksum parsing and verification", async () => {
     /checksum/,
   );
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("signed manifest verification and archive lookup", () => {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 3072,
+  });
+  const hash = "a".repeat(64);
+  const name = "InfraOrgIT-Desktop-0.4.0-osx-arm64.zip";
+  const manifest = `${hash}  ${name}\n`;
+  const signature = crypto.sign("sha256", Buffer.from(manifest), privateKey);
+  assert.equal(verifyManifestSignature(manifest, signature, publicKey), true);
+  assert.equal(
+    verifyManifestSignature(`${manifest}\n`, signature, publicKey),
+    false,
+  );
+  assert.equal(verifyManifestSignature(manifest, Buffer.alloc(0), publicKey), false);
+  assert.equal(manifestChecksum(manifest, name), hash);
+  assert.equal(manifestChecksum(manifest, "other.zip"), null);
+  assert.equal(parseManifest(`b${"0".repeat(63)} *${name}`).get(name), `b${"0".repeat(63)}`);
+});
+
+test("embedded update public key is RSA-3072", () => {
+  const key = crypto.createPublicKey(
+    fs.readFileSync(path.join(__dirname, "../../update-public.pem")),
+  );
+  assert.equal(key.asymmetricKeyType, "rsa");
+  assert.equal(key.asymmetricKeyDetails.modulusLength, 3072);
 });
 
 test("installPlan waits for the app and replaces the bundle", () => {

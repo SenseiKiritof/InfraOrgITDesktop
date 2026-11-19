@@ -57,7 +57,9 @@ The screenshots use fictitious demo instances, servers and tunnels.
   self-contained API with SQLite under `userData/standalone`, serves the Web
   app on loopback and signs in the local user without Keycloak or Docker. The
   packaged app includes the API and Web resources; changing the toggle takes
-  effect on the next launch.
+  effect on the next launch. If the OS keychain is unavailable the local
+  instance refuses to start until **Consenti chiave credenziali in file non
+  protetto** is enabled in the same panel.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
   sockets and console shells, then publishes the stopped sessions before the
   process exits.

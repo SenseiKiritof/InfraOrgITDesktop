@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("desktopManager", {
   resetDownloadDirectory: () => invoke("manager:reset-download-directory"),
   setStandaloneEnabled: (enabled) =>
     invoke("manager:set-standalone-enabled", enabled),
+  setAllowUnprotectedCredentialKey: (enabled) =>
+    invoke("manager:set-allow-unprotected-credential-key", enabled),
 
   addInstance: (value) => invoke("manager:add", value),
   updateInstance: (url, value) => invoke("manager:update", url, value),
