@@ -5,7 +5,7 @@ const net = require("node:net");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const HEALTH_TIMEOUT_MS = 25_000;
+const HEALTH_TIMEOUT_MS = 60_000;
 
 function freePort() {
   return new Promise((resolve, reject) => {
