@@ -97,10 +97,16 @@ session exchange with an injected fetch.
   When Linux reports the `basic_text` backend the store refuses to write and
   keeps the session in memory for that run. A native keychain wrapper remains
   the next hardening step.
-- The standalone credential key follows the same rule: without safeStorage the
+- Standalone instances live in `settings.json` as
+  `localInstances: [{ id, name }]`; `id: "default"` keeps the legacy
+  `userData/standalone` folder, every other id uses
+  `userData/standalone/instances/<id>`. The desktop starts one sidecar per
+  instance with its own SQLite database, backups, credential key and log, and
+  replaces the stale `Locale` entries in `instances.json` at each launch.
+- Each standalone credential key follows the same rule: without safeStorage the
   sidecar does not persist `credential-key.bin.fallback` unless the operator
   enables `allowUnprotectedCredentialKey` in `settings.json` from
-  **Impostazioni → Istanza locale**. Existing fallback files keep working with
+  **Impostazioni → Istanze locali**. Existing fallback files keep working with
   the visible warning.
 - Instances live in `userData/instances.json` and settings in
   `userData/settings.json`; both saves are atomic and contain no tokens.
