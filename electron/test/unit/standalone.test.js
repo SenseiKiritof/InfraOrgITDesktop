@@ -40,6 +40,7 @@ test("standalone supervisor starts a local sidecar with protected configuration"
       safeStorage: {
         isEncryptionAvailable: () => false,
       },
+      allowUnprotectedCredentialKey: true,
       logger: { log() {}, warn() {}, error() {} },
       spawnProcess: (command, args, options) => {
         spawned = { command, args, options };
@@ -62,6 +63,46 @@ test("standalone supervisor starts a local sidecar with protected configuration"
     await handle.stop();
     assert.equal(handle.secret.length, 64);
     await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    if (previousWeb === undefined) delete process.env.DESKTOP_WEB_ROOT;
+    else process.env.DESKTOP_WEB_ROOT = previousWeb;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("standalone requires explicit consent for an unprotected credential key", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-consent-"));
+  const webRoot = path.join(root, "web");
+  fs.mkdirSync(webRoot, { recursive: true });
+  fs.writeFileSync(path.join(webRoot, "index.html"), "<html></html>");
+  const userData = path.join(root, "user-data");
+  const previousWeb = process.env.DESKTOP_WEB_ROOT;
+  process.env.DESKTOP_WEB_ROOT = webRoot;
+  try {
+    await assert.rejects(
+      () =>
+        startStandalone({
+          enabled: true,
+          app: {
+            isPackaged: false,
+            getPath: () => userData,
+            getVersion: () => "0.3.19",
+          },
+          safeStorage: { isEncryptionAvailable: () => false },
+          logger: { log() {}, warn() {}, error() {} },
+          spawnProcess: () => {
+            throw new Error("il sidecar non deve partire");
+          },
+          healthCheck: async () => true,
+        }),
+      /Consenti chiave credenziali/,
+    );
+    assert.equal(
+      fs.existsSync(
+        path.join(userData, "standalone", "credential-key.bin.fallback"),
+      ),
+      false,
+    );
   } finally {
     if (previousWeb === undefined) delete process.env.DESKTOP_WEB_ROOT;
     else process.env.DESKTOP_WEB_ROOT = previousWeb;
@@ -102,6 +143,7 @@ test("standalone supervisor restarts the sidecar once", async () => {
         getVersion: () => "0.3.15",
       },
       safeStorage: { isEncryptionAvailable: () => false },
+      allowUnprotectedCredentialKey: true,
       logger: { log() {}, warn() {}, error() {} },
       spawnProcess: () => {
         const child = new FakeChild();

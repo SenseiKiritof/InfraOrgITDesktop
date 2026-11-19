@@ -7,6 +7,9 @@ const crypto = require("node:crypto");
 const REPOSITORY = "SenseiKiritof/InfraOrgITDesktop";
 const USER_AGENT = "InfraOrgIT-Desktop";
 const MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024;
+const MANIFEST_NAME = "checksums.txt";
+const SIGNATURE_NAME = "checksums.txt.sig";
+const PUBLIC_KEY_PATH = path.join(__dirname, "update-public.pem");
 
 function versionParts(value) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(
@@ -146,7 +149,8 @@ async function checkForUpdates({
   const name = archiveName(latestVersion, target);
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const archive = assets.find((asset) => asset.name === name);
-  const checksum = assets.find((asset) => asset.name === `${name}.sha256`);
+  const manifest = assets.find((asset) => asset.name === MANIFEST_NAME);
+  const signature = assets.find((asset) => asset.name === SIGNATURE_NAME);
   const result = {
     ...base,
     latestVersion,
@@ -158,11 +162,11 @@ async function checkForUpdates({
   if (comparison <= 0) {
     return { ...result, status: "current", message: "Sei già aggiornato." };
   }
-  if (!archive || !checksum) {
+  if (!archive || !manifest || !signature) {
     return {
       ...result,
       status: "error",
-      message: `La release ${latestVersion} non contiene ${name} e il suo checksum.`,
+      message: `La release ${latestVersion} non contiene ${name} con il manifest firmato.`,
     };
   }
   return {
@@ -170,9 +174,13 @@ async function checkForUpdates({
     status: "update",
     message: `Disponibile la versione ${latestVersion}.`,
     archive: { name, url: archive.browser_download_url, size: archive.size },
-    checksum: {
-      name: checksum.name,
-      url: checksum.browser_download_url,
+    manifest: {
+      name: manifest.name,
+      url: manifest.browser_download_url,
+    },
+    signature: {
+      name: signature.name,
+      url: signature.browser_download_url,
     },
   };
 }
@@ -199,6 +207,34 @@ async function downloadFile(
 function parseChecksum(text) {
   const match = /^([0-9a-f]{64})\b/i.exec(String(text || "").trim());
   return match ? match[1].toLowerCase() : null;
+}
+
+/** Mappa nome file -> SHA-256 dal manifest `checksums.txt`. */
+function parseManifest(text) {
+  const entries = new Map();
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = /^([0-9a-f]{64})\s+\*?(.+)$/i.exec(line.trim());
+    if (match) entries.set(match[2], match[1].toLowerCase());
+  }
+  return entries;
+}
+
+function verifyManifestSignature(
+  manifestText,
+  signature,
+  publicKey = fs.readFileSync(PUBLIC_KEY_PATH),
+) {
+  if (!manifestText || !signature?.length) return false;
+  return crypto.verify(
+    "sha256",
+    Buffer.from(String(manifestText)),
+    publicKey,
+    signature,
+  );
+}
+
+function manifestChecksum(manifestText, archiveName) {
+  return parseManifest(manifestText).get(archiveName) ?? null;
 }
 
 async function sha256File(file) {
@@ -321,8 +357,11 @@ module.exports = {
   compareVersions,
   downloadFile,
   installPlan,
+  manifestChecksum,
   parseChecksum,
+  parseManifest,
   verifyChecksum,
+  verifyManifestSignature,
   versionParts,
   appRootFor,
 };

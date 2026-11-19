@@ -97,6 +97,11 @@ session exchange with an injected fetch.
   When Linux reports the `basic_text` backend the store refuses to write and
   keeps the session in memory for that run. A native keychain wrapper remains
   the next hardening step.
+- The standalone credential key follows the same rule: without safeStorage the
+  sidecar does not persist `credential-key.bin.fallback` unless the operator
+  enables `allowUnprotectedCredentialKey` in `settings.json` from
+  **Impostazioni → Istanza locale**. Existing fallback files keep working with
+  the visible warning.
 - Instances live in `userData/instances.json` and settings in
   `userData/settings.json`; both saves are atomic and contain no tokens.
 
@@ -186,16 +191,22 @@ workflow.
 5. A `.sha256` checksum is written next to every archive.
 6. Each platform uploads its archives and checksums as a workflow artifact
    with 14-day retention. Manual runs stop there.
-7. On a `v*` tag the release job downloads the artifacts and creates or
-   updates the GitHub Release with `softprops/action-gh-release@v2`. It is the
-   only job with `contents: write`.
+7. On a `v*` tag the release job downloads the artifacts, writes
+   `checksums.txt` (all archive hashes), signs it with `openssl dgst -sha256`
+   using the `UPDATE_SIGNING_KEY` repository secret and verifies the signature
+   against `electron/update-public.pem`. A missing secret fails the job: an
+   unsigned release is never published. The release then creates or updates
+   the GitHub Release with `softprops/action-gh-release@v2`, including the
+   manifest and its signature. It is the only job with `contents: write`.
 
 Packages are unsigned. Developer ID signing, macOS notarization and Windows
 Authenticode signing are follow-ups. The app checks the latest GitHub release,
-verifies the published `.sha256` and installs only in a packaged build; the
-release notes and root README must keep the Gatekeeper/SmartScreen warning and
-users must verify the published checksum. When signing is added, keep the
-signing material in repository secrets and never in the repository.
+verifies the signed `checksums.txt` with the embedded public key and only then
+trusts the archive hash; a missing or invalid signature blocks the automatic
+install, while the release page stays available for a manual install. The
+release notes and root README must keep the Gatekeeper/SmartScreen warning.
+Keep the private signing key only in the repository secret; the public key is
+`electron/update-public.pem` and must be rotated together with the secret.
 
 ### Manual release
 

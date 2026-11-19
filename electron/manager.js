@@ -2122,6 +2122,45 @@ function openSettings() {
       ),
     );
   }
+  if (state?.credentialKeyProtected) {
+    standaloneBlock.append(
+      el(
+        "p",
+        "field-hint",
+        "Chiave delle credenziali protetta dall'archivio di sistema.",
+      ),
+    );
+  } else {
+    const consent = document.createElement("label");
+    consent.className = "settings-download-actions";
+    const consentInput = document.createElement("input");
+    consentInput.type = "checkbox";
+    consentInput.checked = Boolean(state?.allowUnprotectedCredentialKey);
+    consentInput.addEventListener("change", async () => {
+      const enabled = await api.setAllowUnprotectedCredentialKey(
+        consentInput.checked,
+      );
+      consentInput.checked = enabled;
+      toast(
+        enabled
+          ? "Chiave credenziali non protetta consentita: riavvia l'app."
+          : "Chiave credenziali non protetta non consentita.",
+        "success",
+      );
+    });
+    consent.append(
+      consentInput,
+      el("span", "", "Consenti chiave credenziali in file non protetto (0600)"),
+    );
+    standaloneBlock.append(
+      consent,
+      el(
+        "p",
+        "field-hint",
+        "Senza archivio protetto l'istanza locale non parte finché non lo consenti.",
+      ),
+    );
+  }
   standaloneBlock.append(standaloneActions);
   body.append(standaloneBlock);
   const languageBlock = el("div", "settings-language");
