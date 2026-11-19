@@ -53,6 +53,11 @@ The screenshots use fictitious demo instances, servers and tunnels.
   saves use the folder chosen in **Impostazioni → Cartella download** (user's
   Downloads by default). The manager and the Web file browser show bytes and
   percentage for downloads and uploads.
+- **Local instance (standalone).** **Impostazioni → Istanza locale** starts a
+  self-contained API with SQLite under `userData/standalone`, serves the Web
+  app on loopback and signs in the local user without Keycloak or Docker. The
+  packaged app includes the API and Web resources; changing the toggle takes
+  effect on the next launch.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
   sockets and console shells, then publishes the stopped sessions before the
   process exits.

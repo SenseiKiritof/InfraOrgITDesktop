@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("desktopManager", {
   setDownloadDirectory: (directory) =>
     invoke("manager:set-download-directory", directory),
   resetDownloadDirectory: () => invoke("manager:reset-download-directory"),
+  setStandaloneEnabled: (enabled) =>
+    invoke("manager:set-standalone-enabled", enabled),
 
   addInstance: (value) => invoke("manager:add", value),
   updateInstance: (url, value) => invoke("manager:update", url, value),

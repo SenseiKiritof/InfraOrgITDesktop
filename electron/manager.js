@@ -2082,6 +2082,48 @@ function openSettings() {
   );
   downloadBlock.append(downloadPath, downloadActions);
   body.append(downloadBlock);
+  const standaloneBlock = el("div", "settings-download");
+  standaloneBlock.append(el("span", "meta-label", "Istanza locale"));
+  const standaloneNote = el(
+    "p",
+    "field-hint",
+    state?.standaloneEnabled
+      ? "L'istanza locale è attiva e parte con l'app."
+      : "L'istanza locale parte al prossimo avvio.",
+  );
+  let standaloneCurrent = Boolean(state?.standaloneEnabled);
+  const standaloneButton = button(
+    standaloneCurrent ? "Disattiva" : "Attiva",
+    "secondary",
+    async () => {
+      const enabled = await api.setStandaloneEnabled(!standaloneCurrent);
+      standaloneCurrent = enabled;
+      standaloneButton.textContent = enabled ? "Disattiva" : "Attiva";
+      standaloneNote.textContent = enabled
+        ? "L'istanza locale parte al prossimo avvio."
+        : "L'istanza locale non partirà al prossimo avvio.";
+      toast(
+        enabled
+          ? "Istanza locale attivata: riavvia l'app."
+          : "Istanza locale disattivata: riavvia l'app.",
+        "success",
+      );
+    },
+  );
+  const standaloneActions = el("div", "settings-download-actions");
+  standaloneActions.append(standaloneButton);
+  standaloneBlock.append(standaloneNote);
+  if (state?.standaloneKeyStorage === "file") {
+    standaloneBlock.append(
+      el(
+        "p",
+        "field-hint",
+        "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.",
+      ),
+    );
+  }
+  standaloneBlock.append(standaloneActions);
+  body.append(standaloneBlock);
   const languageBlock = el("div", "settings-language");
   const languageRow = el("div", "language-options");
   for (const option of window.desktopI18n?.languages || []) {
