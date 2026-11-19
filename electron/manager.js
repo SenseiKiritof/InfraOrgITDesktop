@@ -1371,22 +1371,72 @@ function runPaletteCommand(command) {
 
 function openNewInstance() {
   const token = ++modalToken;
+  const body = el("div", "instance-create");
+  const kind = el("select");
+  kind.name = "instanceKind";
+  kind.id = "field-instanceKind";
+  kind.append(
+    option("remote", "Remota (URL)"),
+    option("local", "Locale (solo questo computer)"),
+  );
+  body.append(field("Tipo istanza", kind));
+  const remoteForm = buildInstanceForm(null);
+  const localForm = el("form", "form");
+  localForm.append(
+    field(
+      "Nome istanza locale",
+      input("text", "localName", "", "Cliente A"),
+    ),
+  );
+  localForm.append(
+    el(
+      "p",
+      "field-hint",
+      "Database, backup e chiave restano sulla macchina; l'istanza parte al prossimo avvio.",
+    ),
+  );
+  localForm.append(el("p", "inline-error", ""));
+  localForm.querySelector(".inline-error").hidden = true;
+  body.append(remoteForm, localForm);
+  const syncKind = () => {
+    remoteForm.hidden = kind.value !== "remote";
+    localForm.hidden = kind.value !== "local";
+  };
+  kind.addEventListener("change", syncKind);
+  syncKind();
   openModal({
     eyebrow: "Configurazione",
     title: "Nuova istanza",
-    body: buildInstanceForm(null),
+    body,
     footer: (footer) => {
       footer.append(
         button("Annulla", "ghost", closeModal),
         button("Aggiungi istanza", "primary", async () => {
-          const form = els.modalBody.querySelector("form");
-          const data = formData(form);
           try {
+            if (kind.value === "local") {
+              const name = localForm
+                .querySelector("[name=localName]")
+                .value.trim();
+              if (!name) {
+                showFormError(localForm, "Il nome è obbligatorio.");
+                return;
+              }
+              const response = await api.addLocalInstance(name);
+              state = response.state;
+              render();
+              if (token === modalToken) closeModal();
+              toast("Istanza locale aggiunta: parte al prossimo avvio.", "success");
+              return;
+            }
+            const data = formData(remoteForm);
             await api.addInstance(data);
             if (token === modalToken) closeModal();
             toast(`Istanza ${data.name} aggiunta.`, "success");
           } catch (error) {
-            showFormError(form, error.message);
+            showFormError(
+              kind.value === "local" ? localForm : remoteForm,
+              error.message,
+            );
           }
         }),
       );
@@ -2122,26 +2172,11 @@ function openSettings() {
       );
     }
   }
-  const addRow = el("div", "settings-download-actions");
-  const localName = input("text", "localName", "", "Nome istanza locale");
-  addRow.append(
-    localName,
-    button("Aggiungi", "secondary", async () => {
-      const name = localName.value.trim();
-      if (!name) return;
-      const response = await api.addLocalInstance(name);
-      state = response.state;
-      render();
-      openSettings();
-      toast("Istanza locale aggiunta: parte al prossimo avvio.", "success");
-    }),
-  );
-  localBlock.append(addRow);
   localBlock.append(
     el(
       "p",
       "field-hint",
-      "Ogni istanza ha database, backup e chiave separati sotto la cartella dati dell'app; le nuove istanze partono al prossimo avvio.",
+      "Ogni istanza ha database, backup e chiave separati sotto la cartella dati dell'app. Aggiungi una nuova istanza dalla schermata iniziale; le nuove istanze partono al prossimo avvio.",
     ),
   );
   if (state?.credentialKeyProtected) {
