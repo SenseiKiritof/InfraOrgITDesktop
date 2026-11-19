@@ -137,3 +137,37 @@ test("settings store validates the theme and falls back to system", () => {
   assert.equal(store.setAllowUnprotectedCredentialKey(false), false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
+
+test("settings store manages multiple local instances", () => {
+  const { directory, file } = tempFile("settings.json");
+  const store = new SettingsStore(file);
+  const first = store.addLocalInstance("Cliente A");
+  const second = store.addLocalInstance("Cliente B");
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(
+    new SettingsStore(file).localInstances.map((item) => item.name),
+    ["Cliente A", "Cliente B"],
+  );
+  assert.equal(store.standaloneEnabled, true);
+  store.removeLocalInstance(first.id);
+  assert.deepEqual(
+    new SettingsStore(file).localInstances.map((item) => item.name),
+    ["Cliente B"],
+  );
+  assert.throws(() => store.addLocalInstance("   "), /obbligatorio/);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("settings store migrates the old standalone flag", () => {
+  const { directory, file } = tempFile("settings.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ theme: "system", standaloneEnabled: true }),
+  );
+  const store = new SettingsStore(file);
+  assert.deepEqual(store.localInstances, [
+    { id: "default", name: "InfraOrgIT locale" },
+  ]);
+  assert.equal(store.standaloneEnabled, true);
+  fs.rmSync(directory, { recursive: true, force: true });
+});

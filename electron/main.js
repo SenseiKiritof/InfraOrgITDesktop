@@ -122,10 +122,11 @@ let deviceIdentity = null;
 let credentialVault = null;
 let desktopAuth = null;
 let tunnels = null;
-let standaloneServer = null;
+let standaloneServers = new Map();
 let tunnelProjection = null;
 let quitting = false;
 let shuttingDown = false;
+let startupComplete = false;
 
 if (process.env.DESKTOP_USER_DATA) {
   app.setPath("userData", path.resolve(process.env.DESKTOP_USER_DATA));
@@ -532,6 +533,13 @@ async function installUpdateNow() {
   }
 }
 
+function localDataDirectory(local) {
+  const root = path.join(app.getPath("userData"), "standalone");
+  return local.id === "default"
+    ? root
+    : path.join(root, "instances", local.id);
+}
+
 function protectedCredentialStorage() {
   try {
     return Boolean(safeStorage?.isEncryptionAvailable?.());
@@ -594,8 +602,24 @@ function publicState() {
     downloadDirectory: downloadDirectory(),
     downloadDirectoryCustom: Boolean(settingsStore?.downloadDirectory),
     standaloneEnabled: Boolean(settingsStore?.standaloneEnabled),
-    standaloneRunning: Boolean(standaloneServer),
-    standaloneKeyStorage: standaloneServer?.keyStorage || null,
+    localInstances: (settingsStore?.localInstances ?? []).map((local) => {
+      const server = standaloneServers.get(local.id);
+      return {
+        id: local.id,
+        name: local.name,
+        running: Boolean(server),
+        url: server?.url ?? null,
+        keyStorage: server?.keyStorage ?? null,
+        dataRoot: server?.dataRoot ?? localDataDirectory(local),
+      };
+    }),
+    standaloneRunning: standaloneServers.size > 0,
+    standaloneKeyStorage:
+      [...standaloneServers.values()].some(
+        (server) => server.keyStorage === "file",
+      )
+        ? "file"
+        : null,
     allowUnprotectedCredentialKey: Boolean(
       settingsStore?.allowUnprotectedCredentialKey,
     ),
@@ -2370,6 +2394,22 @@ function registerIpc() {
     sendState();
     return Boolean(settingsStore.standaloneEnabled);
   });
+  handle("manager:add-local-instance", (name) => {
+    const instance = settingsStore.addLocalInstance(name);
+    sendState();
+    return { instance, state: publicState() };
+  });
+  handle("manager:remove-local-instance", async (id) => {
+    const server = standaloneServers.get(id);
+    if (server) {
+      standaloneServers.delete(id);
+      removeInstance(server.url);
+      await server.stop();
+    }
+    settingsStore.removeLocalInstance(id);
+    sendState();
+    return publicState();
+  });
   handle("manager:set-allow-unprotected-credential-key", (enabled) => {
     settingsStore.setAllowUnprotectedCredentialKey(Boolean(enabled));
     sendState();
@@ -2998,6 +3038,7 @@ async function handleDesktopMessage(sender, raw) {
 }
 
 function createMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   mainWindow = new BrowserWindow({
     width: 1380,
     height: 900,
@@ -3043,6 +3084,7 @@ function createMainWindow() {
       void shell.openExternal(url);
     return { action: "deny" };
   });
+  return mainWindow;
 }
 
 function openStartupTabs() {
@@ -3391,6 +3433,13 @@ async function runTest() {
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
     };
+
+    createMainWindow();
+    check(
+      BrowserWindow.getAllWindows().length === 1,
+      "duplicate window creation keeps one window",
+      String(BrowserWindow.getAllWindows().length),
+    );
 
     const state = publicState();
     check(state.instances.length === 3, "three demo instances", String(state.instances.length));
@@ -3856,7 +3905,7 @@ async function runTest() {
     check(settingsModal.title === "Updates", "settings modal title", settingsModal.title);
     check(settingsModal.body.includes("Installed version"), "settings modal shows the version");
     check(settingsModal.body.includes("Download folder"), "settings modal shows the download folder");
-    check(settingsModal.body.includes("Local instance"), "settings modal shows the local instance toggle");
+    check(settingsModal.body.includes("Local instances"), "settings modal shows the local instances section");
     check(settingsModal.body.includes("Italiano"), "settings modal shows the language picker");
     await mainWindow.webContents.executeJavaScript(
       'document.querySelector("#modal-close").click()',
@@ -4015,70 +4064,62 @@ if (!hasLock) {
       },
     );
 
-    const standaloneEnabled =
-      !IS_TEST &&
-      (process.env.DESKTOP_STANDALONE === "1" ||
-        settingsStore.standaloneEnabled);
-    if (!standaloneEnabled && !IS_TEST) {
-      for (const instance of instanceStore.list()) {
-        if (
-          instance.environment === "Locale" &&
-          instance.url.startsWith("http://127.0.0.1:")
-        )
-          instanceStore.remove(instance.url);
-      }
+    const localInstances = IS_TEST ? [] : settingsStore.localInstances;
+    if (localInstances.length === 0 && process.env.DESKTOP_STANDALONE === "1")
+      localInstances.push({ id: "default", name: "InfraOrgIT locale" });
+    for (const instance of instanceStore.list()) {
+      if (
+        instance.environment === "Locale" &&
+        instance.url.startsWith("http://127.0.0.1:")
+      )
+        instanceStore.remove(instance.url);
     }
-    if (standaloneEnabled) {
+    const localErrors = [];
+    for (const local of localInstances) {
       try {
-        standaloneServer = await startStandalone({
+        const server = await startStandalone({
           app,
           safeStorage,
           root: __dirname,
           enabled: true,
           allowUnprotectedCredentialKey:
             settingsStore.allowUnprotectedCredentialKey,
+          dataDirectory: localDataDirectory(local),
+          logName: `standalone-api-${local.id}.log`,
         });
-        if (standaloneServer) {
-          for (const instance of instanceStore.list()) {
-            if (
-              instance.environment === "Locale" &&
-              instance.url.startsWith("http://127.0.0.1:")
-            )
-              instanceStore.remove(instance.url);
-          }
-          instanceStore.add({
-            name: "InfraOrgIT locale",
-            url: standaloneServer.url,
-            environment: "Locale",
-            openAtStartup: true,
-          });
-          const localSession = session.fromPartition(
-            partitionFor(standaloneServer.url),
-          );
-          const response = await localSession.fetch(
-            `${standaloneServer.url}/auth/local/session`,
-            {
-              method: "POST",
-              headers: {
-                "X-InfraOrgIT-Local": standaloneServer.secret,
-              },
-            },
-          );
-          if (response.status !== 204)
-            throw new Error(
-              `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
-            );
-        }
-      } catch (error) {
-        dialog.showErrorBox(
-          "Istanza locale non avviata",
-          error?.message || String(error),
+        if (!server) continue;
+        standaloneServers.set(local.id, server);
+        instanceStore.add({
+          name: local.name,
+          url: server.url,
+          environment: "Locale",
+          openAtStartup: true,
+        });
+        const localSession = session.fromPartition(partitionFor(server.url));
+        const response = await localSession.fetch(
+          `${server.url}/auth/local/session`,
+          {
+            method: "POST",
+            headers: { "X-InfraOrgIT-Local": server.secret },
+          },
         );
+        if (response.status !== 204)
+          throw new Error(
+            `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
+          );
+      } catch (error) {
+        localErrors.push(`${local.name}: ${error?.message || String(error)}`);
       }
     }
+    if (localErrors.length > 0)
+      dialog.showErrorBox(
+        "Istanze locali non avviate",
+        localErrors.join("\n"),
+      );
     seedTestInstances();
     await startTestTunnels();
     createMainWindow();
+    startupComplete = true;
     registerIpc();
     if (!IS_TEST) startUpdateScheduler();
     buildMenu();
@@ -4121,7 +4162,9 @@ if (!hasLock) {
     for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
     void (async () => {
-      await standaloneServer?.stop();
+      await Promise.all(
+        [...standaloneServers.values()].map((server) => server.stop()),
+      );
       // Publish the stopped sessions so the central /tunnels page does not
       // keep ghost rows until the stale cleanup runs.
       await tunnelProjection?.flush(2000);
@@ -4136,6 +4179,7 @@ if (!hasLock) {
   });
 
   app.on("activate", () => {
+    if (!startupComplete) return;
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
       openStartupTabs();

@@ -130,12 +130,15 @@ async function startStandalone({
   logger = console,
   enabled = process.env.DESKTOP_STANDALONE === "1",
   allowUnprotectedCredentialKey = false,
+  dataDirectory = null,
+  logName = "standalone-api.log",
   spawnProcess = spawn,
   healthCheck = health,
 } = {}) {
   if (!enabled) return null;
 
-  const dataRoot = path.join(app.getPath("userData"), "standalone");
+  const dataRoot =
+    dataDirectory || path.join(app.getPath("userData"), "standalone");
   const database = path.join(dataRoot, "infraorgit.db");
   const backupDirectory = path.join(dataRoot, "backups");
   const logDirectory = path.join(app.getPath("userData"), "logs");
@@ -169,7 +172,7 @@ async function startStandalone({
     { allowUnprotected: allowUnprotectedCredentialKey },
   );
   const key = keyInfo.value;
-  const logFile = path.join(logDirectory, "standalone-api.log");
+  const logFile = path.join(logDirectory, logName);
   const log = fs.createWriteStream(logFile, { flags: "a", mode: 0o600 });
 
   const env = {

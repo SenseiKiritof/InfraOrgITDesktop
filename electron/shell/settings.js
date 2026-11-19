@@ -1,7 +1,9 @@
+const crypto = require("node:crypto");
 const fs = require("fs");
 const path = require("path");
 
 const THEMES = ["system", "light", "dark"];
+const MAX_LOCAL_INSTANCES = 20;
 
 function normalizeTheme(value) {
   return THEMES.includes(value) ? value : "system";
@@ -19,7 +21,7 @@ class SettingsStore {
     this.data = {
       theme: "system",
       downloadDirectory: "",
-      standaloneEnabled: false,
+      localInstances: [],
       allowUnprotectedCredentialKey: false,
     };
     try {
@@ -28,7 +30,15 @@ class SettingsStore {
         this.data.theme = normalizeTheme(raw.theme);
         if (typeof raw.downloadDirectory === "string")
           this.data.downloadDirectory = raw.downloadDirectory.trim();
-        this.data.standaloneEnabled = raw.standaloneEnabled === true;
+        const localInstances = normalizeLocalInstances(raw.localInstances);
+        if (localInstances !== null) {
+          this.data.localInstances = localInstances;
+        } else if (raw.standaloneEnabled === true) {
+          // Migrazione dalla singola istanza locale precedente.
+          this.data.localInstances = [
+            { id: "default", name: "InfraOrgIT locale" },
+          ];
+        }
         this.data.allowUnprotectedCredentialKey =
           raw.allowUnprotectedCredentialKey === true;
       }
@@ -61,15 +71,47 @@ class SettingsStore {
     return this.data.downloadDirectory;
   }
 
-  get standaloneEnabled() {
-    return this.load().standaloneEnabled;
+  get localInstances() {
+    return this.load().localInstances.map((instance) => ({ ...instance }));
   }
 
+  addLocalInstance(name) {
+    this.load();
+    const normalized = String(name || "").trim();
+    if (!normalized) throw new Error("Il nome dell'istanza locale è obbligatorio.");
+    if (normalized.length > 80)
+      throw new Error("Il nome dell'istanza locale supera 80 caratteri.");
+    if (this.data.localInstances.length >= MAX_LOCAL_INSTANCES)
+      throw new Error(`Massimo ${MAX_LOCAL_INSTANCES} istanze locali.`);
+    const instance = { id: crypto.randomUUID(), name: normalized };
+    this.data.localInstances.push(instance);
+    this.persist();
+    return { ...instance };
+  }
+
+  removeLocalInstance(id) {
+    this.load();
+    this.data.localInstances = this.data.localInstances.filter(
+      (instance) => instance.id !== id,
+    );
+    this.persist();
+    return this.localInstances;
+  }
+
+  get standaloneEnabled() {
+    return this.localInstances.length > 0;
+  }
+
+  /** Compatibilità: abilita o rimuove l'istanza locale predefinita. */
   setStandaloneEnabled(enabled) {
     this.load();
-    this.data.standaloneEnabled = Boolean(enabled);
+    if (!enabled) {
+      this.data.localInstances = [];
+    } else if (this.data.localInstances.length === 0) {
+      this.data.localInstances = [{ id: "default", name: "InfraOrgIT locale" }];
+    }
     this.persist();
-    return this.data.standaloneEnabled;
+    return this.standaloneEnabled;
   }
 
   get allowUnprotectedCredentialKey() {
@@ -93,6 +135,22 @@ class SettingsStore {
     fs.chmodSync(temporary, 0o600);
     fs.renameSync(temporary, this.file);
   }
+}
+
+function normalizeLocalInstances(value) {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const instances = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    instances.push({ id, name });
+    if (instances.length >= MAX_LOCAL_INSTANCES) break;
+  }
+  return instances;
 }
 
 module.exports = { SettingsStore, THEMES, normalizeTheme };

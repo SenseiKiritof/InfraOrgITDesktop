@@ -2082,48 +2082,70 @@ function openSettings() {
   );
   downloadBlock.append(downloadPath, downloadActions);
   body.append(downloadBlock);
-  const standaloneBlock = el("div", "settings-download");
-  standaloneBlock.append(el("span", "meta-label", "Istanza locale"));
-  const standaloneNote = el(
-    "p",
-    "field-hint",
-    state?.standaloneEnabled
-      ? "L'istanza locale è attiva e parte con l'app."
-      : "L'istanza locale parte al prossimo avvio.",
-  );
-  let standaloneCurrent = Boolean(state?.standaloneEnabled);
-  const standaloneButton = button(
-    standaloneCurrent ? "Disattiva" : "Attiva",
-    "secondary",
-    async () => {
-      const enabled = await api.setStandaloneEnabled(!standaloneCurrent);
-      standaloneCurrent = enabled;
-      standaloneButton.textContent = enabled ? "Disattiva" : "Attiva";
-      standaloneNote.textContent = enabled
-        ? "L'istanza locale parte al prossimo avvio."
-        : "L'istanza locale non partirà al prossimo avvio.";
-      toast(
-        enabled
-          ? "Istanza locale attivata: riavvia l'app."
-          : "Istanza locale disattivata: riavvia l'app.",
-        "success",
-      );
-    },
-  );
-  const standaloneActions = el("div", "settings-download-actions");
-  standaloneActions.append(standaloneButton);
-  standaloneBlock.append(standaloneNote);
-  if (state?.standaloneKeyStorage === "file") {
-    standaloneBlock.append(
-      el(
-        "p",
-        "field-hint",
-        "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.",
-      ),
+  const localBlock = el("div", "settings-download");
+  localBlock.append(el("span", "meta-label", "Istanze locali"));
+  const localInstances = state?.localInstances || [];
+  if (localInstances.length === 0) {
+    localBlock.append(
+      el("p", "field-hint", "Nessuna istanza locale configurata."),
     );
   }
+  for (const local of localInstances) {
+    const row = el("div", "settings-download-actions");
+    row.append(el("span", "", local.name));
+    row.append(
+      el(
+        "span",
+        "field-hint",
+        local.running ? "In esecuzione" : "Al prossimo avvio",
+      ),
+    );
+    row.append(
+      button("Rimuovi", "ghost", async () => {
+        const next = await api.removeLocalInstance(local.id);
+        state = next;
+        render();
+        openSettings();
+        toast("Istanza locale rimossa.", "success");
+      }),
+    );
+    localBlock.append(row);
+    if (local.dataRoot)
+      localBlock.append(el("p", "field-hint", local.dataRoot));
+    if (local.keyStorage === "file") {
+      localBlock.append(
+        el(
+          "p",
+          "field-hint",
+          "Archivio protetto non disponibile: la chiave delle credenziali è in un file locale 0600.",
+        ),
+      );
+    }
+  }
+  const addRow = el("div", "settings-download-actions");
+  const localName = input("text", "localName", "", "Nome istanza locale");
+  addRow.append(
+    localName,
+    button("Aggiungi", "secondary", async () => {
+      const name = localName.value.trim();
+      if (!name) return;
+      const response = await api.addLocalInstance(name);
+      state = response.state;
+      render();
+      openSettings();
+      toast("Istanza locale aggiunta: parte al prossimo avvio.", "success");
+    }),
+  );
+  localBlock.append(addRow);
+  localBlock.append(
+    el(
+      "p",
+      "field-hint",
+      "Ogni istanza ha database, backup e chiave separati sotto la cartella dati dell'app; le nuove istanze partono al prossimo avvio.",
+    ),
+  );
   if (state?.credentialKeyProtected) {
-    standaloneBlock.append(
+    localBlock.append(
       el(
         "p",
         "field-hint",
@@ -2152,17 +2174,16 @@ function openSettings() {
       consentInput,
       el("span", "", "Consenti chiave credenziali in file non protetto (0600)"),
     );
-    standaloneBlock.append(
+    localBlock.append(
       consent,
       el(
         "p",
         "field-hint",
-        "Senza archivio protetto l'istanza locale non parte finché non lo consenti.",
+        "Senza archivio protetto le istanze locali non partono finché non lo consenti.",
       ),
     );
   }
-  standaloneBlock.append(standaloneActions);
-  body.append(standaloneBlock);
+  body.append(localBlock);
   const languageBlock = el("div", "settings-language");
   const languageRow = el("div", "language-options");
   for (const option of window.desktopI18n?.languages || []) {
