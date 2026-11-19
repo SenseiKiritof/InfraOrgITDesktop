@@ -132,6 +132,7 @@ async function startStandalone({
   allowUnprotectedCredentialKey = false,
   dataDirectory = null,
   logName = "standalone-api.log",
+  shouldAbort = () => false,
   spawnProcess = spawn,
   healthCheck = health,
 } = {}) {
@@ -218,6 +219,7 @@ async function startStandalone({
   const waitUntilHealthy = async (timeoutMs = HEALTH_TIMEOUT_MS) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (shouldAbort()) return false;
       if (await healthCheck(url)) return true;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -244,8 +246,13 @@ async function startStandalone({
   });
 
   if (!(await waitUntilHealthy())) {
-    child.kill("SIGTERM");
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
     log.end();
+    if (shouldAbort()) return null;
     throw new Error(
       `Il sidecar locale non risponde su ${url}. Log: ${logFile}`,
     );
@@ -258,6 +265,13 @@ async function startStandalone({
     dataRoot,
     database,
     keyStorage: keyInfo.storage,
+    killNow() {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    },
     stop() {
       if (stopped) return Promise.resolve();
       stopped = true;

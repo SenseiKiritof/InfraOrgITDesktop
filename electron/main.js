@@ -123,6 +123,7 @@ let credentialVault = null;
 let desktopAuth = null;
 let tunnels = null;
 let standaloneServers = new Map();
+let localStartupTask = null;
 let tunnelProjection = null;
 let quitting = false;
 let shuttingDown = false;
@@ -4075,47 +4076,59 @@ if (!hasLock) {
         instanceStore.remove(instance.url);
     }
     const localErrors = [];
-    for (const local of localInstances) {
-      try {
-        const server = await startStandalone({
-          app,
-          safeStorage,
-          root: __dirname,
-          enabled: true,
-          allowUnprotectedCredentialKey:
-            settingsStore.allowUnprotectedCredentialKey,
-          dataDirectory: localDataDirectory(local),
-          logName: `standalone-api-${local.id}.log`,
-        });
-        if (!server) continue;
-        standaloneServers.set(local.id, server);
-        instanceStore.add({
-          name: local.name,
-          url: server.url,
-          environment: "Locale",
-          openAtStartup: true,
-        });
-        const localSession = session.fromPartition(partitionFor(server.url));
-        const response = await localSession.fetch(
-          `${server.url}/auth/local/session`,
-          {
-            method: "POST",
-            headers: { "X-InfraOrgIT-Local": server.secret },
-          },
-        );
-        if (response.status !== 204)
-          throw new Error(
-            `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
+    localStartupTask = (async () => {
+      for (const local of localInstances) {
+        if (quitting) break;
+        try {
+          const server = await startStandalone({
+            app,
+            safeStorage,
+            root: __dirname,
+            enabled: true,
+            allowUnprotectedCredentialKey:
+              settingsStore.allowUnprotectedCredentialKey,
+            dataDirectory: localDataDirectory(local),
+            logName: `standalone-api-${local.id}.log`,
+            shouldAbort: () => quitting,
+          });
+          if (quitting) {
+            await server?.stop();
+            break;
+          }
+          if (!server) continue;
+          standaloneServers.set(local.id, server);
+          instanceStore.add({
+            name: local.name,
+            url: server.url,
+            environment: "Locale",
+            openAtStartup: true,
+          });
+          const localSession = session.fromPartition(partitionFor(server.url));
+          const response = await localSession.fetch(
+            `${server.url}/auth/local/session`,
+            {
+              method: "POST",
+              headers: { "X-InfraOrgIT-Local": server.secret },
+            },
           );
-      } catch (error) {
-        localErrors.push(`${local.name}: ${error?.message || String(error)}`);
+          if (response.status !== 204)
+            throw new Error(
+              `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
+            );
+        } catch (error) {
+          if (!quitting)
+            localErrors.push(`${local.name}: ${error?.message || String(error)}`);
+        }
       }
-    }
-    if (localErrors.length > 0)
-      dialog.showErrorBox(
-        "Istanze locali non avviate",
-        localErrors.join("\n"),
-      );
+      if (localErrors.length > 0 && !quitting)
+        dialog.showErrorBox(
+          "Istanze locali non avviate",
+          localErrors.join("\n"),
+        );
+    })();
+    await localStartupTask;
+    localStartupTask = null;
+    if (quitting) return;
     seedTestInstances();
     await startTestTunnels();
     createMainWindow();
@@ -4162,6 +4175,7 @@ if (!hasLock) {
     for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
     void (async () => {
+      await localStartupTask?.catch(() => {});
       await Promise.all(
         [...standaloneServers.values()].map((server) => server.stop()),
       );
@@ -4172,6 +4186,10 @@ if (!hasLock) {
       desktopAuth?.dispose();
       app.quit();
     })();
+  });
+
+  app.on("will-quit", () => {
+    for (const server of standaloneServers.values()) server.killNow();
   });
 
   app.on("window-all-closed", () => {
