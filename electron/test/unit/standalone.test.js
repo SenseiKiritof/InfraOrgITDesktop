@@ -110,6 +110,72 @@ test("standalone requires explicit consent for an unprotected credential key", a
   }
 });
 
+test("standalone instances keep separate data directories", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-multi-"));
+  const webRoot = path.join(root, "web");
+  fs.mkdirSync(webRoot, { recursive: true });
+  fs.writeFileSync(path.join(webRoot, "index.html"), "<html></html>");
+  const userData = path.join(root, "user-data");
+  const previousWeb = process.env.DESKTOP_WEB_ROOT;
+  process.env.DESKTOP_WEB_ROOT = webRoot;
+
+  class FakeChild extends EventEmitter {
+    constructor() {
+      super();
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+    }
+    kill() {
+      this.exitCode = 0;
+      this.emit("exit", 0, null);
+    }
+  }
+
+  try {
+    const start = (name) =>
+      startStandalone({
+        enabled: true,
+        app: {
+          isPackaged: false,
+          getPath: () => userData,
+          getVersion: () => "0.4.0",
+        },
+        safeStorage: { isEncryptionAvailable: () => false },
+        allowUnprotectedCredentialKey: true,
+        dataDirectory: path.join(userData, "standalone", "instances", name),
+        logName: `standalone-api-${name}.log`,
+        logger: { log() {}, warn() {}, error() {} },
+        spawnProcess: () => new FakeChild(),
+        healthCheck: async () => true,
+      });
+
+    const first = await start("cliente-a");
+    const second = await start("cliente-b");
+    assert.notEqual(first.dataRoot, second.dataRoot);
+    assert.notEqual(first.database, second.database);
+    assert.ok(
+      fs.existsSync(
+        path.join(first.dataRoot, "credential-key.bin.fallback"),
+      ),
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(second.dataRoot, "credential-key.bin.fallback"),
+      ),
+    );
+    assert.notEqual(first.port, second.port);
+    await first.stop();
+    await second.stop();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  } finally {
+    if (previousWeb === undefined) delete process.env.DESKTOP_WEB_ROOT;
+    else process.env.DESKTOP_WEB_ROOT = previousWeb;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("standalone supervisor restarts the sidecar once", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-restart-"));
   const webRoot = path.join(root, "web");

@@ -180,6 +180,20 @@
     "Apri release": "Open release",
     Chiudi: "Close",
     "Istanza locale": "Local instance",
+    "Istanze locali": "Local instances",
+    "Nessuna istanza locale configurata.": "No local instances configured.",
+    "Rimuovi": "Remove",
+    "Aggiungi": "Add",
+    "Nome istanza locale": "Local instance name",
+    "In esecuzione": "Running",
+    "Al prossimo avvio": "Starts on next launch",
+    "Ogni istanza ha database, backup e chiave separati sotto la cartella dati dell'app; le nuove istanze partono al prossimo avvio.":
+      "Each instance has its own database, backups and key under the app data folder; new instances start on the next launch.",
+    "Istanza locale rimossa.": "Local instance removed.",
+    "Istanza locale aggiunta: parte al prossimo avvio.":
+      "Local instance added: it starts on the next launch.",
+    "Senza archivio protetto le istanze locali non partono finché non lo consenti.":
+      "Without protected storage the local instances do not start until you allow it.",
     "L'istanza locale è attiva e parte con l'app.": "The local instance is enabled and starts with the app.",
     "L'istanza locale parte al prossimo avvio.": "The local instance starts on the next launch.",
     "L'istanza locale non partirà al prossimo avvio.": "The local instance will not start on the next launch.",
