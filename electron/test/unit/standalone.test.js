@@ -70,6 +70,60 @@ test("standalone supervisor starts a local sidecar with protected configuration"
   }
 });
 
+test("standalone aborts cleanly while quitting", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-abort-"));
+  const webRoot = path.join(root, "web");
+  fs.mkdirSync(webRoot, { recursive: true });
+  fs.writeFileSync(path.join(webRoot, "index.html"), "<html></html>");
+  const userData = path.join(root, "user-data");
+  const previousWeb = process.env.DESKTOP_WEB_ROOT;
+  process.env.DESKTOP_WEB_ROOT = webRoot;
+
+  class FakeChild extends EventEmitter {
+    constructor() {
+      super();
+      this.stdout = new PassThrough();
+      this.stderr = new PassThrough();
+      this.exitCode = null;
+      this.signalCode = null;
+      this.killed = false;
+    }
+    kill() {
+      this.killed = true;
+      this.exitCode = 0;
+      this.emit("exit", 0, null);
+    }
+  }
+
+  try {
+    let child = null;
+    const result = await startStandalone({
+      enabled: true,
+      app: {
+        isPackaged: false,
+        getPath: () => userData,
+        getVersion: () => "0.4.1",
+      },
+      safeStorage: { isEncryptionAvailable: () => false },
+      allowUnprotectedCredentialKey: true,
+      logger: { log() {}, warn() {}, error() {} },
+      shouldAbort: () => true,
+      spawnProcess: () => {
+        child = new FakeChild();
+        return child;
+      },
+      healthCheck: async () => true,
+    });
+    assert.equal(result, null);
+    assert.equal(child.killed, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    if (previousWeb === undefined) delete process.env.DESKTOP_WEB_ROOT;
+    else process.env.DESKTOP_WEB_ROOT = previousWeb;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("standalone requires explicit consent for an unprotected credential key", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "infraorgit-consent-"));
   const webRoot = path.join(root, "web");
