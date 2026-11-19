@@ -97,8 +97,9 @@ session exchange with an injected fetch.
   When Linux reports the `basic_text` backend the store refuses to write and
   keeps the session in memory for that run. A native keychain wrapper remains
   the next hardening step.
-- Standalone instances live in `settings.json` as
-  `localInstances: [{ id, name }]`; `id: "default"` keeps the legacy
+- Standalone instances are added from **Nuova istanza → Locale** on the home
+  screen and removed from **Impostazioni → Istanze locali**. They live in
+  `settings.json` as `localInstances: [{ id, name }]`; `id: "default"` keeps the legacy
   `userData/standalone` folder, every other id uses
   `userData/standalone/instances/<id>`. The desktop starts one sidecar per
   instance with its own SQLite database, backups, credential key and log, and

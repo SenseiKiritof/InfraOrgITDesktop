@@ -53,12 +53,13 @@ The screenshots use fictitious demo instances, servers and tunnels.
   saves use the folder chosen in **Impostazioni → Cartella download** (user's
   Downloads by default). The manager and the Web file browser show bytes and
   percentage for downloads and uploads.
-- **Local instances (standalone).** **Impostazioni → Istanze locali** manages
-  any number of self-contained APIs, each with its own SQLite database,
-  backups and credential key under `userData/standalone`, served on loopback
-  and signed in without Keycloak or Docker. A second launch focuses the
-  existing window instead of opening another one; new instances start on the
-  next launch. The packaged app includes the API and Web resources. If the OS
+- **Local instances (standalone).** **Nuova istanza** on the home screen
+  offers **Locale (solo questo computer)** next to the remote URL form, and
+  **Impostazioni → Istanze locali** lists and removes them. Each instance is a
+  self-contained API with its own SQLite database, backups and credential key
+  under `userData/standalone`, served on loopback and signed in without
+  Keycloak or Docker. A second launch focuses the existing window instead of
+  opening another one; new instances start on the next launch. The packaged app includes the API and Web resources. If the OS
   keychain is unavailable the local instances refuse to start until **Consenti
   chiave credenziali in file non protetto** is enabled in the same panel.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay

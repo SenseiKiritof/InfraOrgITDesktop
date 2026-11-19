@@ -181,6 +181,14 @@
     Chiudi: "Close",
     "Istanza locale": "Local instance",
     "Istanze locali": "Local instances",
+    "Tipo istanza": "Instance type",
+    "Remota (URL)": "Remote (URL)",
+    "Locale (solo questo computer)": "Local (this computer only)",
+    "Il nome è obbligatorio.": "The name is required.",
+    "Database, backup e chiave restano sulla macchina; l'istanza parte al prossimo avvio.":
+      "Database, backups and key stay on this machine; the instance starts on the next launch.",
+    "Ogni istanza ha database, backup e chiave separati sotto la cartella dati dell'app. Aggiungi una nuova istanza dalla schermata iniziale; le nuove istanze partono al prossimo avvio.":
+      "Each instance has its own database, backups and key under the app data folder. Add a new instance from the home screen; new instances start on the next launch.",
     "Nessuna istanza locale configurata.": "No local instances configured.",
     "Rimuovi": "Remove",
     "Aggiungi": "Add",
