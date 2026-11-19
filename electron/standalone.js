@@ -32,7 +32,12 @@ function health(url) {
   });
 }
 
-function localSecret(file, safeStorage, logger = console) {
+function localSecret(
+  file,
+  safeStorage,
+  logger = console,
+  { allowUnprotected = false } = {},
+) {
   const fallback = `${file}.fallback`;
   if (fs.existsSync(file)) {
     try {
@@ -65,6 +70,11 @@ function localSecret(file, safeStorage, logger = console) {
     } catch {
       // Fall through to the explicit 0600 fallback.
     }
+  }
+  if (!allowUnprotected) {
+    throw new Error(
+      "Archivio protetto non disponibile: abilita «Consenti chiave credenziali non protetta» nelle Impostazioni per usare l'istanza locale.",
+    );
   }
   fs.mkdirSync(path.dirname(fallback), { recursive: true, mode: 0o700 });
   fs.writeFileSync(fallback, secret, { mode: 0o600 });
@@ -119,6 +129,7 @@ async function startStandalone({
   root = __dirname,
   logger = console,
   enabled = process.env.DESKTOP_STANDALONE === "1",
+  allowUnprotectedCredentialKey = false,
   spawnProcess = spawn,
   healthCheck = health,
 } = {}) {
@@ -155,6 +166,7 @@ async function startStandalone({
     path.join(dataRoot, "credential-key.bin"),
     safeStorage,
     logger,
+    { allowUnprotected: allowUnprotectedCredentialKey },
   );
   const key = keyInfo.value;
   const logFile = path.join(logDirectory, "standalone-api.log");

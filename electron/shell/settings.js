@@ -16,7 +16,12 @@ class SettingsStore {
 
   load() {
     if (this.data) return { ...this.data };
-    this.data = { theme: "system", downloadDirectory: "", standaloneEnabled: false };
+    this.data = {
+      theme: "system",
+      downloadDirectory: "",
+      standaloneEnabled: false,
+      allowUnprotectedCredentialKey: false,
+    };
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
       if (raw && typeof raw === "object") {
@@ -24,6 +29,8 @@ class SettingsStore {
         if (typeof raw.downloadDirectory === "string")
           this.data.downloadDirectory = raw.downloadDirectory.trim();
         this.data.standaloneEnabled = raw.standaloneEnabled === true;
+        this.data.allowUnprotectedCredentialKey =
+          raw.allowUnprotectedCredentialKey === true;
       }
     } catch (error) {
       if (error.code !== "ENOENT")
@@ -63,6 +70,17 @@ class SettingsStore {
     this.data.standaloneEnabled = Boolean(enabled);
     this.persist();
     return this.data.standaloneEnabled;
+  }
+
+  get allowUnprotectedCredentialKey() {
+    return this.load().allowUnprotectedCredentialKey;
+  }
+
+  setAllowUnprotectedCredentialKey(enabled) {
+    this.load();
+    this.data.allowUnprotectedCredentialKey = Boolean(enabled);
+    this.persist();
+    return this.data.allowUnprotectedCredentialKey;
   }
 
   persist() {

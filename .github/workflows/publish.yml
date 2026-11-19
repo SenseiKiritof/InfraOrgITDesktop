@@ -3,7 +3,9 @@ name: publish
 # Packages the Electron shell for macOS (arm64 and x64), Windows x64 and
 # Linux x64. The packages are unsigned: Developer ID signing, macOS
 # notarization and Windows Authenticode signing are follow-ups. Every archive
-# ships with a .sha256 file that the in-app updater verifies before install.
+# ships with a .sha256 file, and the release adds a `checksums.txt` manifest
+# signed with UPDATE_SIGNING_KEY. The in-app updater trusts only the signed
+# manifest and refuses to install when it is missing or invalid.
 # A v* tag publishes or updates a GitHub Release from the tag that already
 # exists: the workflow never creates tags. Manual runs only upload workflow
 # artifacts.
@@ -237,11 +239,42 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+      - name: Build checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd release
+          archives=(*.zip *.tar.gz)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::No archives found to checksum."
+            exit 1
+          fi
+          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+          cat checksums.txt
+      - name: Sign checksum manifest
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "::error::UPDATE_SIGNING_KEY is not configured: refusing to publish an unsigned release."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/update-signing.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          chmod 600 "$key"
+          openssl dgst -sha256 -sign "$key" -out release/checksums.txt.sig release/checksums.txt
+          openssl dgst -sha256 -verify electron/update-public.pem \
+            -signature release/checksums.txt.sig release/checksums.txt
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
@@ -251,4 +284,6 @@ jobs:
             release/*.zip
             release/*.tar.gz
             release/*.sha256
+            release/checksums.txt
+            release/checksums.txt.sig
           generate_release_notes: true

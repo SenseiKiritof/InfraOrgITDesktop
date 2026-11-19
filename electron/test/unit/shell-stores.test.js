@@ -131,5 +131,9 @@ test("settings store validates the theme and falls back to system", () => {
   assert.equal(store.setStandaloneEnabled(true), true);
   assert.equal(new SettingsStore(file).standaloneEnabled, true);
   assert.equal(store.setStandaloneEnabled(false), false);
+  assert.equal(store.allowUnprotectedCredentialKey, false);
+  assert.equal(store.setAllowUnprotectedCredentialKey(true), true);
+  assert.equal(new SettingsStore(file).allowUnprotectedCredentialKey, true);
+  assert.equal(store.setAllowUnprotectedCredentialKey(false), false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
