@@ -3726,11 +3726,18 @@ async function runTest() {
       await new Promise((resolve) => setTimeout(resolve, 120));
       const visible = !document.querySelector("#modal").hidden;
       const title = document.querySelector("#modal-title").textContent;
+      const kind = document.querySelector("#field-instanceKind");
+      kind.value = "local";
+      kind.dispatchEvent(new Event("change"));
+      const localForm = document.querySelector("[name=localName]").closest("form");
+      const localVisible = !localForm.hidden;
       document.querySelector("#modal-close").click();
-      return {visible, title};
+      return {visible, title, localVisible, kinds: [...kind.options].length};
     })()`);
     check(newModal.visible === true, "new instance modal opens");
     check(newModal.title === "New instance", "new instance modal title", newModal.title);
+    check(newModal.kinds === 2, "new instance modal offers remote and local", String(newModal.kinds));
+    check(newModal.localVisible === true, "local instance form switches in", String(newModal.localVisible));
 
     const manageModal = await mainWindow.webContents.executeJavaScript(`(async () => {
       const card = [...document.querySelectorAll(".instance-card")].find((item) => item.textContent.includes("Produzione"));
