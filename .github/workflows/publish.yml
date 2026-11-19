@@ -93,12 +93,42 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout API and Web sources
+        uses: actions/checkout@v4
+        with:
+          repository: SenseiKiritof/InfraOrgITApi
+          path: standalone-src/api
+          ref: ${{ github.event_name == 'push' && github.ref_name || 'main' }}
+
+      - name: Checkout Web source
+        uses: actions/checkout@v4
+        with:
+          repository: SenseiKiritof/InfraOrgITWeb
+          path: standalone-src/web
+          ref: ${{ github.event_name == 'push' && github.ref_name || 'main' }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Install
         run: npm ci --prefix electron
+
+      - name: Build local API and Web
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          dotnet publish standalone-src/api/src/InfraOrgIt.Api/InfraOrgIt.Api.csproj \
+            -c Release -r "$TARGET" --self-contained true \
+            -o standalone-api
+          yarn --cwd standalone-src/web install --frozen-lockfile
+          yarn --cwd standalone-src/web build
 
       - name: Package
         shell: bash
@@ -113,7 +143,9 @@ jobs:
             --platform="$PLATFORM" \
             --arch="$ARCH" \
             --out=../dist \
-            --app-version="$VERSION"
+            --app-version="$VERSION" \
+            --api-dir="$GITHUB_WORKSPACE/standalone-api" \
+            --web-dir="$GITHUB_WORKSPACE/standalone-src/web/dist"
 
       - name: Create archive
         shell: bash

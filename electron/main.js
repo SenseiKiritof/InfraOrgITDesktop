@@ -53,6 +53,7 @@ const {
   uploadFile,
 } = require("./ssh-client");
 const { TunnelProjection } = require("./tunnel-projection");
+const { startStandalone } = require("./standalone");
 const updates = require("./updates");
 const {
   DownloadTracker,
@@ -121,6 +122,7 @@ let deviceIdentity = null;
 let credentialVault = null;
 let desktopAuth = null;
 let tunnels = null;
+let standaloneServer = null;
 let tunnelProjection = null;
 let quitting = false;
 let shuttingDown = false;
@@ -572,6 +574,9 @@ function publicState() {
     theme: themeState(),
     downloadDirectory: downloadDirectory(),
     downloadDirectoryCustom: Boolean(settingsStore?.downloadDirectory),
+    standaloneEnabled: Boolean(settingsStore?.standaloneEnabled),
+    standaloneRunning: Boolean(standaloneServer),
+    standaloneKeyStorage: standaloneServer?.keyStorage || null,
     platform: process.platform,
     tunnels: tunnels ? tunnels.list() : [],
     downloads: downloadTracker.list(),
@@ -2337,6 +2342,11 @@ function registerIpc() {
     setDownloadDirectory(directory),
   );
   handle("manager:reset-download-directory", () => setDownloadDirectory(""));
+  handle("manager:set-standalone-enabled", (enabled) => {
+    settingsStore.setStandaloneEnabled(Boolean(enabled));
+    sendState();
+    return Boolean(settingsStore.standaloneEnabled);
+  });
   handle("updates:state", () => updateState);
   handle("updates:check", () => runUpdateCheck());
   handle("updates:install", () => installUpdateNow());
@@ -3818,6 +3828,7 @@ async function runTest() {
     check(settingsModal.title === "Updates", "settings modal title", settingsModal.title);
     check(settingsModal.body.includes("Installed version"), "settings modal shows the version");
     check(settingsModal.body.includes("Download folder"), "settings modal shows the download folder");
+    check(settingsModal.body.includes("Local instance"), "settings modal shows the local instance toggle");
     check(settingsModal.body.includes("Italiano"), "settings modal shows the language picker");
     await mainWindow.webContents.executeJavaScript(
       'document.querySelector("#modal-close").click()',
@@ -3976,6 +3987,65 @@ if (!hasLock) {
       },
     );
 
+    const standaloneEnabled =
+      !IS_TEST &&
+      (process.env.DESKTOP_STANDALONE === "1" ||
+        settingsStore.standaloneEnabled);
+    if (!standaloneEnabled && !IS_TEST) {
+      for (const instance of instanceStore.list()) {
+        if (
+          instance.environment === "Locale" &&
+          instance.url.startsWith("http://127.0.0.1:")
+        )
+          instanceStore.remove(instance.url);
+      }
+    }
+    if (standaloneEnabled) {
+      try {
+        standaloneServer = await startStandalone({
+          app,
+          safeStorage,
+          root: __dirname,
+          enabled: true,
+        });
+        if (standaloneServer) {
+          for (const instance of instanceStore.list()) {
+            if (
+              instance.environment === "Locale" &&
+              instance.url.startsWith("http://127.0.0.1:")
+            )
+              instanceStore.remove(instance.url);
+          }
+          instanceStore.add({
+            name: "InfraOrgIT locale",
+            url: standaloneServer.url,
+            environment: "Locale",
+            openAtStartup: true,
+          });
+          const localSession = session.fromPartition(
+            partitionFor(standaloneServer.url),
+          );
+          const response = await localSession.fetch(
+            `${standaloneServer.url}/auth/local/session`,
+            {
+              method: "POST",
+              headers: {
+                "X-InfraOrgIT-Local": standaloneServer.secret,
+              },
+            },
+          );
+          if (response.status !== 204)
+            throw new Error(
+              `Bootstrap della sessione locale fallito (HTTP ${response.status}).`,
+            );
+        }
+      } catch (error) {
+        dialog.showErrorBox(
+          "Istanza locale non avviata",
+          error?.message || String(error),
+        );
+      }
+    }
     seedTestInstances();
     await startTestTunnels();
     createMainWindow();
@@ -4021,6 +4091,7 @@ if (!hasLock) {
     for (const record of [...remoteConsoles.values()]) record.shell.close();
     tunnels?.stopAll();
     void (async () => {
+      await standaloneServer?.stop();
       // Publish the stopped sessions so the central /tunnels page does not
       // keep ghost rows until the stale cleanup runs.
       await tunnelProjection?.flush(2000);

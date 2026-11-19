@@ -127,5 +127,9 @@ test("settings store validates the theme and falls back to system", () => {
   assert.equal(new SettingsStore(file).downloadDirectory, "/tmp/infraorgit-downloads");
   assert.equal(store.setDownloadDirectory(""), "");
   assert.equal(new SettingsStore(file).downloadDirectory, "");
+  assert.equal(store.standaloneEnabled, false);
+  assert.equal(store.setStandaloneEnabled(true), true);
+  assert.equal(new SettingsStore(file).standaloneEnabled, true);
+  assert.equal(store.setStandaloneEnabled(false), false);
   fs.rmSync(directory, { recursive: true, force: true });
 });
