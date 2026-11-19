@@ -97,6 +97,7 @@ test("standalone aborts cleanly while quitting", async () => {
 
   try {
     let child = null;
+    let spawns = 0;
     const result = await startStandalone({
       enabled: true,
       app: {
@@ -109,6 +110,7 @@ test("standalone aborts cleanly while quitting", async () => {
       logger: { log() {}, warn() {}, error() {} },
       shouldAbort: () => true,
       spawnProcess: () => {
+        spawns += 1;
         child = new FakeChild();
         return child;
       },
@@ -116,7 +118,8 @@ test("standalone aborts cleanly while quitting", async () => {
     });
     assert.equal(result, null);
     assert.equal(child.killed, true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.equal(spawns, 1);
   } finally {
     if (previousWeb === undefined) delete process.env.DESKTOP_WEB_ROOT;
     else process.env.DESKTOP_WEB_ROOT = previousWeb;

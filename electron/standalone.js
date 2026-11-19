@@ -226,11 +226,11 @@ async function startStandalone({
     return false;
   };
   const restartOnce = async () => {
-    if (stopped || restarted) return;
+    if (stopped || restarted || shouldAbort()) return;
     restarted = true;
     logger.warn("Sidecar locale terminato: nuovo tentativo.");
     await new Promise((resolve) => setTimeout(resolve, 500));
-    if (stopped) return;
+    if (stopped || shouldAbort()) return;
     child = spawnSidecar();
     child.once("exit", (code, signal) => {
       log.write(`\nsidecar exit code=${code} signal=${signal}\n`);
@@ -242,7 +242,7 @@ async function startStandalone({
   };
   child.once("exit", (code, signal) => {
     log.write(`\nsidecar exit code=${code} signal=${signal}\n`);
-    if (!stopped) void restartOnce();
+    if (!stopped && !shouldAbort()) void restartOnce();
   });
 
   if (!(await waitUntilHealthy())) {
