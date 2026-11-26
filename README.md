@@ -59,7 +59,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
   self-contained API with its own SQLite database, backups and credential key
   under `userData/standalone`, served on loopback and signed in without
   Keycloak or Docker. A second launch focuses the existing window instead of
-  opening another one; new instances start on the next launch. The packaged app includes the API and Web resources. If the OS
+  opening another one; new instances start on the next launch. The
+  open-at-startup choice is preserved when the local instance is re-created,
+  and new local instances default to not opening automatically. The packaged
+  app includes the API and Web resources. If the OS
   keychain is unavailable the local instances refuse to start until **Consenti
   chiave credenziali in file non protetto** is enabled in the same panel.
 - **Clean shutdown.** Quit (⌘Q or equivalent) stops every tunnel, closes relay
@@ -73,9 +76,10 @@ The screenshots use fictitious demo instances, servers and tunnels.
 - **One theme.** The shell follows the account theme. The Web toggle is the
   only control and cycles light, dark and system; the shell follows the
   resolved appearance. There is no desktop theme button.
-- **Web workspace in a tab.** Server detail, SSH console, SFTP/FTPS/FTP file
-  sessions and tunnel anagrafica stay in the existing Web app. The desktop adds
-  the native window, instance management and the process-level tunnel manager.
+- **Web workspace in a tab.** Server detail, HAProxy monitoring, SSH console,
+  SFTP/FTPS/FTP file sessions and tunnel anagrafica stay in the existing Web
+  app. The desktop adds the native window, instance management and the
+  process-level tunnel manager.
 
 ![Global tunnel drawer grouped by environment with the searchable New tunnel form](docs/screenshots/electron-tunnels.png)
 
