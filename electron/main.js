@@ -24,7 +24,7 @@ const { RefreshTokenStore } = require("./auth/refresh-store");
 const { DesktopAuth } = require("./auth/desktop-auth");
 const { DeviceIdentity } = require("./auth/device-identity");
 const { planDeviceLogin } = require("./auth/login-policy");
-const { InstanceStore } = require("./shell/instances");
+const { InstanceStore, localStartupFlag } = require("./shell/instances");
 const { CredentialVault } = require("./shell/credential-vault");
 const { OfflineCache } = require("./shell/offline-cache");
 const { Outbox } = require("./shell/outbox");
@@ -4101,7 +4101,8 @@ if (!hasLock) {
     const localInstances = IS_TEST ? [] : settingsStore.localInstances;
     if (localInstances.length === 0 && process.env.DESKTOP_STANDALONE === "1")
       localInstances.push({ id: "default", name: "InfraOrgIT locale" });
-    for (const instance of instanceStore.list()) {
+    const previousInstances = instanceStore.list();
+    for (const instance of previousInstances) {
       if (
         instance.environment === "Locale" &&
         instance.url.startsWith("http://127.0.0.1:")
@@ -4134,7 +4135,7 @@ if (!hasLock) {
             name: local.name,
             url: server.url,
             environment: "Locale",
-            openAtStartup: true,
+            openAtStartup: localStartupFlag(previousInstances, local.name),
           });
           const localSession = session.fromPartition(partitionFor(server.url));
           const response = await localSession.fetch(
