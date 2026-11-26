@@ -2080,6 +2080,16 @@ function createInstanceView(instance) {
     runtimeFor(instance.url).loading = true;
     sendState();
   });
+  view.webContents.on("dom-ready", () => {
+    record.loading = false;
+    runtimeFor(instance.url).loading = false;
+    sendState();
+  });
+  view.webContents.on("did-stop-loading", () => {
+    record.loading = false;
+    runtimeFor(instance.url).loading = false;
+    sendState();
+  });
   view.webContents.on("did-fail-load", (_event, code, description, url) => {
     if (code === -3) return;
     record.loading = false;
