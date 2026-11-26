@@ -21,6 +21,10 @@ const els = {
   slot: document.querySelector("#instance-slot"),
   stageBackdrop: document.querySelector("#stage-backdrop"),
   stageName: document.querySelector("#stage-backdrop-name"),
+  stageEyebrow: document.querySelector("#stage-eyebrow"),
+  stageDetail: document.querySelector("#stage-detail"),
+  stageSpinner: document.querySelector("#stage-spinner"),
+  stageRetry: document.querySelector("#stage-retry"),
   drawer: document.querySelector("#drawer"),
   drawerBody: document.querySelector("#drawer-body"),
   drawerSearch: document.querySelector("#drawer-search"),
@@ -154,7 +158,13 @@ function activeTab() {
 }
 
 function isViewHidden() {
-  return !els.palette.hidden || !els.modal.hidden || Boolean(activeTab()?.loading);
+  const tab = activeTab();
+  return (
+    !els.palette.hidden ||
+    !els.modal.hidden ||
+    Boolean(tab?.loading) ||
+    Boolean(tab?.error)
+  );
 }
 
 function sendBounds() {
@@ -182,9 +192,27 @@ function scheduleBounds() {
 
 function updateStage() {
   const tab = activeTab();
-  const hidden = Boolean(state?.activeUrl) && (isViewHidden() || tab?.loading);
+  const error = tab?.error || "";
+  const hidden = Boolean(state?.activeUrl) && (isViewHidden() || Boolean(error));
   els.stageBackdrop.hidden = !hidden;
-  if (hidden && tab) els.stageName.textContent = tab.name;
+  if (hidden && tab) {
+    els.stageName.textContent = tab.name;
+    const certificate = /CERT|SSL|TLS/i.test(error);
+    const unreachable =
+      /CONNECTION|NAME_NOT|ADDRESS|TIMED_OUT|REFUSED|INTERNET/i.test(error);
+    els.stageEyebrow.textContent = error
+      ? "Connessione non riuscita"
+      : "Connessione";
+    els.stageDetail.textContent = error
+      ? certificate
+        ? `Certificato non attendibile (${error}). Installa o rinnova la CA locale di Caddy e riprova.`
+        : unreachable
+          ? `Server o Keycloak non raggiungibile (${error}). Verifica che lo stack sia avviato.`
+          : error
+      : "Contatto Keycloak e il server…";
+    els.stageRetry.hidden = !error;
+    els.stageSpinner.hidden = Boolean(error);
+  }
   document.body.dataset.drawer = drawerOpen ? "open" : "closed";
   els.drawer.setAttribute("aria-hidden", drawerOpen ? "false" : "true");
   els.tunnelToggle.setAttribute("aria-expanded", drawerOpen ? "true" : "false");
@@ -2276,6 +2304,9 @@ els.tabAdd.addEventListener("click", () => openConnectionPicker());
 els.newInstance.addEventListener("click", () => openNewInstance());
 els.newInstanceCard.addEventListener("click", () => openNewInstance());
 els.home.addEventListener("click", () => void api.home());
+els.stageRetry.addEventListener("click", () => {
+  if (state?.activeUrl) void api.reload(state.activeUrl);
+});
 els.tunnelToggle.addEventListener("click", () => setDrawer(!drawerOpen));
 if (els.drawerSearch) {
   els.drawerSearch.value = drawerSearch;

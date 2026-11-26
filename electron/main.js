@@ -595,6 +595,7 @@ function publicState() {
           environment: instance?.environment || "",
           active: url === activeUrl,
           loading: data.loading,
+          error: recordFor(url)?.lastError || null,
           auth: authSnapshot(url),
         };
       }),
@@ -2073,9 +2074,17 @@ function createInstanceView(instance) {
       void shell.openExternal(url);
     }
   });
+  view.webContents.on("did-start-loading", () => {
+    record.loading = true;
+    record.lastError = null;
+    runtimeFor(instance.url).loading = true;
+    sendState();
+  });
   view.webContents.on("did-fail-load", (_event, code, description, url) => {
     if (code === -3) return;
+    record.loading = false;
     record.lastError = `${description} (${code})`;
+    runtimeFor(instance.url).loading = false;
     console.error("window load failed", instance.name, code, description, url);
     sendState();
   });
@@ -2083,6 +2092,7 @@ function createInstanceView(instance) {
     record.loaded = true;
     record.loading = false;
     record.lastError = null;
+    runtimeFor(instance.url).loading = false;
     const current = view.webContents.getURL();
     if (sameOrigin(current, instance.url)) {
       void refreshInstanceData(instanceStore.get(instance.url) || instance);
@@ -2457,7 +2467,13 @@ function registerIpc() {
     const target = url || activeUrl;
     if (!target) return publicState();
     const record = recordFor(target);
-    if (record) record.view.webContents.reload();
+    if (record) {
+      record.loading = true;
+      record.lastError = null;
+      runtimeFor(target).loading = true;
+      sendState();
+      record.view.webContents.reload();
+    }
     return publicState();
   });
   handle("manager:refresh", async (url) => {
