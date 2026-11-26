@@ -904,6 +904,37 @@ body[data-drawer="open"] .instance-slot {
   font-weight: 700;
 }
 
+.stage-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 0 auto 14px;
+  border: 3px solid rgb(255 255 255 / 14%);
+  border-top-color: #5eead4;
+  border-radius: 50%;
+  animation: stage-spin 0.9s linear infinite;
+}
+
+@keyframes stage-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.stage-retry {
+  margin-top: 14px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.stage-retry:hover {
+  border-color: #5eead4;
+}
+
 .muted {
   color: var(--text-dim);
   line-height: 1.5;
