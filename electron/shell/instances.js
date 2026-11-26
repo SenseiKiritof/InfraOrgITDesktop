@@ -41,6 +41,22 @@ function defaultEnvironment(url) {
   }
 }
 
+/**
+ * The startup flag of an existing local instance, by name. Local instances are
+ * re-created on every launch, so the user choice must survive the recreation.
+ */
+function localStartupFlag(instances, name) {
+  if (!Array.isArray(instances)) return false;
+  const match = instances.find(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      item.environment === "Locale" &&
+      item.name === name,
+  );
+  return match ? match.openAtStartup === true : false;
+}
+
 function normalizeName(value) {
   const name = String(value ?? "").trim().replace(/\s+/g, " ");
   if (!name) throw new Error("Il nome dell'istanza è obbligatorio.");
@@ -218,6 +234,7 @@ class InstanceStore {
 module.exports = {
   InstanceStore,
   defaultEnvironment,
+  localStartupFlag,
   normalizeEnvironment,
   normalizeInstance,
   normalizeInstanceUrl,
