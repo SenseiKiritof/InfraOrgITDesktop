@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const {
   InstanceStore,
+  localStartupFlag,
   normalizeInstanceUrl,
 } = require("../../shell/instances");
 const { SettingsStore } = require("../../shell/settings");
@@ -112,6 +113,69 @@ test("instance store migrates the old array and skips invalid entries", () => {
   assert.equal(instances[1].environment, "Test");
   assert.equal(instances[1].openAtStartup, false);
   fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("local startup flag keeps the user choice across re-creation", () => {
+  assert.equal(localStartupFlag([], "InfraOrgIT locale"), false);
+  assert.equal(localStartupFlag(null, "InfraOrgIT locale"), false);
+  assert.equal(localStartupFlag(undefined, "InfraOrgIT locale"), false);
+  assert.equal(localStartupFlag("nope", "InfraOrgIT locale"), false);
+  assert.equal(
+    localStartupFlag(
+      [
+        {
+          name: "InfraOrgIT locale",
+          url: "http://127.0.0.1:4000",
+          environment: "Locale",
+          openAtStartup: false,
+        },
+      ],
+      "InfraOrgIT locale",
+    ),
+    false,
+  );
+  assert.equal(
+    localStartupFlag(
+      [
+        {
+          name: "InfraOrgIT locale",
+          url: "http://127.0.0.1:4000",
+          environment: "Locale",
+          openAtStartup: true,
+        },
+      ],
+      "InfraOrgIT locale",
+    ),
+    true,
+  );
+  assert.equal(
+    localStartupFlag(
+      [
+        {
+          name: "Altro locale",
+          url: "http://127.0.0.1:5000",
+          environment: "Locale",
+          openAtStartup: true,
+        },
+      ],
+      "InfraOrgIT locale",
+    ),
+    false,
+  );
+  assert.equal(
+    localStartupFlag(
+      [
+        {
+          name: "InfraOrgIT locale",
+          url: "https://infra.example.com",
+          environment: "Produzione",
+          openAtStartup: true,
+        },
+      ],
+      "InfraOrgIT locale",
+    ),
+    false,
+  );
 });
 
 test("settings store validates the theme and falls back to system", () => {
